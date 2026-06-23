@@ -1,0 +1,105 @@
+name: release
+
+# Builds the Linux + macOS release tarballs and attaches them to the GitHub
+# release for the pushed tag. Trigger by pushing a tag (git tag v0.1.0 &&
+# git push origin v0.1.0) or manually via "Run workflow" with a tag input.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and upload (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  ZIG_VERSION: '0.15.2'
+
+jobs:
+  # Create the release once, up front, so the parallel build jobs only upload.
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+                 --title "Nova Terminal $TAG" --generate-notes
+
+  linux:
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build patchelf \
+            libcurl4-openssl-dev libgl1-mesa-dev libglu1-mesa-dev \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxinerama-dev
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        run: |
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
+          mkdir -p "$HOME/zig" && tar -xf /tmp/zig.tar.xz -C "$HOME/zig" --strip-components=1
+          echo "$HOME/zig" >> "$GITHUB_PATH"
+      - name: Build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Package
+        run: bash scripts/package-linux.sh "$TAG"
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: gh release upload "$TAG" dist/nova-terminal-linux-x86_64.tar.gz --repo "$GITHUB_REPOSITORY" --clobber
+
+  macos:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14   # Apple Silicon (arm64)
+          - runner: macos-13   # Intel (x86_64)
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: brew install cmake ninja
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        run: |
+          case "$(uname -m)" in
+            arm64)  z=aarch64 ;;
+            x86_64) z=x86_64 ;;
+          esac
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${z}-macos-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
+          mkdir -p "$HOME/zig" && tar -xf /tmp/zig.tar.xz -C "$HOME/zig" --strip-components=1
+          echo "$HOME/zig" >> "$GITHUB_PATH"
+      - name: Build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Package
+        run: bash scripts/package-macos.sh "$TAG"
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: gh release upload "$TAG" "dist/nova-terminal-macos-$(uname -m).tar.gz" --repo "$GITHUB_REPOSITORY" --clobber

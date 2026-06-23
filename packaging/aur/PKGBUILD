@@ -1,0 +1,81 @@
+# Maintainer: Rene Rodriguez <bnpmusic@gmail.com>
+#
+# VCS package — builds Nova Terminal from the main branch.
+#
+# Notes:
+#  * libghostty-vt builds with Zig 0.15.2 specifically. Arch/CachyOS `pacman`
+#    currently ships 0.16.0, which will NOT build the pinned ghostty commit, so
+#    this PKGBUILD fetches the exact 0.15.2 toolchain as a source and puts it
+#    first on PATH for the build only (it is not installed).
+#  * The CMake build uses FetchContent to pull raylib 5.5 and the pinned ghostty
+#    source during build(); this needs network access at build time (makepkg
+#    allows it — only the source-extraction step is sandboxed).
+pkgname=nova-terminal-git
+pkgver=r0.0000000
+pkgrel=1
+pkgdesc="Native GPU-accelerated BYOK terminal — Warp's AI features without the logins, telemetry, or subscriptions"
+arch=('x86_64')
+url="https://github.com/rene-rodriguez/nova-terminal"
+license=('custom')   # project license TBD; bundled JetBrains Mono font is OFL
+depends=('curl' 'libglvnd' 'glu' 'libx11' 'libxcursor' 'libxrandr' 'libxi' 'libxinerama')
+makedepends=('cmake' 'ninja' 'git' 'libxcursor' 'libxrandr' 'libxinerama' 'libxi' 'mesa' 'glu')
+provides=('nova-terminal')
+conflicts=('nova-terminal')
+options=('!lto')   # the ghostty/zig sub-build manages its own flags; keep makepkg LTO out of it
+
+_zigver=0.15.2
+source=("$pkgname::git+https://github.com/rene-rodriguez/nova-terminal.git"
+        'nova-terminal.desktop')
+source_x86_64=("zig-$_zigver-x86_64.tar.xz::https://ziglang.org/download/$_zigver/zig-x86_64-linux-$_zigver.tar.xz")
+sha256sums=('SKIP'
+            '45de244e1c4c4b99d2e14713ca393ca0b215aa4b96c1502510123357d8ea3d18')
+sha256sums_x86_64=('02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239')
+
+pkgver() {
+	cd "$pkgname"
+	printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+	# Pinned Zig 0.15.2, build-time only (not installed).
+	export PATH="$srcdir/zig-x86_64-linux-$_zigver:$PATH"
+
+	cd "$pkgname"
+	# Build with an empty install RPATH (not the build-tree path) so the binary
+	# carries no reference to $srcdir; libghostty-vt.so resolves from /usr/lib at
+	# runtime. nova-terminal itself is never executed during check().
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+		-DCMAKE_INSTALL_RPATH=''
+	cmake --build build
+}
+
+check() {
+	cd "$pkgname"
+	# The 8 ctest suites are pure unit tests — no display required.
+	ctest --test-dir build --output-on-failure
+}
+
+package() {
+	cd "$pkgname"
+
+	# Main binary.
+	install -Dm755 build/nova-terminal "$pkgdir/usr/bin/nova-terminal"
+
+	# libghostty-vt is built as a shared object by the ghostty sub-build. Ship it
+	# in /usr/lib (default loader search path); the binary carries no RPATH.
+	local _libdir='build/_deps/ghostty-src/zig-out/lib'
+	install -Dm755 "$_libdir/libghostty-vt.so.0.1.0" "$pkgdir/usr/lib/libghostty-vt.so.0.1.0"
+	ln -s libghostty-vt.so.0.1.0 "$pkgdir/usr/lib/libghostty-vt.so.0"
+	ln -s libghostty-vt.so.0.1.0 "$pkgdir/usr/lib/libghostty-vt.so"
+
+	# Desktop entry.
+	install -Dm644 "$srcdir/nova-terminal.desktop" \
+		"$pkgdir/usr/share/applications/nova-terminal.desktop"
+
+	# License of the bundled font (project license itself is still TBD).
+	install -Dm644 assets/OFL-JetBrainsMono.txt \
+		"$pkgdir/usr/share/licenses/$pkgname/OFL-JetBrainsMono.txt"
+}

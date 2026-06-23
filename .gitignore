@@ -1,0 +1,27 @@
+# Vendored toolchain & upstream checkouts — large, re-fetched by bootstrap.
+# (Zig 0.15.2, ghostling clone, raylib, hybrid SDK + shims for macOS build.)
+/vendor/
+
+# Build output
+build/
+*.o
+*.a
+*.dylib
+
+# macOS bundle output (Nova Terminal.app + release zip), produced by macos-bundle.sh
+/dist/
+
+# Zig caches
+.zig-cache/
+zig-out/
+
+# Compiled spike binaries (sources are kept)
+/spike/ai_stream/stream_test
+/spike/ai_stream/stream_window
+
+# Editor / OS / tooling
+.DS_Store
+compile_commands.json
+.cache/
+# Serena MCP project metadata/cache (local only)
+.serena/

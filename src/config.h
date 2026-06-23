@@ -1,0 +1,25 @@
+#ifndef NOVA_CONFIG_H
+#define NOVA_CONFIG_H
+
+#include <stdbool.h>
+
+typedef struct {
+    char font_family[128];
+    int font_size;
+    char theme[32];
+    int scrollback;
+
+    char provider[32];
+    char endpoint[256];
+    char model[128];
+    char api_key[256];
+    bool stream;
+    int max_tokens;
+} AppConfig;
+
+void config_defaults(AppConfig *c);
+bool config_load(AppConfig *c, const char *path);
+bool config_save(const AppConfig *c, const char *path);
+const char *config_default_path(void);
+
+#endif // NOVA_CONFIG_H

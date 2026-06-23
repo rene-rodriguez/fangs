@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Nova Terminal
+GenericName=Terminal
+Comment=Native GPU-accelerated BYOK terminal with an AI sidebar and inline command generation
+Exec=nova-terminal
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;AI;tty;
+StartupNotify=true
