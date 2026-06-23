@@ -2555,6 +2555,15 @@ int GuiTextBox(Rectangle bounds, char *text, int textSize, bool editMode)
                 textWidth = GetTextWidth(text + textIndexOffset) - GetTextWidth(text + textBoxCursorIndex);
             }
 
+            // Clipboard paste at the cursor: Ctrl+V (Linux/Windows) or Cmd+V
+            // (macOS). Upstream raygui ships NO paste handler at all; this is a
+            // local patch (cf. the textIndexOffset bound above). Detected before
+            // the char insert so the chord's own 'v' key event is swallowed
+            // rather than typed into the field.
+            bool pasteChord = IsKeyPressed(KEY_V) &&
+                (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL) ||
+                 IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER));
+
             int codepoint = GetCharPressed();       // Get Unicode codepoint
             if (multiline && IsKeyPressed(KEY_ENTER)) codepoint = (int)'\n';
 
@@ -2564,7 +2573,7 @@ int GuiTextBox(Rectangle bounds, char *text, int textSize, bool editMode)
 
             // Add codepoint to text, at current cursor position
             // NOTE: Make sure we do not overflow buffer size
-            if (((multiline && (codepoint == (int)'\n')) || (codepoint >= 32)) && ((textLength + codepointSize) < textSize))
+            if (!pasteChord && (((multiline && (codepoint == (int)'\n')) || (codepoint >= 32)) && ((textLength + codepointSize) < textSize)))
             {
                 // Move forward data from cursor position
                 for (int i = (textLength + codepointSize); i > textBoxCursorIndex; i--) text[i] = text[i - codepointSize];
@@ -2577,6 +2586,27 @@ int GuiTextBox(Rectangle bounds, char *text, int textSize, bool editMode)
 
                 // Make sure text last character is EOL
                 text[textLength] = '\0';
+            }
+
+            // Insert clipboard text byte-wise at the cursor: keeps multi-byte
+            // UTF-8 intact and drops control bytes (and newlines unless multiline)
+            // so a pasted secret can't smuggle in an EOL / early submit.
+            if (pasteChord)
+            {
+                const char *clip = GetClipboardText();
+                if (clip != NULL)
+                {
+                    for (int k = 0; (clip[k] != '\0') && ((textLength + 1) < textSize); k++)
+                    {
+                        unsigned char c = (unsigned char)clip[k];
+                        if ((c < 32) && !(multiline && (c == '\n'))) continue;
+                        for (int i = textLength + 1; i > textBoxCursorIndex; i--) text[i] = text[i - 1];
+                        text[textBoxCursorIndex] = (char)c;
+                        textBoxCursorIndex += 1;
+                        textLength += 1;
+                    }
+                    text[textLength] = '\0';
+                }
             }
 
             // Move cursor to start

@@ -1997,11 +1997,19 @@ int main(void)
             sel_copy_to_clipboard();
             clipboard_consumed = true;
         }
+        // Only paste into the PTY when no on-screen text field is capturing
+        // input — otherwise the settings field, AI sidebar input, and inline
+        // prompt (all raygui GuiTextBox, which now handles paste itself) would
+        // be bypassed and the paste would land in the terminal behind them.
+        bool text_field_capturing = ui_settings_open() || ui_inline_active()
+            || ui_sidebar_focused() || g_search_active;
         if ((((ctrl_down && shift_down) || cmd_down) && IsKeyPressed(KEY_V))
             || (shift_down && IsKeyPressed(KEY_INSERT))) {
-            do_paste(pty_fd, terminal);
-            clipboard_consumed = true;
-            while (GetCharPressed() != 0) { }
+            if (!text_field_capturing) {
+                do_paste(pty_fd, terminal);
+                clipboard_consumed = true;
+                while (GetCharPressed() != 0) { }
+            }
         }
 
         // Find overlay: Ctrl+F / Cmd+F toggles; while open it captures typing.
