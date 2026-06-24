@@ -1,0 +1,193 @@
+#include "config.h"
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static int failures = 0;
+
+#define EXPECT_TRUE(expr) do { \
+    if (!(expr)) { \
+        fprintf(stderr, "FAIL %s:%d: expected true: %s\n", __FILE__, __LINE__, #expr); \
+        failures++; \
+    } \
+} while (0)
+
+#define EXPECT_INT(actual, expected) do { \
+    int a__ = (actual); \
+    int e__ = (expected); \
+    if (a__ != e__) { \
+        fprintf(stderr, "FAIL %s:%d: expected %s == %d, got %d\n", \
+                __FILE__, __LINE__, #actual, e__, a__); \
+        failures++; \
+    } \
+} while (0)
+
+#define EXPECT_STR(actual, expected) do { \
+    const char *a__ = (actual); \
+    const char *e__ = (expected); \
+    if (strcmp(a__, e__) != 0) { \
+        fprintf(stderr, "FAIL %s:%d: expected %s == \"%s\", got \"%s\"\n", \
+                __FILE__, __LINE__, #actual, e__, a__); \
+        failures++; \
+    } \
+} while (0)
+
+static void write_file(const char *path, const char *text)
+{
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        fprintf(stderr, "fopen(%s): %s\n", path, strerror(errno));
+        exit(2);
+    }
+    fputs(text, f);
+    fclose(f);
+}
+
+static char *temp_config_path(void)
+{
+    char templ[] = "/tmp/fangs-config-test-XXXXXX";
+    char *dir = mkdtemp(templ);
+    if (!dir) {
+        fprintf(stderr, "mkdtemp: %s\n", strerror(errno));
+        exit(2);
+    }
+
+    size_t len = strlen(dir) + strlen("/config") + 1;
+    char *path = malloc(len);
+    if (!path) {
+        fprintf(stderr, "malloc failed\n");
+        exit(2);
+    }
+    snprintf(path, len, "%s/config", dir);
+    return path;
+}
+
+static void test_defaults(void)
+{
+    AppConfig cfg;
+    memset(&cfg, 0xff, sizeof(cfg));
+
+    config_defaults(&cfg);
+
+    EXPECT_STR(cfg.font_family, "JetBrainsMono Nerd Font");
+    EXPECT_INT(cfg.font_size, 16);
+    EXPECT_STR(cfg.theme, "dark");
+    EXPECT_INT(cfg.scrollback, 1000);
+    EXPECT_STR(cfg.provider, "openai");
+    EXPECT_STR(cfg.endpoint, "https://api.openai.com/v1/chat/completions");
+    EXPECT_STR(cfg.model, "gpt-4o-mini");
+    EXPECT_STR(cfg.api_key, "");
+    EXPECT_TRUE(cfg.stream);
+    EXPECT_INT(cfg.max_tokens, 1024);
+}
+
+static void test_load_missing_file_creates_defaults(void)
+{
+    char *path = temp_config_path();
+    AppConfig cfg;
+
+    EXPECT_TRUE(config_load(&cfg, path));
+    EXPECT_INT(access(path, F_OK), 0);
+    EXPECT_INT(cfg.font_size, 16);
+    EXPECT_STR(cfg.model, "gpt-4o-mini");
+
+    struct stat st;
+    EXPECT_INT(stat(path, &st), 0);
+    EXPECT_INT(st.st_mode & 0777, 0600);
+
+    free(path);
+}
+
+static void test_load_parses_ini_sections(void)
+{
+    char *path = temp_config_path();
+    write_file(path,
+        "  # comment before sections\n"
+        "[terminal]\n"
+        "font_family = Custom Mono\n"
+        "font_size   = 21\n"
+        "theme = light ; inline comment\n"
+        "scrollback=5000\n"
+        "\n"
+        "[ai]\n"
+        "provider = custom\n"
+        "endpoint = http://localhost:11434/v1/chat/completions\n"
+        "model = llama3.2\n"
+        "api_key = file-secret\n"
+        "stream = false\n"
+        "max_tokens = 256\n");
+
+    AppConfig cfg;
+    EXPECT_TRUE(config_load(&cfg, path));
+
+    EXPECT_STR(cfg.font_family, "Custom Mono");
+    EXPECT_INT(cfg.font_size, 21);
+    EXPECT_STR(cfg.theme, "light");
+    EXPECT_INT(cfg.scrollback, 5000);
+    EXPECT_STR(cfg.provider, "custom");
+    EXPECT_STR(cfg.endpoint, "http://localhost:11434/v1/chat/completions");
+    EXPECT_STR(cfg.model, "llama3.2");
+    EXPECT_STR(cfg.api_key, "file-secret");
+    EXPECT_TRUE(!cfg.stream);
+    EXPECT_INT(cfg.max_tokens, 256);
+
+    free(path);
+}
+
+static void test_save_round_trips_app_config(void)
+{
+    char *path = temp_config_path();
+    AppConfig cfg;
+    config_defaults(&cfg);
+
+    snprintf(cfg.font_family, sizeof(cfg.font_family), "%s", "Saved Mono");
+    cfg.font_size = 18;
+    snprintf(cfg.theme, sizeof(cfg.theme), "%s", "light");
+    cfg.scrollback = 3000;
+    snprintf(cfg.provider, sizeof(cfg.provider), "%s", "ollama");
+    snprintf(cfg.endpoint, sizeof(cfg.endpoint), "%s", "http://localhost:11434/v1/chat/completions");
+    snprintf(cfg.model, sizeof(cfg.model), "%s", "qwen2.5-coder");
+    snprintf(cfg.api_key, sizeof(cfg.api_key), "%s", "saved-secret");
+    cfg.stream = false;
+    cfg.max_tokens = 4096;
+
+    EXPECT_TRUE(config_save(&cfg, path));
+
+    AppConfig loaded;
+    EXPECT_TRUE(config_load(&loaded, path));
+    EXPECT_STR(loaded.font_family, "Saved Mono");
+    EXPECT_INT(loaded.font_size, 18);
+    EXPECT_STR(loaded.theme, "light");
+    EXPECT_INT(loaded.scrollback, 3000);
+    EXPECT_STR(loaded.provider, "ollama");
+    EXPECT_STR(loaded.endpoint, "http://localhost:11434/v1/chat/completions");
+    EXPECT_STR(loaded.model, "qwen2.5-coder");
+    EXPECT_STR(loaded.api_key, "saved-secret");
+    EXPECT_TRUE(!loaded.stream);
+    EXPECT_INT(loaded.max_tokens, 4096);
+
+    struct stat st;
+    EXPECT_INT(stat(path, &st), 0);
+    EXPECT_INT(st.st_mode & 0777, 0600);
+
+    free(path);
+}
+
+int main(void)
+{
+    test_defaults();
+    test_load_missing_file_creates_defaults();
+    test_load_parses_ini_sections();
+    test_save_round_trips_app_config();
+
+    if (failures != 0) {
+        fprintf(stderr, "%d config test failure(s)\n", failures);
+        return 1;
+    }
+
+    return 0;
+}
