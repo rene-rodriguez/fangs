@@ -2143,6 +2143,13 @@ int main(void)
             }
         }
 
+        // A clean shell exit (the user typed `exit` or pressed Ctrl-D) should
+        // close the window, just like any other terminal. Only an abnormal
+        // exit — a non-zero status or a signal — keeps the window open with
+        // the banner below so the user can scroll back and inspect output.
+        if (child_reaped && child_exit_status == 0)
+            break;
+
         if (ui_sidebar_visible() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
             && GetMouseX() < term_area_w) {
             ui_sidebar_focus(false);

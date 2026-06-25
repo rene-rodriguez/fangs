@@ -82,25 +82,27 @@ binary matches. Releases are built by CI (`.github/workflows/release.yml`) on ev
 
 ### Build from source
 
-Requires **CMake 3.19+**, **Ninja**, a C compiler, **libcurl**, and **Zig 0.15.2** on `PATH` (Zig
-compiles `libghostty-vt` at build time — the one non-obvious dependency).
+Requires **CMake 3.19+**, **Ninja**, a C compiler, and **libcurl**. Zig **0.15.2** compiles
+`libghostty-vt` at build time, but you don't have to install it — the build scripts fetch the
+pinned version into `vendor/` for you (`scripts/bootstrap-vendor.sh`, run automatically).
 
 > **Zig version matters.** Fangs pins `libghostty-vt` to a commit that builds with Zig **0.15.2**.
-> Arch/CachyOS `pacman` currently ships 0.16.0, which won't build the pin — grab 0.15.2 from
-> [ziglang.org/download](https://ziglang.org/download/) and put it first on `PATH`.
+> Arch/CachyOS `pacman` currently ships 0.16.0, which won't build the pin — so the scripts vendor
+> 0.15.2 rather than relying on `PATH`. (Already have 0.15.2 on `PATH`? It's used as-is on Linux.)
 
 ```bash
-# Linux / CachyOS
-sudo pacman -S --needed cmake ninja base-devel git curl   # plus Zig 0.15.2 on PATH
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build
+# Linux / CachyOS — bootstraps Zig 0.15.2, then builds
+sudo pacman -S --needed cmake ninja base-devel git curl
+bash scripts/linux-build.sh
 ./build/fangs
 
-# macOS (handles the Zig 0.15.2 ↔ macOS SDK workaround automatically)
+# macOS — bootstraps Zig 0.15.2 + handles the Zig 0.15.2 ↔ macOS SDK workaround
 bash scripts/macos-build.sh
 ./build/fangs
 ```
 
-Rebuilds are incremental and fast: `cmake --build build`.
+Rebuilds are incremental and fast: `cmake --build build` (after the first scripted build, the
+vendored Zig and the FetchContent deps are cached).
 
 - **Arch / CachyOS:** build a package straight from `packaging/aur/` (`makepkg -si`) — it fetches the
   pinned Zig for you. See [`packaging/aur/README.md`](packaging/aur/README.md).

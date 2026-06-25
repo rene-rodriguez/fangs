@@ -22,15 +22,24 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENDOR="$ROOT/vendor"
-ZIG_DIR="$VENDOR/zig-aarch64-macos-0.15.2"          # Zig 0.15.2 (see README/spec)
+case "$(uname -m)" in
+  arm64|aarch64) ZARCH=aarch64 ;;
+  x86_64)        ZARCH=x86_64 ;;
+  *) echo "ERROR: unsupported macOS arch '$(uname -m)'"; exit 1 ;;
+esac
+ZIG_DIR="$VENDOR/zig-$ZARCH-macos-0.15.2"           # Zig 0.15.2 (see README/spec)
 ZIG_BIN="$ZIG_DIR/zig"
-GHOSTLING="$VENDOR/ghostling"
 FAKE="$VENDOR/fakesdk"
 ZIGSHIM="$VENDOR/zigshim"
 XCRUNSHIM="$VENDOR/xcrunshim"
 
-[ -x "$ZIG_BIN" ] || { echo "ERROR: Zig 0.15.2 not found at $ZIG_BIN"; exit 1; }
-[ -d "$GHOSTLING" ] || { echo "ERROR: ghostling checkout not found at $GHOSTLING"; exit 1; }
+# Auto-populate vendor/ on a fresh checkout (idempotent). ghostling is NOT
+# needed — CMake's FetchContent pulls ghostty/libghostty-vt directly.
+if [ ! -x "$ZIG_BIN" ]; then
+  echo "==> Vendored Zig not found — running scripts/bootstrap-vendor.sh"
+  "$ROOT/scripts/bootstrap-vendor.sh"
+fi
+[ -x "$ZIG_BIN" ] || { echo "ERROR: Zig 0.15.2 not found at $ZIG_BIN (bootstrap failed)"; exit 1; }
 
 # Resolve the REAL SDK via the system xcrun (bypass any shim on PATH).
 REALSDK="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
