@@ -95,12 +95,20 @@ jobs:
           cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure
-      - name: Package
+      - name: Package CLI tarball
         run: bash scripts/package-macos.sh "$TAG"
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      - name: Bundle .app (for the Homebrew cask)
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: bash scripts/macos-bundle.sh "${TAG#v}"   # cask version has no leading 'v'
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
-        run: gh release upload "$TAG" "dist/fangs-macos-$(uname -m).tar.gz" --repo "$GITHUB_REPOSITORY" --clobber
+        run: |
+          gh release upload "$TAG" \
+            "dist/fangs-macos-$(uname -m).tar.gz" \
+            "dist/fangs-${TAG#v}-macos-$(uname -m).zip" \
+            --repo "$GITHUB_REPOSITORY" --clobber
