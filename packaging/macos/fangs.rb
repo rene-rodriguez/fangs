@@ -6,17 +6,16 @@
 # the macOS-26 SDK linker workaround (see scripts/macos-build.sh), which doesn't
 # fit Homebrew's sandbox — so we ship the bundle instead.
 #
-# MAINTAINER, per release:
-#   1. scripts/macos-bundle.sh <version>
-#   2. Upload dist/fangs-<version>-macos-arm64.zip to the GitHub release.
-#   3. Set `version` below and `sha256` to the value printed by the bundler
-#      (shasum -a 256 of the zip).
+# MAINTAINER, per release: the release workflow (.github/workflows/release.yml)
+# builds Fangs.app and uploads fangs-<version>-macos-arm64.zip automatically on
+# tag push. Then bump `version` below and set `sha256` to that zip's hash
+# (printed by the workflow's "Bundle .app" step, or `shasum -a 256` of the asset).
 #
 # Until the app is notarized with a Developer ID, it is only ad-hoc signed, so
 # Gatekeeper quarantines downloads. The caveats tell users how to clear it.
 cask "fangs" do
-  version "0.1.0"
-  sha256 "REPLACE_WITH_RELEASE_ZIP_SHA256"
+  version "0.1.1"
+  sha256 "3033a791d100f6b9c828094542af395b2992a1676652f6f9a79d35e5c9a83660"
 
   url "https://github.com/rene-rodriguez/fangs/releases/download/v#{version}/fangs-#{version}-macos-arm64.zip"
   name "Fangs"
