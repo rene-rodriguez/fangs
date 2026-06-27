@@ -1,6 +1,7 @@
 #include "ui_sidebar.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "raylib.h"
@@ -30,6 +31,13 @@ static SidebarMessage messages[MAX_MESSAGES];
 static int  message_count = 0;
 static int  streaming_index = -1;
 static float scroll_offset = 0.0f;
+
+// E1 (§15): oneshot context + prefill
+static char *oneshot_context = NULL;   // malloc'd, takes ownership
+
+// Track whether submit just happened so we can clear the oneshot context before
+// the next frame's draw (the context is consumed when the user sends).
+static bool consumed_oneshot = false;
 
 static bool point_in_rect(Vector2 p, Rect r)
 {
@@ -147,6 +155,24 @@ static float measure_wrapped_text(Font font, const char *text, float max_width,
                  line_spacing, BLANK, false);
     return y;
 }
+
+// --- E1 (§15): Block-to-sidebar integration -----------------------------------
+
+void ui_sidebar_prefill(const char *text)
+{
+    if (!text)
+        return;
+    copy_text(input_text, (int)sizeof(input_text), text);
+}
+
+void ui_sidebar_set_oneshot_context(char *context)
+{
+    if (oneshot_context)
+        free(oneshot_context);
+    oneshot_context = context;   // takes ownership (may be NULL)
+}
+
+// ------------------------------------------------------------------------------
 
 void ui_sidebar_toggle(void)
 {
@@ -402,12 +428,24 @@ bool ui_sidebar_draw(Font font, Rect bounds, char *out_prompt, int out_prompt_si
         copy_text(out_run, out_run_size, run_cmd);
 
     if (ui_sidebar_should_submit(enter_pressed, send_clicked, input_text)) {
-        copy_text(out_prompt, out_prompt_size, input_text);
+        // Consume oneshot context: prepend it to the prompt if set.
+        if (oneshot_context) {
+            snprintf(out_prompt, (size_t)out_prompt_size, "%s\n---\n%s",
+                     oneshot_context, input_text);
+            free(oneshot_context);
+            oneshot_context = NULL;
+        } else {
+            copy_text(out_prompt, out_prompt_size, input_text);
+        }
         input_text[0] = '\0';
         ui_sidebar_focus(true);
         scroll_offset = 1e9f;
         return true;
     }
+
+    // If the oneshot context was set but not yet consumed, offer a visual
+    // indication (draw a small indicator near the input box). No-op for now.
+    (void)consumed_oneshot;
 
     return false;
 }

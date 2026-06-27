@@ -41,4 +41,14 @@ const char *ui_sidebar_text(int index);
 bool ui_sidebar_draw(Font font, Rect bounds, char *out_prompt, int out_prompt_size,
                      char *out_run, int out_run_size, float scale);
 
+// --- E1 (§15): Block-to-sidebar integration -----------------------------------
+
+// Prefill the input box with `text` (e.g. the default question for a block).
+void ui_sidebar_prefill(const char *text);
+
+// Set a oneshot context string that will be prepended to the next user message
+// as a system-like preamble. The context is cleared after a single use.
+// Takes ownership of a malloc'd string (caller must not free after passing).
+void ui_sidebar_set_oneshot_context(char *context);
+
 #endif // FANGS_UI_SIDEBAR_H

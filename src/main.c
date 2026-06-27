@@ -9,6 +9,7 @@
 #include "raygui.h"
 #include <ghostty/vt.h>
 
+#include "ai_block.h"
 #include "ai_provider.h"
 #include "cmdblocks.h"
 #include "config.h"
@@ -16,6 +17,7 @@
 #include "inline_cmd.h"
 #include "layout.h"
 #include "pty.h"
+#include "redact.h"
 #include "term_engine.h"
 #include "theme.h"
 #include "ui_inline.h"
@@ -2294,18 +2296,54 @@ int main(void)
                         cell_width, cell_height, font_size, pad,
                         term_area_w, scrollbar_ptr, terminal, placement_iter);
 
-        // Command-block overlay: separators, gutter, ✓/✗ status badges, and a
-        // hover "copy output" button — all driven by OSC-133 marks. Drawn
-        // inside the terminal scissor so it never bleeds into the sidebar.
+        // Command-block overlay: separators, gutter, ✓/✗ status badges, and
+        // hover "copy output" / "Ask AI" buttons — all driven by OSC-133
+        // marks. Drawn inside the terminal scissor so it never bleeds into
+        // the sidebar.
+        CmdBlockAction cb_action = {0};
         bool block_click = IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
             && GetMouseX() < term_area_w
             && !ui_settings_open() && !ui_inline_active() && !ui_sidebar_focused();
         if (cmdblocks_draw(te, mono_font, &theme, cell_width, cell_height, font_size,
                            pad, term_area_w, term_rows,
-                           GetMouseX(), GetMouseY(), block_click)) {
+                           GetMouseX(), GetMouseY(), block_click,
+                           &cb_action)) {
             // The copy-button click shouldn't leave a stray 1-cell selection.
             g_sel.active = false;
             g_sel.dragging = false;
+
+            // E1 (§15): "Ask AI" click → open sidebar, build context, prefill.
+            if (cb_action.action == CB_ACTION_ASK_AI) {
+                // Build context text from the block's command+output+exit_code.
+                char ctx_buf[16384];
+                ai_block_build_context(cb_action.command,
+                                       cb_action.output ? cb_action.output : "",
+                                       cb_action.exit_code,
+                                       ctx_buf, (int)sizeof(ctx_buf));
+
+                // Redact secrets from the context before handing to the model.
+                char *redacted = redact_secrets(ctx_buf);
+                if (redacted) {
+                    ui_sidebar_set_oneshot_context(redacted);  // takes ownership
+                } else {
+                    ui_sidebar_set_oneshot_context(strdup(ctx_buf));
+                }
+
+                // Prefill the input with the default question.
+                ui_sidebar_prefill(ai_block_default_question(cb_action.exit_code));
+
+                // Ensure sidebar is open and focused.
+                if (!ui_sidebar_visible())
+                    ui_sidebar_toggle();
+                else
+                    ui_sidebar_focus(true);
+
+                // Free the malloc'd output from the action.
+                if (cb_action.output) {
+                    free(cb_action.output);
+                    cb_action.output = NULL;
+                }
+            }
         }
         EndScissorMode();
 
