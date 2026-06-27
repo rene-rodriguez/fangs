@@ -97,6 +97,8 @@ void ui_inline_draw(Font font, float scale)
     Rectangle row = {panel.x + 12*s, panel.y + 32*s, panel.width - 24*s, 28*s};
 
     if (state == INLINE_INPUT) {
+        if (CheckCollisionPointRec(GetMousePosition(), row))
+            SetMouseCursor(MOUSE_CURSOR_IBEAM);
         bool enter = IsKeyPressed(KEY_ENTER);
         int prev_ts = GuiGetStyle(DEFAULT, TEXT_SIZE);
         GuiSetStyle(DEFAULT, TEXT_SIZE, (int)(16 * s));

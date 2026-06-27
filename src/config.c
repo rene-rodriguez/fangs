@@ -94,6 +94,24 @@ static void apply_key_value(AppConfig *c, const char *section,
             if (parse_bool_value(value, &parsed))
                 c->cursor_blink = parsed;
         }
+    } else if (strcmp(section, "window") == 0) {
+        if (strcmp(key, "width") == 0) {
+            int parsed = 0;
+            if (parse_int_value(value, &parsed) && parsed > 0)
+                c->window_width = parsed;
+        } else if (strcmp(key, "height") == 0) {
+            int parsed = 0;
+            if (parse_int_value(value, &parsed) && parsed > 0)
+                c->window_height = parsed;
+        } else if (strcmp(key, "x") == 0) {
+            int parsed = 0;
+            if (parse_int_value(value, &parsed))
+                c->window_x = parsed;
+        } else if (strcmp(key, "y") == 0) {
+            int parsed = 0;
+            if (parse_int_value(value, &parsed))
+                c->window_y = parsed;
+        }
     } else if (strcmp(section, "ai") == 0) {
         if (strcmp(key, "provider") == 0) {
             copy_string(c->provider, sizeof(c->provider), value);
@@ -140,6 +158,11 @@ void config_defaults(AppConfig *c)
 
     c->cursor_style = 0;    // block
     c->cursor_blink  = true;
+
+    c->window_width = 800;
+    c->window_height = 600;
+    c->window_x = -1;
+    c->window_y = -1;
 }
 
 const char *config_default_path(void)
@@ -230,6 +253,12 @@ bool config_save(const AppConfig *c, const char *path)
         "cursor_style = %d\n"
         "cursor_blink = %s\n"
         "\n"
+        "[window]\n"
+        "width = %d\n"
+        "height = %d\n"
+        "x = %d\n"
+        "y = %d\n"
+        "\n"
         "[ai]\n"
         "provider = %s\n"
         "endpoint = %s\n"
@@ -243,6 +272,10 @@ bool config_save(const AppConfig *c, const char *path)
         c->scrollback,
         c->cursor_style,
         c->cursor_blink ? "true" : "false",
+        c->window_width,
+        c->window_height,
+        c->window_x,
+        c->window_y,
         c->provider,
         c->endpoint,
         c->model,

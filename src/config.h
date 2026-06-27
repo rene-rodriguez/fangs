@@ -19,6 +19,12 @@ typedef struct {
     // E4: cursor configuration
     int cursor_style;    // 0=block, 1=bar, 2=underline (default 0)
     bool cursor_blink;   // default true
+
+    // E7: persisted window geometry. x/y of -1 means "let the OS place it".
+    int window_width;
+    int window_height;
+    int window_x;
+    int window_y;
 } AppConfig;
 
 void config_defaults(AppConfig *c);

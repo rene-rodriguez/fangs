@@ -728,6 +728,8 @@ bool ui_sidebar_draw(Font font, Rect bounds, char *out_prompt, int out_prompt_si
             };
             bool copy_hover = CheckCollisionPointRec(mouse, copy_btn)
                            && point_in_rect(mouse, history);
+            if (copy_hover)
+                SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
             DrawRectangleRounded(copy_btn, 0.28f, 5,
                                  copy_hover ? UI2RAY(g_ui_theme.run_button_hover)
                                             : UI2RAY(g_ui_theme.run_button));
@@ -753,6 +755,8 @@ bool ui_sidebar_draw(Font font, Rect bounds, char *out_prompt, int out_prompt_si
             Rectangle btn = {(float)history.x, y, 60.0f*s, button_h};
             bool hover = CheckCollisionPointRec(mouse, btn)
                       && point_in_rect(mouse, history);
+            if (hover)
+                SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
             DrawRectangleRec(btn, hover ? UI2RAY(g_ui_theme.run_button_hover)
                                         : UI2RAY(g_ui_theme.run_button));
             DrawTextEx(font, "Run", (Vector2){btn.x + 14.0f*s, btn.y + 3.0f*s},
@@ -788,6 +792,8 @@ bool ui_sidebar_draw(Font font, Rect bounds, char *out_prompt, int out_prompt_si
         input_bounds.x + input_bounds.width + gap,
         input_bounds.y, (float)send_w, (float)input_h
     };
+    if (CheckCollisionPointRec(mouse, input_bounds))
+        SetMouseCursor(MOUSE_CURSOR_IBEAM);
 
     if (focus_lock_once) {
         // The click that opened the sidebar this frame must not unfocus it.
@@ -827,6 +833,8 @@ bool ui_sidebar_draw(Font font, Rect bounds, char *out_prompt, int out_prompt_si
                    (Vector2){tx, card_rect.y + 30.0f * s},
                    13.0f * s, 0, UI2RAY(g_ui_theme.subtitle));
         Rectangle open_btn = {tx, card_rect.y + 52.0f * s, 120.0f * s, 22.0f * s};
+        if (CheckCollisionPointRec(mouse, open_btn))
+            SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
         if (GuiButton(open_btn, "Open Settings")) {
             // ui_settings_open() is the query; ui_settings_toggle() actually
             // opens the modal. Only toggle when it's currently closed.
@@ -849,6 +857,8 @@ bool ui_sidebar_draw(Font font, Rect bounds, char *out_prompt, int out_prompt_si
             input_editing = !input_editing;
             sidebar_focused = input_editing;
         }
+        if (show_send && CheckCollisionPointRec(mouse, send_bounds))
+            SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
         send_clicked = show_send ? GuiButton(send_bounds, "Send") : false;
     }
 

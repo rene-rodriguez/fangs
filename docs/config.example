@@ -13,6 +13,12 @@ scrollback = 1000
 cursor_style = 0      ;; 0=block, 1=bar, 2=underline
 cursor_blink = true
 
+[window]
+width = 800
+height = 600
+x = -1                ;; -1 means let macOS/Linux place the window
+y = -1
+
 [ai]
 provider = openai     ;; "openai" (OpenAI-compatible) or "anthropic"
 endpoint = https://api.openai.com/v1/chat/completions

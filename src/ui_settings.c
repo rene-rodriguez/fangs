@@ -96,6 +96,8 @@ static void draw_labeled_text_box(const char *label, Rectangle bounds,
                                   float s)
 {
     GuiLabel((Rectangle){bounds.x, bounds.y - 22*s, bounds.width, 18*s}, label);
+    if (CheckCollisionPointRec(GetMousePosition(), bounds))
+        SetMouseCursor(MOUSE_CURSOR_IBEAM);
     if (GuiTextBox(bounds, text, text_size, editing[field]))
         begin_edit(field);
 }
@@ -105,6 +107,8 @@ static void draw_labeled_spinner(const char *label, Rectangle bounds,
                                  EditField field, float s)
 {
     GuiLabel((Rectangle){bounds.x, bounds.y - 22*s, bounds.width, 18*s}, label);
+    if (CheckCollisionPointRec(GetMousePosition(), bounds))
+        SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
     if (GuiSpinner(bounds, NULL, value, min_value, max_value, editing[field]))
         begin_edit(field);
 }
@@ -180,7 +184,10 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
 
     GuiLabel((Rectangle){x, y - 22.0f*s, half_w, 18*s}, "Theme");
     int active_theme = theme_index_of(draft.theme);
-    GuiComboBox((Rectangle){x, y, half_w, row_h}, theme_combo_list(), &active_theme);
+    Rectangle theme_bounds = {x, y, half_w, row_h};
+    if (CheckCollisionPointRec(GetMousePosition(), theme_bounds))
+        SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
+    GuiComboBox(theme_bounds, theme_combo_list(), &active_theme);
     snprintf(draft.theme, sizeof(draft.theme), "%s", theme_slug(active_theme));
 
     draw_labeled_spinner("Scrollback", (Rectangle){x + half_w + col_gap, y, half_w, row_h},
@@ -193,7 +200,10 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
     GuiLabel((Rectangle){x, y - 22.0f*s, full_w, 18*s}, "Provider");
     int active_provider = provider_index(draft.provider);
     int prev_provider = active_provider;
-    GuiToggleGroup((Rectangle){x, y, 110*s, row_h}, "openai;anthropic;ollama;custom", &active_provider);
+    Rectangle provider_bounds = {x, y, 110*s, row_h};
+    if (CheckCollisionPointRec(GetMousePosition(), provider_bounds))
+        SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
+    GuiToggleGroup(provider_bounds, "openai;anthropic;ollama;custom", &active_provider);
     snprintf(draft.provider, sizeof(draft.provider), "%s", provider_from_index(active_provider));
     if (active_provider != prev_provider)
         apply_provider_defaults(&draft, draft.provider);
@@ -216,7 +226,10 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
     GuiLabel((Rectangle){x, y - 22.0f*s, half_w, 18*s}, "API key");
     if (key_from_env)
         GuiDisable();
-    if (GuiTextBox((Rectangle){x, y, half_w, row_h}, draft.api_key,
+    Rectangle api_key_bounds = {x, y, half_w, row_h};
+    if (!key_from_env && CheckCollisionPointRec(GetMousePosition(), api_key_bounds))
+        SetMouseCursor(MOUSE_CURSOR_IBEAM);
+    if (GuiTextBox(api_key_bounds, draft.api_key,
                    (int)sizeof(draft.api_key), editing[EDIT_API_KEY])) {
         begin_edit(EDIT_API_KEY);
     }
@@ -226,12 +239,18 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
     }
 
     bool stream_checked = draft.stream;
-    GuiCheckBox((Rectangle){x + half_w + col_gap, y + 6.0f*s, 18.0f*s, 18.0f*s},
-                "Stream responses", &stream_checked);
+    Rectangle stream_bounds = {x + half_w + col_gap, y + 6.0f*s, 18.0f*s, 18.0f*s};
+    if (CheckCollisionPointRec(GetMousePosition(), stream_bounds))
+        SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
+    GuiCheckBox(stream_bounds, "Stream responses", &stream_checked);
     draft.stream = stream_checked;
 
     Rectangle cancel = {panel.x + panel.width - 202.0f*s, panel.y + panel.height - 54.0f*s, 82.0f*s, 30.0f*s};
     Rectangle save = {panel.x + panel.width - 106.0f*s, panel.y + panel.height - 54.0f*s, 82.0f*s, 30.0f*s};
+
+    if (CheckCollisionPointRec(GetMousePosition(), cancel)
+        || CheckCollisionPointRec(GetMousePosition(), save))
+        SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
 
     if (GuiButton(cancel, "Cancel")) {
         settings_open = false;

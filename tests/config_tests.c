@@ -83,6 +83,10 @@ static void test_defaults(void)
     EXPECT_STR(cfg.api_key, "");
     EXPECT_TRUE(cfg.stream);
     EXPECT_INT(cfg.max_tokens, 1024);
+    EXPECT_INT(cfg.window_width, 800);
+    EXPECT_INT(cfg.window_height, 600);
+    EXPECT_INT(cfg.window_x, -1);
+    EXPECT_INT(cfg.window_y, -1);
 }
 
 static void test_load_missing_file_creates_defaults(void)
@@ -113,6 +117,12 @@ static void test_load_parses_ini_sections(void)
         "theme = light ; inline comment\n"
         "scrollback=5000\n"
         "\n"
+        "[window]\n"
+        "width = 1440\n"
+        "height = 900\n"
+        "x = 120\n"
+        "y = 80\n"
+        "\n"
         "[ai]\n"
         "provider = custom\n"
         "endpoint = http://localhost:11434/v1/chat/completions\n"
@@ -128,6 +138,10 @@ static void test_load_parses_ini_sections(void)
     EXPECT_INT(cfg.font_size, 21);
     EXPECT_STR(cfg.theme, "light");
     EXPECT_INT(cfg.scrollback, 5000);
+    EXPECT_INT(cfg.window_width, 1440);
+    EXPECT_INT(cfg.window_height, 900);
+    EXPECT_INT(cfg.window_x, 120);
+    EXPECT_INT(cfg.window_y, 80);
     EXPECT_STR(cfg.provider, "custom");
     EXPECT_STR(cfg.endpoint, "http://localhost:11434/v1/chat/completions");
     EXPECT_STR(cfg.model, "llama3.2");
@@ -148,6 +162,10 @@ static void test_save_round_trips_app_config(void)
     cfg.font_size = 18;
     snprintf(cfg.theme, sizeof(cfg.theme), "%s", "light");
     cfg.scrollback = 3000;
+    cfg.window_width = 1280;
+    cfg.window_height = 720;
+    cfg.window_x = 42;
+    cfg.window_y = 84;
     snprintf(cfg.provider, sizeof(cfg.provider), "%s", "ollama");
     snprintf(cfg.endpoint, sizeof(cfg.endpoint), "%s", "http://localhost:11434/v1/chat/completions");
     snprintf(cfg.model, sizeof(cfg.model), "%s", "qwen2.5-coder");
@@ -163,6 +181,10 @@ static void test_save_round_trips_app_config(void)
     EXPECT_INT(loaded.font_size, 18);
     EXPECT_STR(loaded.theme, "light");
     EXPECT_INT(loaded.scrollback, 3000);
+    EXPECT_INT(loaded.window_width, 1280);
+    EXPECT_INT(loaded.window_height, 720);
+    EXPECT_INT(loaded.window_x, 42);
+    EXPECT_INT(loaded.window_y, 84);
     EXPECT_STR(loaded.provider, "ollama");
     EXPECT_STR(loaded.endpoint, "http://localhost:11434/v1/chat/completions");
     EXPECT_STR(loaded.model, "qwen2.5-coder");

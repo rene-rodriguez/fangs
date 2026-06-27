@@ -3,8 +3,9 @@
 Two artifacts live here:
 
 - **`scripts/macos-bundle.sh`** (in the repo root `scripts/`) — turns the built
-  binary into a relocatable, ad-hoc-signed `Fangs.app` plus a
-  distributable `.zip`.
+  binary into a relocatable `Fangs.app` plus a distributable `.zip`. Local
+  builds are ad-hoc signed by default; release builds use Developer ID signing,
+  notarization, and stapling when the signing environment is present.
 - **`fangs.rb`** — a Homebrew **cask** that installs the prebuilt `.app`
   from a GitHub release.
 
@@ -24,8 +25,13 @@ The bundler:
   `@executable_path/../Frameworks` (no build-tree path leaks). Everything else
   the binary links — `libcurl`, the system frameworks — ships with macOS;
 - writes `Info.plist`, installs `assets/fangs.icns`;
-- **ad-hoc code-signs** inner-out (rewriting load commands invalidates any
-  signature, so this is required for the app to launch on Apple Silicon);
+- code-signs inner-out (rewriting load commands invalidates any existing
+  signature). Set `FANGS_CODESIGN_IDENTITY` to use Developer ID signing with
+  hardened runtime entitlements; otherwise the script uses ad-hoc signing for
+  local builds;
+- with Developer ID signing enabled, submits a temporary app zip to
+  `notarytool --wait`, staples the accepted ticket, and validates with
+  `stapler` + `spctl`;
 - zips with `ditto` and prints the `sha256` for the cask.
 
 The bundle is verified self-contained with `otool -L` at the end of the run, and
@@ -45,17 +51,31 @@ brew install --cask <tap>/fangs
 
 ## Cutting a release (maintainer)
 
-1. `scripts/macos-bundle.sh <version>`
-2. Upload `dist/fangs-<version>-macos-arm64.zip` to the GitHub release `v<version>`.
-3. In `fangs.rb`, set `version` and paste the `sha256` the bundler printed.
+1. Ensure the CI/release host has a paid Apple Developer ID certificate and
+   notarization credentials.
+2. `scripts/macos-bundle.sh <version>`
+   with either `FANGS_NOTARY_KEYCHAIN_PROFILE` or
+   `APPLE_ID` + `APPLE_TEAM_ID` + `APPLE_APP_SPECIFIC_PASSWORD`.
+3. Upload `dist/fangs-<version>-macos-arm64.zip` to the GitHub release `v<version>`.
+4. In `fangs.rb`, set `version` and paste the `sha256` the bundler printed.
+
+The GitHub release workflow expects these secrets for notarized macOS assets:
+
+- `MACOS_DEVELOPER_ID_CERTIFICATE_BASE64`
+- `MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD`
+- `MACOS_DEVELOPER_ID_APPLICATION_IDENTITY`
+- `APPLE_ID`
+- `APPLE_TEAM_ID`
+- `APPLE_APP_SPECIFIC_PASSWORD`
+
+Optional:
+
+- `MACOS_KEYCHAIN_PASSWORD`
 
 ## Known limitations / TODO
 
-- **Notarization.** The app is only **ad-hoc signed**. Downloaded copies are
-  Gatekeeper-quarantined, so first launch needs right-click → Open (or
-  `xattr -dr com.apple.quarantine "<app>"`). Proper distribution needs a paid
-  Apple Developer ID + `notarytool` — out of scope for this pass; the cask
-  `caveats` document the workaround.
+- **Notarization requires paid Apple credentials.** Local builds remain ad-hoc
+  unless `FANGS_CODESIGN_IDENTITY` and notary credentials are provided.
 - **arm64 only.** The build/bundle here targets Apple Silicon (the dev machine).
   An x86-64 / universal build + a second cask arch branch is a follow-up.
 - **Login shell.** Launched from Finder, the app spawns `$SHELL` as a
