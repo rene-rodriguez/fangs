@@ -8,8 +8,9 @@
 #     Contents/Frameworks/ and rewrites the load commands so the .app is
 #     relocatable (@executable_path/../Frameworks) with no build-tree rpath leak
 #   - writes Info.plist, installs the icon if present
-#   - ad-hoc code-signs (install_name_tool invalidates signatures, so this is
-#     required for the app to launch on Apple Silicon)
+#   - code-signs inner-out. By default this is ad-hoc for local dev; when
+#     FANGS_CODESIGN_IDENTITY is set it uses Developer ID + hardened runtime
+#     entitlements, notarizes with notarytool, and staples the ticket
 #   - zips the result for distribution / Homebrew cask
 #
 # Everything else the binary links (libcurl, the system frameworks) ships with
@@ -26,6 +27,8 @@ VERSION="${1:-0.1.0}"
 BIN="$ROOT/build/fangs"
 APP="$ROOT/dist/Fangs.app"
 BUNDLE_ID="io.github.rene-rodriguez.fangs"
+ENTITLEMENTS="$ROOT/packaging/macos/hardened-runtime.entitlements"
+SIGN_IDENTITY="${FANGS_CODESIGN_IDENTITY:-}"
 
 # --- 0. Ensure the binary exists ---------------------------------------------
 if [ ! -x "$BIN" ]; then
@@ -117,14 +120,48 @@ PLIST
 cp "$ROOT/LICENSE" "$RES/LICENSE" 2>/dev/null || true
 cp "$ROOT/assets/OFL-JetBrainsMono.txt" "$RES/LICENSE-OFL-JetBrainsMono.txt" 2>/dev/null || true
 
-# --- 5. Ad-hoc code-sign (inner-out) -----------------------------------------
-echo "==> Code-signing (ad-hoc)"
-codesign --force --sign - "$FRAMEWORKS/$DYNAME"
-codesign --force --sign - "$APPBIN"
-codesign --force --sign - "$APP"
-codesign --verify --deep --strict "$APP" && echo "==> Signature verified"
+# --- 5. Code-sign (inner-out) ------------------------------------------------
+if [ -n "$SIGN_IDENTITY" ]; then
+  echo "==> Code-signing with Developer ID: $SIGN_IDENTITY"
+  CODESIGN_ARGS=(--force --sign "$SIGN_IDENTITY" --timestamp --options runtime --entitlements "$ENTITLEMENTS")
+else
+  echo "==> Code-signing (ad-hoc; local builds only)"
+  CODESIGN_ARGS=(--force --sign -)
+fi
 
-# --- 6. Zip for distribution -------------------------------------------------
+codesign "${CODESIGN_ARGS[@]}" "$FRAMEWORKS/$DYNAME"
+codesign "${CODESIGN_ARGS[@]}" "$APPBIN"
+codesign "${CODESIGN_ARGS[@]}" "$APP"
+codesign --verify --deep --strict --verbose=2 "$APP" && echo "==> Signature verified"
+
+# --- 6. Notarize + staple when Developer ID signing is enabled ---------------
+if [ -n "$SIGN_IDENTITY" ]; then
+  NOTARY_AUTH=()
+  if [ -n "${FANGS_NOTARY_KEYCHAIN_PROFILE:-}" ]; then
+    NOTARY_AUTH=(--keychain-profile "$FANGS_NOTARY_KEYCHAIN_PROFILE")
+  elif [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]; then
+    NOTARY_AUTH=(--apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD")
+  else
+    echo "ERROR: Developer ID signing is enabled but no notarization credentials were provided." >&2
+    echo "Set FANGS_NOTARY_KEYCHAIN_PROFILE, or APPLE_ID + APPLE_TEAM_ID + APPLE_APP_SPECIFIC_PASSWORD." >&2
+    exit 1
+  fi
+
+  NOTARY_ZIP="$ROOT/dist/fangs-$VERSION-macos-$(uname -m)-notary.zip"
+  rm -f "$NOTARY_ZIP"
+  ( cd "$ROOT/dist" && /usr/bin/ditto -c -k --keepParent "Fangs.app" "$NOTARY_ZIP" )
+
+  echo "==> Submitting for notarization"
+  xcrun notarytool submit "$NOTARY_ZIP" --wait "${NOTARY_AUTH[@]}"
+  rm -f "$NOTARY_ZIP"
+
+  echo "==> Stapling notarization ticket"
+  xcrun stapler staple "$APP"
+  xcrun stapler validate "$APP"
+  spctl -a -vvv -t exec "$APP"
+fi
+
+# --- 7. Zip for distribution -------------------------------------------------
 ZIP="$ROOT/dist/fangs-$VERSION-macos-$(uname -m).zip"
 rm -f "$ZIP"
 ( cd "$ROOT/dist" && /usr/bin/ditto -c -k --keepParent "Fangs.app" "$ZIP" )

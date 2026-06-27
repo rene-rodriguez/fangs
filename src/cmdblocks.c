@@ -402,6 +402,8 @@ bool cmdblocks_draw(CmdBlocks *cb, TermEngine *te, Font font, const Theme *th,
 
         bool copy_over = (mouse_x >= copy_btn.x && mouse_x < copy_btn.x + copy_btn.width
                           && mouse_y >= copy_btn.y && mouse_y < copy_btn.y + copy_btn.height);
+        if (copy_over)
+            SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
         DrawRectangleRounded(copy_btn, 0.35f, 6, Fade(st, copy_over ? 0.45f : 0.22f));
         DrawTextEx(font, copy_label,
                    (Vector2){ copy_btn.x + padx, copy_btn.y + (btn_h - copy_ts.y) / 2 },
@@ -421,6 +423,8 @@ bool cmdblocks_draw(CmdBlocks *cb, TermEngine *te, Font font, const Theme *th,
 
         bool ai_over = (mouse_x >= ai_btn.x && mouse_x < ai_btn.x + ai_btn.width
                         && mouse_y >= ai_btn.y && mouse_y < ai_btn.y + ai_btn.height);
+        if (ai_over)
+            SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
         DrawRectangleRounded(ai_btn, 0.35f, 6, Fade(st, ai_over ? 0.45f : 0.22f));
         DrawTextEx(font, ai_label,
                    (Vector2){ ai_btn.x + padx, ai_btn.y + (btn_h - ai_ts.y) / 2 },

@@ -39,6 +39,9 @@
 #define FANGS_DEFAULT_FONT_SIZE 16
 #define FANGS_MIN_FONT_SIZE     6
 #define FANGS_MAX_FONT_SIZE     96
+#define FANGS_MIN_WINDOW_W      320
+#define FANGS_MIN_WINDOW_H      240
+#define FANGS_MAX_WINDOW_DIM    10000
 
 // Max tabs (Cmd+1..9 selects tab N; 0 reserved).
 #define FANGS_MAX_TABS 9
@@ -365,6 +368,57 @@ static bool export_screen_image(const char *path)
     bool ok = ExportImage(img, path);
     UnloadImage(img);
     return ok;
+}
+
+static int clamp_window_dimension(int value, int fallback, int min_value)
+{
+    if (value < min_value)
+        return fallback;
+    if (value > FANGS_MAX_WINDOW_DIM)
+        return FANGS_MAX_WINDOW_DIM;
+    return value;
+}
+
+static bool window_rect_visible_on_any_monitor(int x, int y, int w, int h)
+{
+    int count = GetMonitorCount();
+    if (count < 1)
+        return true;
+
+    for (int i = 0; i < count; i++) {
+        Vector2 mp = GetMonitorPosition(i);
+        int mx = (int)mp.x;
+        int my = (int)mp.y;
+        int mw = GetMonitorWidth(i);
+        int mh = GetMonitorHeight(i);
+        bool intersects = x < mx + mw && x + w > mx
+                       && y < my + mh && y + h > my;
+        if (intersects)
+            return true;
+    }
+    return false;
+}
+
+static void restore_window_position_if_visible(const AppConfig *cfg)
+{
+    if (!cfg || cfg->window_x < 0 || cfg->window_y < 0)
+        return;
+    int w = GetScreenWidth();
+    int h = GetScreenHeight();
+    if (window_rect_visible_on_any_monitor(cfg->window_x, cfg->window_y, w, h))
+        SetWindowPosition(cfg->window_x, cfg->window_y);
+}
+
+static bool save_window_geometry(AppConfig *cfg, const char *config_path)
+{
+    if (!cfg || !config_path)
+        return false;
+    Vector2 pos = GetWindowPosition();
+    cfg->window_width = GetScreenWidth();
+    cfg->window_height = GetScreenHeight();
+    cfg->window_x = (int)pos.x;
+    cfg->window_y = (int)pos.y;
+    return config_save(cfg, config_path);
 }
 
 static bool write_phase3_smoke_report(const char *path,
@@ -2059,8 +2113,12 @@ int main(void)
     // framebuffer at the native display resolution.
     SetConfigFlags(FLAG_WINDOW_HIGHDPI);
 
+    int initial_window_w = clamp_window_dimension(cfg.window_width, 800, FANGS_MIN_WINDOW_W);
+    int initial_window_h = clamp_window_dimension(cfg.window_height, 600, FANGS_MIN_WINDOW_H);
+
     // Initialize window
-    InitWindow(800, 600, "Fangs");
+    InitWindow(initial_window_w, initial_window_h, "Fangs");
+    restore_window_position_if_visible(&cfg);
     // raylib's default exit key is ESC. A terminal must pass ESC straight
     // through to the child (vim normal mode, cancelling prompts, every TUI),
     // and the settings modal needs ESC to dismiss itself — not kill the app.
@@ -2274,6 +2332,20 @@ int main(void)
         bool shift_down = IsKeyDown(KEY_LEFT_SHIFT)   || IsKeyDown(KEY_RIGHT_SHIFT);
         bool cmd_down   = IsKeyDown(KEY_LEFT_SUPER)   || IsKeyDown(KEY_RIGHT_SUPER);
         bool alt_down   = IsKeyDown(KEY_LEFT_ALT)     || IsKeyDown(KEY_RIGHT_ALT);
+
+        int mouse_cursor = MOUSE_CURSOR_DEFAULT;
+        if (!ui_settings_open() && !ui_inline_active()
+            && GetMouseX() >= lo.terminal.x && GetMouseX() < lo.terminal.x + term_area_w
+            && GetMouseY() >= lo.terminal.y && GetMouseY() < lo.terminal.y + lo.terminal.h) {
+            int ucc = (GetMouseX() - lo.terminal.x - pad) / cell_width;
+            int ucr = (GetMouseY() - lo.terminal.y - pad) / cell_height;
+            char hover_url[2048];
+            mouse_cursor = url_at(ucr, ucc, hover_url, (int)sizeof(hover_url))
+                ? MOUSE_CURSOR_POINTING_HAND
+                : MOUSE_CURSOR_IBEAM;
+        }
+        SetMouseCursor(mouse_cursor);
+
         // Tab/split/focus chords: Cmd on macOS, Ctrl+Shift on Linux. Plain
         // Ctrl+<key> must reach the shell (Ctrl+D EOF, Ctrl+W word-erase,
         // Ctrl+T transpose), so these never trigger on bare Ctrl — matching the
@@ -3020,11 +3092,13 @@ cleanup:
     }
     if (mono_font.texture.id != 0)
         UnloadFont(mono_font);
+    if (!save_window_geometry(&cfg, config_path))
+        fprintf(stderr, "warning: failed to save window geometry at %s\n", config_path);
     CloseWindow();
     // Destroy all tabs/sessions — this closes PTY fds, kills children,
     // destroys term engines, and frees userdata via session_destroy().
     app_destroy_all();
-    if (g_cmdblocks) cmdblocks_destroy(g_cmdblocks);
+    g_cmdblocks = NULL;
     ai_global_cleanup();
     return exit_code;
 }

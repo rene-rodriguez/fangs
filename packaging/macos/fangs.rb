@@ -11,8 +11,6 @@
 # tag push. Then bump `version` below and set `sha256` to that zip's hash
 # (printed by the workflow's "Bundle .app" step, or `shasum -a 256` of the asset).
 #
-# Until the app is notarized with a Developer ID, it is only ad-hoc signed, so
-# Gatekeeper quarantines downloads. The caveats tell users how to clear it.
 cask "fangs" do
   version "0.1.1"
   sha256 "3033a791d100f6b9c828094542af395b2992a1676652f6f9a79d35e5c9a83660"
@@ -28,11 +26,6 @@ cask "fangs" do
   app "Fangs.app"
 
   caveats <<~EOS
-    Fangs is ad-hoc signed, not yet notarized. On first launch macOS may
-    say it "cannot be opened". Either right-click the app and choose Open, or run:
-
-      xattr -dr com.apple.quarantine "#{appdir}/Fangs.app"
-
     For OSC-133 command blocks, add the shell snippet from docs/shell-integration.md.
     Set FANGS_API_KEY in your environment to enable the AI features.
   EOS
