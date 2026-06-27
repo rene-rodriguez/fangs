@@ -228,6 +228,67 @@ static char *block_command_text(GhosttyTerminal term, int top_v)
     return NULL;
 }
 
+static bool fill_block_action(GhosttyTerminal term, int row, int next_v,
+                              int rows, int exit_code,
+                              CmdBlockAction *action)
+{
+    if (!action)
+        return false;
+
+    action->action = CB_ACTION_ASK_AI;
+    action->exit_code = exit_code;
+    action->command[0] = '\0';
+    action->output = NULL;
+    action->output_len = 0;
+
+    char *cmd = block_command_text(term, row);
+    if (cmd) {
+        snprintf(action->command, sizeof(action->command), "%s", cmd);
+        free(cmd);
+    }
+
+    action->output = block_output_text(term, row, next_v, rows);
+    action->output_len = action->output ? (int)strlen(action->output) : 0;
+    return true;
+}
+
+bool cmdblocks_latest_action(CmdBlocks *cb, TermEngine *te, int rows,
+                             CmdBlockAction *action)
+{
+    if (action)
+        action->action = CB_ACTION_NONE;
+    if (!cb || !te || !action)
+        return false;
+
+    GhosttyTerminal term = term_engine_terminal(te);
+    GhosttyTrackedGridRef ref = NULL;
+    int exit_code = -1;
+
+    if (cb->cur_has && cb->cur_done) {
+        ref = cb->cur_top;
+        exit_code = cb->cur_code;
+    } else if (cb->count > 0) {
+        int idx = (cb->head + cb->count - 1) % CB_RING;
+        ref = cb->ring[idx].top;
+        exit_code = cb->ring[idx].code;
+    } else {
+        return false;
+    }
+
+    int row = 0;
+    if (!top_vrow(ref, &row) || row < 0 || row >= rows)
+        return false;
+
+    int next_v = rows;
+    if (!(cb->cur_has && cb->cur_done) && cb->cur_top) {
+        int cur_row = rows;
+        if (top_vrow(cb->cur_top, &cur_row) && cur_row > row && cur_row <= rows)
+            next_v = cur_row;
+    }
+
+    return fill_block_action(term, row, next_v, rows, exit_code, action);
+}
+
 bool cmdblocks_draw(CmdBlocks *cb, TermEngine *te, Font font, const Theme *th,
                     int cell_w, int cell_h, int font_size,
                     int pad, int term_area_w, int rows,
@@ -372,23 +433,7 @@ bool cmdblocks_draw(CmdBlocks *cb, TermEngine *te, Font font, const Theme *th,
                 consumed = true;
             } else if (ai_over) {
                 // Fill in the action so main.c can respond.
-                if (action) {
-                    action->action = CB_ACTION_ASK_AI;
-                    action->exit_code = items[hovered].code;
-
-                    // Extract command text from the prompt row.
-                    char *cmd = block_command_text(term, row);
-                    if (cmd) {
-                        snprintf(action->command, sizeof(action->command), "%s", cmd);
-                        free(cmd);
-                    } else {
-                        action->command[0] = '\0';
-                    }
-
-                    // Extract output text.
-                    action->output = block_output_text(term, row, next_v, rows);
-                    action->output_len = action->output ? (int)strlen(action->output) : 0;
-                }
+                fill_block_action(term, row, next_v, rows, items[hovered].code, action);
                 consumed = true;
             }
         }

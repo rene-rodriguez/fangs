@@ -1831,6 +1831,37 @@ static const char *resolve_api_key(const AppConfig *cfg)
     return cfg->api_key;
 }
 
+static void open_sidebar_for_cmdblock_action(const CmdBlockAction *action)
+{
+    if (!action || action->action != CB_ACTION_ASK_AI)
+        return;
+
+    char ctx_buf[16384];
+    ai_block_build_context(action->command,
+                           action->output ? action->output : "",
+                           action->exit_code,
+                           ctx_buf, (int)sizeof(ctx_buf));
+    char *redacted = redact_secrets(ctx_buf);
+    if (redacted)
+        ui_sidebar_set_oneshot_context(redacted);
+    else
+        ui_sidebar_set_oneshot_context(strdup(ctx_buf));
+
+    ui_sidebar_prefill(ai_block_default_question(action->exit_code));
+    ui_sidebar_open_focused();
+}
+
+static void cmdblock_action_free(CmdBlockAction *action)
+{
+    if (!action)
+        return;
+    if (action->output) {
+        free(action->output);
+        action->output = NULL;
+    }
+    action->output_len = 0;
+}
+
 // Build and launch a streaming AI request for `prompt`, using redacted recent
 // terminal output as context. Returns NULL if there's no key or setup fails.
 // block_context (§15): when non-NULL, it is the already-redacted command-block
@@ -2259,6 +2290,22 @@ int main(void)
             if (IsKeyPressed(KEY_DOWN)) block_nav_consumed = cmdblocks_navigate(g_cmdblocks, te, +1);
         }
 
+        // Ask AI about the latest finished command block: keyboard equivalent
+        // of the hover "Ask AI" button, using the same §15 action path.
+        bool ask_last_command_consumed = false;
+        if (cmd_down && shift_down && IsKeyPressed(KEY_SLASH)
+            && !ui_settings_open() && !ui_inline_active() && !g_search_active) {
+            CmdBlockAction latest_action = {0};
+            if (cmdblocks_latest_action(g_cmdblocks, te, term_rows, &latest_action)) {
+                open_sidebar_for_cmdblock_action(&latest_action);
+                cmdblock_action_free(&latest_action);
+            } else {
+                toast_push(TOAST_INFO, "No command block to ask about.");
+            }
+            ask_last_command_consumed = true;
+            while (GetCharPressed() != 0) { }
+        }
+
         // Clipboard: Ctrl+Shift+C/V (Linux) or Cmd+C/V (macOS); Shift+Insert pastes.
         // Intercept BEFORE handle_input so Ctrl+Shift+C never reaches the pty as ^C.
         bool clipboard_consumed = false;
@@ -2567,6 +2614,7 @@ int main(void)
         if (!ui_inline_active() && !inline_chord && !clipboard_consumed
             && !g_search_active && !search_consumed && !block_nav_consumed
             && !zoom_consumed
+            && !ask_last_command_consumed
             && ui_sidebar_allows_pty_input(child_exited, ui_settings_open(),
                 lo.sidebar_visible, ui_sidebar_focused(),
                 settings_shortcut_consumed, sidebar_chord_consumed)) {
@@ -2752,23 +2800,8 @@ int main(void)
                     g_sel.dragging = false;
 
                     if (cb_action.action == CB_ACTION_ASK_AI) {
-                        char ctx_buf[16384];
-                        ai_block_build_context(cb_action.command,
-                                               cb_action.output ? cb_action.output : "",
-                                               cb_action.exit_code,
-                                               ctx_buf, (int)sizeof(ctx_buf));
-                        char *redacted = redact_secrets(ctx_buf);
-                        if (redacted) {
-                            ui_sidebar_set_oneshot_context(redacted);
-                        } else {
-                            ui_sidebar_set_oneshot_context(strdup(ctx_buf));
-                        }
-                        ui_sidebar_prefill(ai_block_default_question(cb_action.exit_code));
-                        ui_sidebar_open_focused();
-                        if (cb_action.output) {
-                            free(cb_action.output);
-                            cb_action.output = NULL;
-                        }
+                        open_sidebar_for_cmdblock_action(&cb_action);
+                        cmdblock_action_free(&cb_action);
                     }
                 }
             }

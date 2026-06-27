@@ -17,6 +17,212 @@
 #define INPUT_TEXT_SIZE 1024
 #define COMMAND_SIZE 1024
 
+// ── E6: syntax-highlighting helper tokens ────────────────────────────────
+static bool is_keyword(const char *w, int len)
+{
+    static const char *keywords[] = {
+        "if","else","for","while","do","switch","case","break","continue",
+        "return","function","def","class","struct","enum","interface",
+        "const","let","var","int","float","char","void","bool","double",
+        "true","false","null","nil","None","True","False","import","from",
+        "as","export","try","catch","throw","finally","async","await",
+        "yield","new","delete","sizeof","typeof","include","define",
+        "public","private","static","final","override","extends","implements",
+        NULL
+    };
+    for (int k = 0; keywords[k]; k++) {
+        size_t kl = strlen(keywords[k]);
+        if ((size_t)len == kl && strncmp(w, keywords[k], kl) == 0)
+            return true;
+    }
+    return false;
+}
+
+// Heuristic token colors for code highlighting (UiTheme-derived).
+// Returns the "code accent" color for keywords, etc.
+typedef struct {
+    Color kw, str, cmt, num, plain, bg;
+} CodeColors;
+
+static CodeColors code_colors(void)
+{
+    // Derive from g_ui_theme — blend outward from panel_bg.
+    UiColor bg_uc = g_ui_theme.panel_bg;
+    Color bg = UI2RAY(bg_uc);
+    UiColor fg_uc = g_ui_theme.text;
+    Color fg = UI2RAY(fg_uc);
+    CodeColors cc;
+    cc.bg    = bg;
+    cc.plain = fg;
+    // keyword: accent-ish (blue/violet) at near-full alpha
+    cc.kw    = UI2RAY(g_ui_theme.accent);
+    // strings: green-ish (ansi[2])
+    Color green = UI2RAY(g_ui_theme.msg_assistant);
+    cc.str   = (Color){ green.r, green.g, green.b, 255 };
+    // comments: dimmer
+    Color dim = fg;
+    unsigned char avg = (unsigned char)((dim.r + dim.g + dim.b) / 3);
+    cc.cmt   = (Color){ avg, avg, avg, 180 };
+    // numbers: orange-ish — derive from ansi[3] (yellow) mixed with red
+    // We approximate by slightly warming the plain color
+    cc.num   = fg;
+    // Warm it up
+    cc.num.r = fg.r < 200 ? fg.r + 40 : fg.r;
+    cc.num.g = fg.g > 40 ? fg.g - 20 : fg.g;
+    return cc;
+}
+
+// Heuristic token-colour a single code line into the given colour.
+// Returns the drawing colour.
+static Color token_color(const char *line_start, const char *tok, int tok_len,
+                         bool in_comment, bool in_string, CodeColors cc)
+{
+    (void)line_start;
+    if (in_comment) return cc.cmt;
+    if (in_string)  return cc.str;
+    if (tok_len == 0) return cc.plain;
+
+    // Number?
+    if (isdigit((unsigned char)*tok)
+        || (*tok == '-' && tok_len > 1 && isdigit((unsigned char)tok[1])))
+        return cc.num;
+
+    // Keyword?
+    if (is_keyword(tok, tok_len))
+        return cc.kw;
+
+    return cc.plain;
+}
+
+// Draw a single code line with token-level highlighting.
+static void draw_code_line(Font font, const char *line, int line_len,
+                           float x, float y, float font_size, CodeColors cc)
+{
+    const char *p = line;
+    const char *end = line + line_len;
+    bool in_string = false;
+    bool in_comment = false;
+    char string_delim = '\0';
+    float cur_x = x;
+
+    while (p < end) {
+        // Skip whitespace (just advance x)
+        if (*p == ' ' || *p == '\t') {
+            char ws[2] = { *p, '\0' };
+            Vector2 sz = MeasureTextEx(font, ws, font_size, 0);
+            // tab ≈ 4 spaces
+            float w = (*p == '\t') ? sz.x * 4.0f : sz.x;
+            cur_x += w;
+            p++;
+            continue;
+        }
+
+        // Comment detection (outside strings)
+        if (!in_string) {
+            if ((*p == '/' && (p+1) < end && *(p+1) == '/')
+                || *p == '#') {
+                in_comment = true;
+            }
+        }
+
+        if (in_comment) {
+            // Draw rest of line as comment.
+            char buf[1024];
+            int rest = (int)(end - p);
+            if (rest > (int)sizeof(buf)-1) rest = (int)sizeof(buf)-1;
+            strncpy(buf, p, (size_t)rest);
+            buf[rest] = '\0';
+            DrawTextEx(font, buf, (Vector2){cur_x, y}, font_size, 0, cc.cmt);
+            return;
+        }
+
+        // String detection
+        if (!in_string && (*p == '"' || *p == '\'' || *p == '`')) {
+            in_string = true;
+            string_delim = *p;
+            char str_ch[2] = { *p, '\0' };
+            Vector2 sz = MeasureTextEx(font, str_ch, font_size, 0);
+            DrawTextEx(font, str_ch, (Vector2){cur_x, y}, font_size, 0, cc.str);
+            cur_x += sz.x;
+            p++;
+            continue;
+        }
+
+        if (in_string) {
+            // Find closing delimiter
+            const char *start = p;
+            while (p < end && *p != string_delim && *p != '\n') {
+                if (*p == '\\') p++; // skip escaped char
+                p++;
+            }
+            char buf[256];
+            int seg_len = (int)(p - start);
+            if (seg_len > (int)sizeof(buf)-1) seg_len = (int)sizeof(buf)-1;
+            strncpy(buf, start, (size_t)seg_len);
+            buf[seg_len] = '\0';
+            Vector2 sz = MeasureTextEx(font, buf, font_size, 0);
+            DrawTextEx(font, buf, (Vector2){cur_x, y}, font_size, 0, cc.str);
+            cur_x += sz.x;
+            if (p < end && *p == string_delim) {
+                char delim_ch[2] = { string_delim, '\0' };
+                Vector2 dsz = MeasureTextEx(font, delim_ch, font_size, 0);
+                DrawTextEx(font, delim_ch, (Vector2){cur_x, y}, font_size, 0, cc.str);
+                cur_x += dsz.x;
+                p++;
+                in_string = false;
+            }
+            continue;
+        }
+
+        // Regular token (word)
+        const char *tok_start = p;
+        while (p < end && *p != ' ' && *p != '\t' && *p != '\n'
+               && *p != '"' && *p != '\'' && *p != '`'
+               && *p != '(' && *p != ')' && *p != '{' && *p != '}'
+               && *p != '[' && *p != ']' && *p != '.' && *p != ','
+               && *p != ';' && *p != ':' && *p != '#' && *p != '/')
+            p++;
+
+        int tok_len = (int)(p - tok_start);
+        if (tok_len > 0) {
+            Color col = token_color(line, tok_start, tok_len, false, false, cc);
+            char buf[256];
+            if (tok_len > (int)sizeof(buf)-1) tok_len = (int)sizeof(buf)-1;
+            strncpy(buf, tok_start, (size_t)tok_len);
+            buf[tok_len] = '\0';
+            Vector2 sz = MeasureTextEx(font, buf, font_size, 0);
+            DrawTextEx(font, buf, (Vector2){cur_x, y}, font_size, 0, col);
+            cur_x += sz.x;
+        }
+
+        // Draw any single punctuation char
+        if (p < end && (*p == '(' || *p == ')' || *p == '{' || *p == '}'
+                       || *p == '[' || *p == ']' || *p == '.' || *p == ','
+                       || *p == ';' || *p == ':' || *p == '/' || *p == '#')) {
+            char pch[2] = { *p, '\0' };
+            // Check if it's a // comment start
+            if (*p == '/' && (p+1) < end && *(p+1) == '/') {
+                in_comment = true;
+                // Draw rest as comment
+                char buf[1024];
+                int rest = (int)(end - p);
+                if (rest > (int)sizeof(buf)-1) rest = (int)sizeof(buf)-1;
+                strncpy(buf, p, (size_t)rest);
+                buf[rest] = '\0';
+                DrawTextEx(font, buf, (Vector2){cur_x, y}, font_size, 0, cc.cmt);
+                return;
+            }
+            Vector2 sz = MeasureTextEx(font, pch, font_size, 0);
+            DrawTextEx(font, pch, (Vector2){cur_x, y}, font_size, 0, cc.plain);
+            cur_x += sz.x;
+            p++;
+        }
+    }
+}
+
+// ── track whether the user has manually scrolled up ──────────────────────
+static bool user_scrolled_up = false;
+
 typedef struct {
     MsgRole role;
     char text[MESSAGE_TEXT_SIZE];        // user/system text, or assistant ANSWER
@@ -163,6 +369,140 @@ static float measure_wrapped_text(Font font, const char *text, float max_width,
     return y;
 }
 
+static int trim_line_len(const char *line, int line_len)
+{
+    while (line_len > 0
+           && (line[line_len - 1] == '\n' || line[line_len - 1] == '\r'))
+        line_len--;
+    return line_len;
+}
+
+static bool is_fence_line(const char *line, int line_len)
+{
+    line_len = trim_line_len(line, line_len);
+    int i = 0;
+    while (i < line_len && (line[i] == ' ' || line[i] == '\t'))
+        i++;
+    return line_len - i >= 3
+        && line[i] == '`' && line[i + 1] == '`' && line[i + 2] == '`';
+}
+
+static const char *next_line_after(const char *line)
+{
+    const char *nl = strchr(line, '\n');
+    return nl ? nl + 1 : line + strlen(line);
+}
+
+static const char *find_fence_line(const char *p)
+{
+    while (p && *p) {
+        const char *nl = strchr(p, '\n');
+        int line_len = nl ? (int)(nl - p) : (int)strlen(p);
+        if (is_fence_line(p, line_len))
+            return p;
+        p = nl ? nl + 1 : p + line_len;
+    }
+    return NULL;
+}
+
+static int count_code_lines(const char *start, const char *end)
+{
+    int lines = 0;
+    const char *p = start;
+    while (p < end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        lines++;
+        if (!nl)
+            break;
+        p = nl + 1;
+    }
+    return lines > 0 ? lines : 1;
+}
+
+static void code_block(Font font, const char *start, const char *end,
+                       float x, float *y, float max_width, float font_size,
+                       float line_spacing, bool draw)
+{
+    float pad = font_size * 0.50f;
+    float code_font = font_size * 0.92f;
+    int lines = count_code_lines(start, end);
+    float block_h = pad * 2.0f + lines * line_spacing;
+
+    if (draw) {
+        Rectangle bg = { x, *y, max_width, block_h };
+        DrawRectangleRounded(bg, 0.08f, 4, UI2RAY(g_ui_theme.search_bg));
+        DrawRectangleRoundedLinesEx(bg, 0.08f, 4, 1.0f,
+                                    UI2RAY(g_ui_theme.panel_border));
+    }
+
+    float line_y = *y + pad;
+    CodeColors cc = code_colors();
+    cc.bg = UI2RAY(g_ui_theme.search_bg);
+    const char *p = start;
+    if (p >= end) {
+        line_y += line_spacing;
+    } else {
+        while (p < end) {
+            const char *nl = memchr(p, '\n', (size_t)(end - p));
+            const char *line_end = nl ? nl : end;
+            int line_len = trim_line_len(p, (int)(line_end - p));
+            if (draw)
+                draw_code_line(font, p, line_len, x + pad, line_y, code_font, cc);
+            line_y += line_spacing;
+            if (!nl)
+                break;
+            p = nl + 1;
+        }
+    }
+
+    *y += block_h + font_size * 0.25f;
+}
+
+static void message_text(Font font, const char *text, float x, float *y,
+                         float max_width, float font_size,
+                         float line_spacing, Color color, bool draw)
+{
+    if (!text || text[0] == '\0')
+        return;
+
+    const char *p = text;
+    while (*p) {
+        const char *fence = find_fence_line(p);
+        if (!fence) {
+            wrapped_text(font, p, x, y, max_width, font_size,
+                         line_spacing, color, draw);
+            break;
+        }
+
+        if (fence > p) {
+            char normal[MESSAGE_TEXT_SIZE];
+            int n = (int)(fence - p);
+            if (n > (int)sizeof(normal) - 1)
+                n = (int)sizeof(normal) - 1;
+            memcpy(normal, p, (size_t)n);
+            normal[n] = '\0';
+            wrapped_text(font, normal, x, y, max_width, font_size,
+                         line_spacing, color, draw);
+        }
+
+        const char *code_start = next_line_after(fence);
+        const char *close = find_fence_line(code_start);
+        const char *code_end = close ? close : text + strlen(text);
+        code_block(font, code_start, code_end, x, y, max_width, font_size,
+                   line_spacing, draw);
+        p = close ? next_line_after(close) : code_end;
+    }
+}
+
+static float measure_message_text(Font font, const char *text, float max_width,
+                                  float font_size, float line_spacing)
+{
+    float y = 0.0f;
+    message_text(font, text, 0.0f, &y, max_width, font_size,
+                 line_spacing, BLANK, false);
+    return y;
+}
+
 // --- E1 (§15): Block-to-sidebar integration -----------------------------------
 
 void ui_sidebar_prefill(const char *text)
@@ -244,7 +584,6 @@ void ui_sidebar_push(MsgRole role, const char *text)
     messages[i].streaming = false;
     messages[i].has_command = false;
     messages[i].command[0] = '\0';
-    scroll_offset = 1e9f;   // jump to bottom (clamped next draw)
 }
 
 void ui_sidebar_begin_assistant(void)
@@ -257,7 +596,6 @@ void ui_sidebar_begin_assistant(void)
     messages[i].has_command = false;
     messages[i].command[0] = '\0';
     streaming_index = i;
-    scroll_offset = 1e9f;
 }
 
 void ui_sidebar_append_assistant(const char *delta, bool is_reasoning)
@@ -269,7 +607,6 @@ void ui_sidebar_append_assistant(const char *delta, bool is_reasoning)
         append_bounded(m->reasoning, (int)sizeof(m->reasoning), delta);
     else
         append_bounded(m->text, (int)sizeof(m->text), delta);
-    scroll_offset = 1e9f;   // follow the stream to the bottom
 }
 
 void ui_sidebar_end_assistant(void)
@@ -346,23 +683,26 @@ bool ui_sidebar_draw(Font font, Rect bounds, char *out_prompt, int out_prompt_si
         if (messages[i].reasoning[0])
             content_h += measure_wrapped_text(font, messages[i].reasoning, text_w,
                                               14.0f*s, 18.0f*s) + 4.0f*s;
-        content_h += measure_wrapped_text(font, messages[i].text, text_w,
+        content_h += measure_message_text(font, messages[i].text, text_w,
                                           font_size, line_spacing);
         if (messages[i].has_command)
             content_h += button_h + 6.0f*s;
         content_h += 14.0f*s;
     }
 
-    if (mouse_inside) {
-        float wheel = GetMouseWheelMove();
-        if (wheel != 0.0f)
-            scroll_offset -= wheel * 32.0f*s;
-    }
-
     float max_scroll = content_h - (float)history.h;
     if (max_scroll < 0.0f) max_scroll = 0.0f;
-    if (scroll_offset < 0.0f) scroll_offset = 0.0f;
-    if (scroll_offset > max_scroll) scroll_offset = max_scroll;
+    if (mouse_inside) {
+        float wheel = GetMouseWheelMove();
+        if (wheel != 0.0f) {
+            scroll_offset = ui_sidebar_apply_wheel_scroll(scroll_offset, wheel,
+                                                          32.0f * s, max_scroll,
+                                                          &user_scrolled_up);
+        }
+    }
+    scroll_offset = ui_sidebar_smooth_follow_scroll(scroll_offset, max_scroll,
+                                                    user_scrolled_up,
+                                                    GetFrameTime());
 
     bool run_clicked = false;
     char run_cmd[COMMAND_SIZE] = "";
@@ -371,8 +711,33 @@ bool ui_sidebar_draw(Font font, Rect bounds, char *out_prompt, int out_prompt_si
     float y = (float)history.y - scroll_offset;
     for (int i = 0; i < message_count; i++) {
         Color color = role_color(messages[i].role);
+        float label_y = y;
         DrawTextEx(font, role_label(messages[i].role),
                    (Vector2){history.x, y}, 14.0f*s, 0, color);
+        if (messages[i].role == MSG_ASSISTANT && messages[i].text[0]) {
+            const char *copy_label = "copy";
+            float copy_fs = 12.0f * s;
+            float copy_pad = 6.0f * s;
+            float copy_h = line_spacing - 2.0f * s;
+            Vector2 copy_ts = MeasureTextEx(font, copy_label, copy_fs, 0);
+            Rectangle copy_btn = {
+                (float)history.x + (float)history.w - copy_ts.x - copy_pad * 2.0f,
+                label_y - 1.0f * s,
+                copy_ts.x + copy_pad * 2.0f,
+                copy_h
+            };
+            bool copy_hover = CheckCollisionPointRec(mouse, copy_btn)
+                           && point_in_rect(mouse, history);
+            DrawRectangleRounded(copy_btn, 0.28f, 5,
+                                 copy_hover ? UI2RAY(g_ui_theme.run_button_hover)
+                                            : UI2RAY(g_ui_theme.run_button));
+            DrawTextEx(font, copy_label,
+                       (Vector2){copy_btn.x + copy_pad,
+                                 copy_btn.y + (copy_h - copy_ts.y) / 2.0f},
+                       copy_fs, 0, UI2RAY(g_ui_theme.text));
+            if (copy_hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+                SetClipboardText(messages[i].text);
+        }
         y += line_spacing;
 
         if (messages[i].reasoning[0]) {
@@ -381,7 +746,7 @@ bool ui_sidebar_draw(Font font, Rect bounds, char *out_prompt, int out_prompt_si
             y += 4.0f*s;
         }
 
-        wrapped_text(font, messages[i].text, (float)history.x, &y,
+        message_text(font, messages[i].text, (float)history.x, &y,
                      text_w, font_size, line_spacing, color, true);
 
         if (messages[i].has_command) {
@@ -501,7 +866,7 @@ bool ui_sidebar_draw(Font font, Rect bounds, char *out_prompt, int out_prompt_si
         copy_text(out_prompt, out_prompt_size, input_text);
         input_text[0] = '\0';
         ui_sidebar_focus(true);
-        scroll_offset = 1e9f;
+        user_scrolled_up = false;
         return true;
     }
 

@@ -117,6 +117,7 @@ vendored Zig and the FetchContent deps are cached).
 | `Ctrl+,` / `Cmd+,` | Settings modal (font, theme, AI provider / model / key) |
 | `Cmd+B` / `Ctrl+Shift+B` | Toggle the AI chat sidebar |
 | `Ctrl+Space` | Inline command generation — describe a command, get it staged |
+| `Cmd+Shift+/` | Ask AI about the latest command block |
 | `Cmd+↑` / `Cmd+↓` (or `Ctrl+↑` / `Ctrl+↓`) | Jump to previous / next command block |
 | Drag · `Cmd+C` / `Ctrl+Shift+C` | Select text · copy the selection |
 | `Cmd+V` / `Ctrl+Shift+V` / `Shift+Insert` | Paste (bracketed-paste safe) |
