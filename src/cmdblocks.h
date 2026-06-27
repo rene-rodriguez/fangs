@@ -68,6 +68,12 @@ bool cmdblocks_draw(CmdBlocks *cb, TermEngine *te, Font font, const Theme *theme
                     int mouse_x, int mouse_y, bool click,
                     CmdBlockAction *action);
 
+// Fill *action with the latest finished command block for keyboard-driven
+// "Ask AI about the last command". Returns false when no finished block is
+// currently addressable in the viewport.
+bool cmdblocks_latest_action(CmdBlocks *cb, TermEngine *te, int rows,
+                             CmdBlockAction *action);
+
 // Scroll the viewport to the previous (dir < 0) or next (dir > 0) command.
 // Returns true only if there was a target to scroll to, so the caller can let
 // the key fall through to the child (e.g. a TUI) when there's nothing to do.

@@ -13,4 +13,14 @@ bool ui_sidebar_allows_pty_input(bool child_exited,
                                  bool settings_shortcut_consumed,
                                  bool sidebar_chord_consumed);
 
+float ui_sidebar_apply_wheel_scroll(float offset,
+                                    float wheel,
+                                    float step,
+                                    float max_scroll,
+                                    bool *user_scrolled_up);
+float ui_sidebar_smooth_follow_scroll(float offset,
+                                      float max_scroll,
+                                      bool user_scrolled_up,
+                                      float frame_time);
+
 #endif // FANGS_UI_SIDEBAR_MODEL_H
