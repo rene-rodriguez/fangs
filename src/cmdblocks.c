@@ -1,6 +1,7 @@
 #include "cmdblocks.h"
 #include "cmdblocks_osc.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ghostty/vt.h>
@@ -172,13 +173,58 @@ static char *block_output_text(GhosttyTerminal term, int top_v, int next_v, int 
 
 typedef struct { int row; int code; bool live; } CbItem;
 
+// Extract command text from a block's prompt row: the first line of text
+// at the prompt row (includes shell prompt + typed command).
+// Caller frees the result. Returns NULL on failure.
+static char *block_command_text(GhosttyTerminal term, int top_v)
+{
+    GhosttyPoint pt = { .tag = GHOSTTY_POINT_TAG_VIEWPORT };
+    pt.value.coordinate.x = 0;
+    pt.value.coordinate.y = (uint32_t)top_v;
+
+    GhosttyGridRef ref;
+    if (ghostty_terminal_grid_ref(term, pt, &ref) != GHOSTTY_SUCCESS)
+        return NULL;
+
+    GhosttySelection sel = GHOSTTY_INIT_SIZED(GhosttySelection);
+    if (ghostty_terminal_select_output(term, ref, &sel) != GHOSTTY_SUCCESS)
+        return NULL;
+
+    GhosttyTerminalSelectionFormatOptions o =
+        GHOSTTY_INIT_SIZED(GhosttyTerminalSelectionFormatOptions);
+    o.emit      = GHOSTTY_FORMATTER_FORMAT_PLAIN;
+    o.unwrap    = true;
+    o.trim      = true;
+    o.selection = &sel;
+
+    uint8_t *out = NULL;
+    size_t   n   = 0;
+    if (ghostty_terminal_selection_format_alloc(term, NULL, o, &out, &n) == GHOSTTY_SUCCESS
+        && out && n > 0) {
+        // Trim trailing newline/spaces.
+        while (n > 0 && (out[n-1] == '\n' || out[n-1] == '\r' || out[n-1] == ' '))
+            n--;
+        char *s = malloc(n + 1);
+        if (s) { memcpy(s, out, n); s[n] = '\0'; }
+        ghostty_free(NULL, out, n);
+        return s;
+    }
+    if (out) ghostty_free(NULL, out, n);
+    return NULL;
+}
+
 bool cmdblocks_draw(TermEngine *te, Font font, const Theme *th,
                     int cell_w, int cell_h, int font_size,
                     int pad, int term_area_w, int rows,
-                    int mouse_x, int mouse_y, bool click)
+                    int mouse_x, int mouse_y, bool click,
+                    CmdBlockAction *action)
 {
     (void)cell_w;
     GhosttyTerminal term = term_engine_terminal(te);
+
+    // Initialize the action to NONE so the host can detect whether a button fired.
+    if (action)
+        action->action = CB_ACTION_NONE;
 
     CbItem items[CB_RING + 1];
     int n = 0;
@@ -255,7 +301,7 @@ bool cmdblocks_draw(TermEngine *te, Font font, const Theme *th,
             hovered = i;
     }
 
-    // Hover affordance: a "copy" button that copies the block's output text.
+    // Hover affordances: "copy" and "Ask AI" buttons.
     if (hovered >= 0 && !items[hovered].live) {
         int row    = items[hovered].row;
         int y      = pad + row * cell_h;
@@ -263,29 +309,69 @@ bool cmdblocks_draw(TermEngine *te, Font font, const Theme *th,
 
         int btn_fs = (int)(font_size * 0.82f);
         if (btn_fs < 8) btn_fs = 8;
-        const char *label = "copy";
-        Vector2 ts   = MeasureTextEx(font, label, (float)btn_fs, 0);
-        int     padx = 6;
-        int     btn_w = (int)ts.x + 2 * padx;
-        int     btn_h = cell_h - 2;
-        int     btn_x = badge_cx - badge_r - 8 - btn_w;
-        int     btn_y = y + 1;
-        Rectangle btn = { (float)btn_x, (float)btn_y, (float)btn_w, (float)btn_h };
+        int padx = 6;
+        int btn_h = cell_h - 2;
 
-        bool over = (mouse_x >= btn.x && mouse_x < btn.x + btn.width
-                     && mouse_y >= btn.y && mouse_y < btn.y + btn.height);
         Color st = items[hovered].code == 0 ? ok
                  : (items[hovered].code > 0 ? bad : neut);
 
-        DrawRectangleRounded(btn, 0.35f, 6, Fade(st, over ? 0.45f : 0.22f));
-        DrawTextEx(font, label,
-                   (Vector2){ btn.x + padx, btn.y + (btn_h - ts.y) / 2 },
+        // "copy" button (rightmost, next to the badge)
+        const char *copy_label = "copy";
+        Vector2 copy_ts = MeasureTextEx(font, copy_label, (float)btn_fs, 0);
+        int copy_w = (int)copy_ts.x + 2 * padx;
+        int copy_x = badge_cx - badge_r - 8 - copy_w;
+        int copy_y = y + 1;
+        Rectangle copy_btn = { (float)copy_x, (float)copy_y, (float)copy_w, (float)btn_h };
+
+        bool copy_over = (mouse_x >= copy_btn.x && mouse_x < copy_btn.x + copy_btn.width
+                          && mouse_y >= copy_btn.y && mouse_y < copy_btn.y + copy_btn.height);
+        DrawRectangleRounded(copy_btn, 0.35f, 6, Fade(st, copy_over ? 0.45f : 0.22f));
+        DrawTextEx(font, copy_label,
+                   (Vector2){ copy_btn.x + padx, copy_btn.y + (btn_h - copy_ts.y) / 2 },
                    (float)btn_fs, 0, tc_color(th->fg, 230));
 
-        if (over && click) {
-            char *txt = block_output_text(term, row, next_v, rows);
-            if (txt) { SetClipboardText(txt); free(txt); }
-            consumed = true;
+        // "Ask AI" button (left of copy button)
+        const char *ai_label = "Ask AI";
+        Vector2 ai_ts = MeasureTextEx(font, ai_label, (float)btn_fs, 0);
+        int ai_w = (int)ai_ts.x + 2 * padx;
+        int ai_gap = 4;
+        int ai_x = copy_x - ai_gap - ai_w;
+        int ai_y = y + 1;
+        Rectangle ai_btn = { (float)ai_x, (float)ai_y, (float)ai_w, (float)btn_h };
+
+        bool ai_over = (mouse_x >= ai_btn.x && mouse_x < ai_btn.x + ai_btn.width
+                        && mouse_y >= ai_btn.y && mouse_y < ai_btn.y + ai_btn.height);
+        DrawRectangleRounded(ai_btn, 0.35f, 6, Fade(st, ai_over ? 0.45f : 0.22f));
+        DrawTextEx(font, ai_label,
+                   (Vector2){ ai_btn.x + padx, ai_btn.y + (btn_h - ai_ts.y) / 2 },
+                   (float)btn_fs, 0, tc_color(th->fg, 230));
+
+        if (click) {
+            if (copy_over) {
+                char *txt = block_output_text(term, row, next_v, rows);
+                if (txt) { SetClipboardText(txt); free(txt); }
+                consumed = true;
+            } else if (ai_over) {
+                // Fill in the action so main.c can respond.
+                if (action) {
+                    action->action = CB_ACTION_ASK_AI;
+                    action->exit_code = items[hovered].code;
+
+                    // Extract command text from the prompt row.
+                    char *cmd = block_command_text(term, row);
+                    if (cmd) {
+                        snprintf(action->command, sizeof(action->command), "%s", cmd);
+                        free(cmd);
+                    } else {
+                        action->command[0] = '\0';
+                    }
+
+                    // Extract output text.
+                    action->output = block_output_text(term, row, next_v, rows);
+                    action->output_len = action->output ? (int)strlen(action->output) : 0;
+                }
+                consumed = true;
+            }
         }
     }
 

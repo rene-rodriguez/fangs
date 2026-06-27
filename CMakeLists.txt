@@ -77,6 +77,9 @@ add_executable(fangs
   src/cmdblocks_osc.c
   src/theme.c
   src/cJSON.c
+  src/ai_block.c
+  src/session.c
+  src/pane.c
   "${FONT_HEADER}")
 target_compile_features(fangs PRIVATE c_std_11)
 target_include_directories(fangs PRIVATE
@@ -159,3 +162,19 @@ add_executable(cmdblocks_osc_tests
 target_compile_features(cmdblocks_osc_tests PRIVATE c_std_11)
 target_include_directories(cmdblocks_osc_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 add_test(NAME cmdblocks_osc_tests COMMAND cmdblocks_osc_tests)
+
+# --- E1 (§15): ai_block ------------------------------------------------------
+add_executable(ai_block_tests
+  tests/ai_block_tests.c
+  src/ai_block.c)
+target_compile_features(ai_block_tests PRIVATE c_std_11)
+target_include_directories(ai_block_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+add_test(NAME ai_block_tests COMMAND ai_block_tests)
+
+# --- E2 (§16): pane tree tests (pure, no session link needed) ---------------
+add_executable(pane_tests
+  tests/pane_tests.c
+  src/pane.c)
+target_compile_features(pane_tests PRIVATE c_std_11)
+target_include_directories(pane_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+add_test(NAME pane_tests COMMAND pane_tests)
