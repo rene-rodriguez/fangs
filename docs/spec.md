@@ -20,7 +20,7 @@ written to be executable as a build plan, not just descriptive.
 
 ### Out of scope (v1)
 - Windows (the engine supports it; we don't target it yet).
-- Tabs, splits/panes beyond the single terminal + sidebar split.
+- Tabs, splits/panes beyond the single terminal + sidebar split. *(Now planned as a post-v1 enhancement — see §16.)*
 - Multi-turn agentic tool-use, file editing, or command auto-execution.
 - Sixel/kitty-graphics-dependent features (the engine supports them; we don't build product on them in v1).
 - Telemetry, accounts, sync — by design, never.
@@ -347,3 +347,223 @@ export FANGS_API_KEY=sk-...      # preferred over putting the key in the file
 - Confirmed `ghostty_formatter_*` signatures vs. render-state fallback (needs a successful build to introspect the pinned header).
 - ~~Anthropic-native messages support in v1, or OpenAI-compatible only first.~~ **Resolved (2026-06-22):** both ship — Anthropic-native `/v1/messages` and OpenAI-compatible, selected by the provider toggle.
 - ~~Packaging target: AUR `PKGBUILD` (CachyOS) + `.app`/Homebrew (macOS) vs. `cmake --install`.~~ **Resolved (2026-06-22):** AUR `PKGBUILD` shipped + verified (`packaging/aur/`, `fangs-git`); macOS `.app`/Homebrew still TODO.
+
+---
+
+# Post-v1 Enhancements
+
+> The sections below (§15–§16) specify enhancements designed **after** the v1 feature set shipped.
+> They are additive: both preserve every non-negotiable invariant in §1 (PTY byte stream never
+> altered, no command auto-executed, secrets only to the configured endpoint) and leave the
+> `term_engine` / `ai_provider` seams unchanged. Implementation sequencing and steps live in
+> `plan.md` §7 → *Post-v1 Enhancements*.
+
+## 15. Command Blocks → AI Context (`cmdblocks` × `ui_sidebar`)
+
+### 15.1 Goal
+Turn a command block into a one-click AI question. Every block (drawn only when OSC-133 shell
+integration is active — §cmdblocks) gains a hover affordance beside the existing "copy output"
+button: **`Ask AI`** on a clean block, an emphasized **`⚡ Explain error`** on a failed (✗) block.
+Clicking it opens the global AI sidebar with that block's command + captured output attached as
+context and a sensible question **prefilled and editable**; the user presses Enter to send. This
+reuses the existing streaming path wholesale — it adds an *entry point*, not a new transport.
+
+### 15.2 The affordance (in `cmdblocks.c`)
+`cmdblocks.c` already anchors a tracked grid ref at each prompt row, remembers the exit code from
+the `D` mark, and can serialize a block's output (`block_output_text` over the engine's
+`select_output`). The draw routine already hit-tests a hover "copy output" button and returns a
+consumed-click bool. We extend it:
+
+- Add a second hover button per block. Label/emphasis keys off the exit code: non-zero → a
+  theme-accent **`⚡ Explain error`**; zero → a muted **`Ask AI`**.
+- `cmdblocks_draw` reports the click through a new out-parameter rather than a bare bool:
+
+```c
+typedef struct {
+    bool        ask_ai;          // true on the frame Ask-AI/Explain was clicked
+    const char *command;         // the block's command line (borrowed, valid this frame)
+    const char *output;          // captured block output (borrowed, valid this frame)
+    int         exit_code;       // -1 if unknown
+} CmdBlockAction;
+
+// click is still consumed via the return value; *action carries the Ask-AI result.
+bool cmdblocks_draw(..., CmdBlockAction *action /* nullable */);
+```
+
+The strings are borrowed from `cmdblocks`-owned scratch valid for the current frame; the host
+copies what it needs the same frame.
+
+### 15.3 The context formatter (`ai_block.{c,h}` — new, pure, testable)
+A tiny pure module so the payload shape is unit-tested without a window or network:
+
+```c
+// Format the block into a context message body the sidebar prepends to the next send.
+// Returns the number of bytes written (excluding NUL), or -1 if it didn't fit.
+int  ai_block_build_context(const char *command, const char *output, int exit_code,
+                            char *out, size_t cap);
+
+// Default editable question for the input box, by exit status.
+const char *ai_block_default_question(int exit_code);   // "Why did this command fail?" (✗)
+                                                        // / "Explain this output." (✓)
+```
+
+The context body is human-readable and bounded, e.g.:
+```
+The user ran this command in their terminal:
+
+$ <command>
+
+It exited with status <code>. Its output was:
+
+```
+<output, redacted, trimmed to the context byte budget>
+```
+```
+
+### 15.4 Sidebar entry point (`ui_sidebar.{c,h}`)
+Two small additions, no change to the streaming model:
+
+```c
+void ui_sidebar_prefill(const char *question);          // seed the editable input box
+void ui_sidebar_set_oneshot_context(const char *ctx);   // override scrollback dump for the NEXT send only
+```
+
+`ui_sidebar_set_oneshot_context` stashes the block payload so the next user send prepends **it**
+instead of the live `context_build()` scrollback dump; it is consumed (cleared) after that one
+send, so subsequent turns revert to normal scrollback context.
+
+### 15.5 Host wiring (`main.c`)
+On `action.ask_ai`: copy the borrowed strings, run the block output through the existing
+**redaction** pass (§7.3), call `ai_block_build_context(...)` →
+`ui_sidebar_set_oneshot_context()`, `ui_sidebar_prefill(ai_block_default_question(exit_code))`,
+then open + focus the sidebar (reuse the existing toggle). The user edits/sends; from there the
+existing `start_ai_request` streaming path runs unchanged.
+
+### 15.6 Edge cases & invariants
+- **No shell integration → no blocks → no affordance.** Unchanged behavior.
+- **Redaction still applies** to block output before it leaves the machine (§7.3, §10).
+- **No auto-send, no auto-exec.** The question is prefilled but the user presses Enter; any command
+  in the answer still arrives as a staged "Run" button (§7.4).
+- **Output bounds** reuse `select_output`'s existing limits; oversized output is trimmed to the
+  context byte budget by `ai_block_build_context`.
+
+### 15.7 Acceptance
+- Hovering a clean block shows `Ask AI`; hovering a ✗ block shows an emphasized `⚡ Explain error`.
+- Clicking opens + focuses the sidebar with the block's command/output as context and an editable
+  prefilled question; pressing Enter streams a context-aware answer.
+- The block context is used for exactly one send, then context reverts to scrollback.
+- `ai_block_tests` (context format + question-by-exit-code) added to `ctest`, green; build
+  warning-clean; the byte stream is observed only.
+
+## 16. Tabs + Splits (`session` · pane tree · `layout`)
+
+### 16.1 Goal
+Multiple terminal sessions in one window, each tab subdividable into panes via horizontal/vertical
+splits (tmux / Ghostty model). The global AI sidebar and inline `Ctrl+Space` read context from, and
+inject into, the **focused pane**. A single tab with a single pane is visually identical to today
+(no chrome) — tabs/splits add structure only when used.
+
+### 16.2 The `Session` (a leaf pane) — `session.{c,h}` (new)
+Today `main()` holds the whole session inline (one `TermEngine *`, one `pty_fd`, one `child`, plus
+module-global selection / find / cmdblocks state). We extract everything per-terminal into one
+struct; a leaf pane owns exactly one `Session`:
+
+```c
+typedef struct Session Session;   // opaque
+
+Session *session_create(uint16_t cols, uint16_t rows, int cell_w, int cell_h,
+                        int max_scrollback, const char *cwd /* nullable → $HOME */);
+void     session_destroy(Session *);   // joins/reaps child, frees engine + cmdblocks
+
+void     session_feed_pty(Session *);                 // drain pty_fd → cmdblocks_feed → engine
+void     session_resize(Session *, uint16_t cols, uint16_t rows, int cell_w, int cell_h);
+int      session_pty_fd(const Session *);
+TermEngine *session_engine(Session *);
+bool     session_child_alive(const Session *);
+const char *session_cwd(const Session *);             // last OSC-7 cwd, for cwd inheritance
+```
+
+A `Session` owns its own `TermEngine`, `pty_fd`, child pid, grid/cell dims, scroll offset, and — as
+a required consequence — its **own cmdblocks, selection, and find state** (today module-global in
+`main.c` / `cmdblocks.c`; see §16.7).
+
+### 16.3 The pane tree (`pane.{c,h}` — new, pure, testable)
+Each tab owns a binary split tree: internal nodes are H/V splits with a ratio; leaves carry a
+`Session`. This gives arbitrary nesting with clean resize math (chosen over a fixed grid, which is
+rigid and un-terminal-like).
+
+```c
+typedef enum { PANE_LEAF, PANE_HSPLIT, PANE_VSPLIT } PaneKind;
+typedef struct PaneNode PaneNode;   // leaf → Session*; split → {a, b, ratio}
+
+PaneNode *pane_leaf(Session *s);
+PaneNode *pane_split(PaneNode *focused, PaneKind dir, Session *new_leaf, float ratio); // returns new root
+PaneNode *pane_close(PaneNode *root, PaneNode *leaf, PaneNode **new_focus);            // collapses the parent
+PaneNode *pane_focus_move(PaneNode *root, PaneNode *cur, int dx, int dy);              // directional focus
+void      pane_set_ratio(PaneNode *split, float ratio);                                // drag a divider
+```
+
+The tree, split/close collapse, focus-move, and ratio math are pure → unit-tested in
+`pane_tests` with no window.
+
+### 16.4 Layout (`layout.{c,h}` — extended)
+A recursive pass assigns every leaf a pixel `Rect` from the tab's content rect (window minus tab
+bar minus sidebar), accounting for a divider gutter:
+
+```c
+// Walk the tree, writing each leaf's Rect via the callback. Pure; no Raylib calls.
+void layout_compute_panes(const PaneNode *root, Rect content, int divider_px,
+                          void (*on_leaf)(Session *, Rect, void *user), void *user);
+```
+
+`layout_compute` (the terminal/sidebar split) is unchanged; the tab bar reserves a fixed-height
+strip off the top of the window before `content` is computed. Extended in `layout_tests`.
+
+### 16.5 App / tab structure (`main.c`)
+```c
+typedef struct { PaneNode *root; PaneNode *focused; char title[64]; } Tab;
+typedef struct { Tab tabs[FANGS_MAX_TABS]; int n_tabs; int active; } App;
+```
+`App → tabs[active] → focused` is the leaf whose `Session` the sidebar (global, follows the active
+tab), inline generation, and input all target. The settings modal stays global.
+
+### 16.6 Rendering, input & the tab bar
+- **Render:** for each visible leaf, `layout_compute_panes` gives its `Rect`; the existing
+  terminal-draw path runs **per leaf** inside that leaf's scissor, parameterized by `Session *` +
+  `Rect` instead of `main.c` globals. The focused leaf gets a subtle theme-accent border.
+- **Input:** keys/mouse route to `App→tabs[active]→focused`'s `pty_fd`. On any layout change every
+  leaf is resized to its rect (`term_engine_resize` + `pty_set_winsize`).
+- **Tab bar:** a thin RayGUI strip drawn only when `n_tabs ≥ 2` (single tab stays chrome-free).
+  Click a tab to switch, `✕` to close, `+` to add.
+- **New tab/pane cwd** inherits the focused pane's `session_cwd()` (OSC-7 if the shell emits it;
+  else `$HOME`).
+
+### 16.7 Required refactors (targeted, in service of this work)
+- **`cmdblocks` → per-session.** Convert the module-global `static struct` to an opaque
+  `CmdBlocks *` created per `Session`; `cmdblocks_feed/draw/navigate/reset` take that handle. This
+  is the one unavoidable signature change, and §15's affordance rides on the same handle.
+- **Selection / find → per-session.** The `g_sel*` / `g_search*` / `g_row*` globals in `main.c`
+  move into `Session`. This also relieves the 2,481-line `main.c` god-object — a focused
+  improvement that serves this feature, not unrelated refactoring.
+
+### 16.8 Keybindings (defaults)
+| Keys (macOS / Linux) | Action |
+|---|---|
+| `Cmd/Ctrl+T` | New tab |
+| `Cmd/Ctrl+W` | Close focused pane (last pane closes the tab; last tab exits) |
+| `Cmd/Ctrl+1`–`9` | Select tab N |
+| `Cmd+D` / `Cmd+Shift+D` | Split right / split down (Ghostty convention) |
+| `Cmd+Opt+Arrows` | Move focus between panes |
+
+Closing a pane with a live child just closes it (matches today's window-close behavior); no
+confirm dialog in v1 of this feature.
+
+### 16.9 Acceptance
+- `Cmd+T` opens a second tab; the tab bar appears only with ≥2 tabs; `Cmd+1/2` switch; a single
+  tab/pane is pixel-identical to today.
+- `Cmd+D` / `Cmd+Shift+D` split the focused pane; each pane runs an independent shell, draws in its
+  own scissor, and resizes correctly on window resize and divider position.
+- The focused pane has an accent border; the sidebar and `Ctrl+Space` read/inject against it.
+- New tabs/panes inherit the focused pane's cwd when available.
+- `pane_tests` + `session_tests` + extended `layout_tests` green; build warning-clean; every §1
+  invariant intact (byte stream untouched, no auto-exec, seams unchanged).

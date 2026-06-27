@@ -172,7 +172,7 @@ bool ui_sidebar_is_streaming(void);
 ```
 - **Reasoning vs answer:** the spike proved models stream `reasoning_content` (thinking) before
   `content` (answer). Render thinking dimmed/italic in a collapsible or clearly-secondary block above
-  the answer. Simplest MVP: store `char reasoning[]` + `char answer[]` per assistant message; draw
+  the answer. Simplest approach: store `char reasoning[]` + `char answer[]` per assistant message; draw
   reasoning in grey, answer in normal. Don't drop reasoning silently — users find it useful.
 - While streaming, gate a second submit (one request in flight in Phase 4) — disable Send / show a
   "Stop" button wired to `ai_stream_cancel`.
