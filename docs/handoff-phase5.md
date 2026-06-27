@@ -169,7 +169,7 @@ multi-line prose + command → the command line; empty → false. (Mirror `cmdex
 - [ ] `ctest` green (existing 6 + `inline_cmd_tests`); `cmake --build build` warning-clean; `vim`/`htop` fine.
 
 ## 7. After Phase 5 — toward v1
-All five feature phases done = the anti-Warp MVP. Remaining polish for a v1 release (no longer
+All five feature phases done = the complete anti-Warp feature set. Remaining polish for a v1 release (no longer
 risk-bearing, so no handoff docs needed — pick by appetite):
 - **CachyOS/Linux verification** on real hardware (expected clean; the one untested target).
 - **Theming:** wire `cfg.theme` to the full terminal palette (today it only sets the window bg).

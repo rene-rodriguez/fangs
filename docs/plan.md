@@ -51,7 +51,7 @@ We evaluated three engines. **Path A was chosen.**
 
 ### Why A
 
-- **It already exists, working.** `ghostty-org/ghostling` is an official MVP terminal built on the libghostty C API. It is single-file C, CMake 3.19+ / Ninja, and **already uses Raylib**. It hands us `forkpty()`, a non-blocking PTY read loop, `TIOCSWINSZ` resize, key/mouse encoding via Ghostty's encoders, and a render-state cell-iteration draw loop — i.e. most of Phases 1–3 for free.
+- **It already exists, working.** `ghostty-org/ghostling` is an official minimal reference terminal built on the libghostty C API. It is single-file C, CMake 3.19+ / Ninja, and **already uses Raylib**. It hands us `forkpty()`, a non-blocking PTY read loop, `TIOCSWINSZ` resize, key/mouse encoding via Ghostty's encoders, and a render-state cell-iteration draw loop — i.e. most of Phases 1–3 for free.
 - **The formatter API is the deciding factor.** `libghostty-vt` ships `<ghostty/vt/formatter.h>` ("format terminal content as plain text, VT sequences, or HTML"). That is almost exactly the AI-context-extraction primitive Feature B needs. Neither B nor C gives us this.
 - **It matches the philosophy.** Ghostty is the gold standard for a standard, audited VT.
 
@@ -185,7 +185,7 @@ If either spike fails, we pivot here — having spent days, not weeks. **Both 0a
 
 ---
 
-> **🎉 MVP COMPLETE (2026-06-21):** all five feature phases done. Fangs is a native,
+> **🎉 v1 FEATURE-COMPLETE (2026-06-21):** all five feature phases done. Fangs is a native,
 > GPU-accelerated, BYOK terminal with a context-aware AI sidebar and inline `Ctrl+Space` command
 > generation — no logins, no telemetry, no subscription.
 >
@@ -295,6 +295,66 @@ If either spike fails, we pivot here — having spent days, not weeks. **Both 0a
 > in `docs/linux-verification.md`. *Remaining nice-to-haves: re-detect scale when the window is
 > dragged to a differently-scaled monitor (font is loaded once at startup today), and scale the
 > RayGUI widgets to match.*
+
+---
+
+## 7.1 Post-v1 Enhancements
+
+> Two enhancements designed after the v1 feature set shipped. Spec: `spec.md` §15–§16.
+> **Sequencing: E1 first** (small, self-contained, high value), **then E2** (large). Both keep every
+> §2 invariant (pure PTY stream, no auto-exec) and leave the `term_engine` / `ai_provider` seams
+> untouched. Note: E2's per-`Session` refactor later makes E1's affordance pane-aware — a minor
+> follow-up called out in E2, not a blocker for E1.
+
+### E1 — Command Blocks → AI Context (spec §15)
+
+One-click "Ask AI" / "⚡ Explain error" on a command block → opens the global sidebar pre-loaded
+with that block's command + output and an editable prefilled question. Reuses the Phase 4 streaming
+path entirely; this adds an entry point, not transport.
+
+1. **`ai_block.{c,h}` (new, pure).** `ai_block_build_context(cmd, output, exit_code, out, cap)` +
+   `ai_block_default_question(exit_code)`. Bounded, human-readable context body (spec §15.3).
+2. **`tests/ai_block_tests.c`** → `ctest`: context format, byte-budget trim, question-by-exit-code.
+   (TDD: write these first.)
+3. **`cmdblocks.{c,h}`:** add the per-block hover button (label/emphasis by exit code) beside "copy
+   output"; report the click via a `CmdBlockAction` out-param on `cmdblocks_draw` (spec §15.2).
+4. **`ui_sidebar.{c,h}`:** add `ui_sidebar_prefill()` and `ui_sidebar_set_oneshot_context()` (next
+   send prepends the block context instead of the scrollback dump, then reverts).
+5. **`main.c` wiring:** on the action, copy the borrowed strings, run output through the existing
+   redaction pass, build context → set one-shot context + prefill question → open/focus the sidebar.
+6. **Exit:** hover a ✗ block → `⚡ Explain error`; click → sidebar opens focused with that block as
+   context + an editable "Why did this command fail?"; Enter streams a context-aware answer; the next
+   turn reverts to scrollback context. `ctest` green; build warning-clean; byte stream untouched.
+
+### E2 — Tabs + Splits (spec §16)
+
+Multiple terminal sessions per window, each tab subdividable into panes (tmux/Ghostty model). The
+global sidebar + inline `Ctrl+Space` follow the focused pane. A single tab/pane looks exactly like
+today.
+
+1. **`session.{c,h}` (new):** extract the per-terminal state `main()` holds inline — `TermEngine *`,
+   `pty_fd`, child pid, grid/cell dims, scroll offset — into one opaque `Session` (spec §16.2).
+2. **Per-session state moves (required refactor, spec §16.7):** convert `cmdblocks`'s module-global
+   `static struct` to an opaque per-`Session` `CmdBlocks *` (`feed/draw/navigate/reset` take the
+   handle); move `main.c`'s `g_sel*` / `g_search*` / `g_row*` globals into `Session`. Relieves the
+   2,481-line `main.c`.
+3. **`pane.{c,h}` (new, pure):** binary split tree (leaf=Session, internal=H/V split+ratio) with
+   `pane_split` / `pane_close` (parent-collapse) / `pane_focus_move` / `pane_set_ratio`. Plus
+   `tests/pane_tests.c` (TDD-first): split, close-collapse, directional focus, ratio math.
+4. **`layout.{c,h}`:** add recursive `layout_compute_panes(root, content, divider_px, on_leaf)`;
+   reserve the tab-bar strip off the top before computing `content`. Extend `tests/layout_tests.c`.
+5. **`main.c` — App/Tab + per-leaf render & input:** `App{Tab tabs[]; active}`,
+   `Tab{PaneNode*root; *focused}`; render each visible leaf in its own scissor (parameterize the
+   existing draw path by `Session*` + `Rect`); accent border on the focused leaf; route input to
+   `tabs[active]->focused`; resize every leaf on layout change.
+6. **Tab bar + keybindings:** RayGUI strip shown only when `n_tabs ≥ 2`; keys per spec §16.8
+   (`Cmd/Ctrl+T`/`W`/`1–9`, `Cmd+D` / `Cmd+Shift+D` split, `Cmd+Opt+Arrows` focus); new tab/pane
+   inherits the focused pane's cwd (OSC-7 → else `$HOME`).
+7. **Follow-up:** point E1's `CmdBlockAction` at the focused `Session`'s `CmdBlocks` handle.
+8. **Exit (spec §16.9):** `Cmd+T` adds a tab (bar appears only at ≥2); `Cmd+D` splits into
+   independent shells that render/resize correctly; sidebar + inline target the focused pane;
+   single tab/pane is pixel-identical to today; `session_tests` + `pane_tests` + extended
+   `layout_tests` green; build warning-clean; all §2 invariants intact.
 
 ---
 
