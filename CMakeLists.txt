@@ -210,7 +210,14 @@ add_executable(ui_theme_tests
   src/theme.c)
 target_compile_features(ui_theme_tests PRIVATE c_std_11)
 target_include_directories(ui_theme_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+if (UNIX AND NOT APPLE)
+  target_link_libraries(ui_theme_tests m)
+endif()
 add_test(NAME ui_theme_tests COMMAND ui_theme_tests)
+
+add_test(
+  NAME cmake_linux_link_tests
+  COMMAND bash "${CMAKE_SOURCE_DIR}/tests/cmake_linux_link_tests.sh")
 
 add_test(
   NAME macos_release_lib_tests
