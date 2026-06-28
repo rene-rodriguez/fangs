@@ -117,8 +117,15 @@ vendored Zig and the FetchContent deps are cached).
 | `Ctrl+,` / `Cmd+,` | Settings modal (font, theme, AI provider / model / key) |
 | `Cmd+B` / `Ctrl+Shift+B` | Toggle the AI chat sidebar |
 | `Ctrl+Space` | Inline command generation — describe a command, get it staged |
-| `Cmd+Shift+/` | Ask AI about the latest command block |
+| `Cmd+Shift+/` / `Ctrl+Shift+/` | Ask AI about the latest command block |
 | `Cmd+↑` / `Cmd+↓` (or `Ctrl+↑` / `Ctrl+↓`) | Jump to previous / next command block |
+| `Cmd+T` / `Ctrl+Shift+T` | New tab |
+| `Cmd+W` / `Ctrl+Shift+W` | Close focused pane (last pane closes the tab; last tab exits) |
+| `Cmd+1`–`9` / `Ctrl+Shift+1`–`9` | Select tab 1–9 |
+| `Cmd+D` / `Ctrl+Shift+D` | Split focused pane right |
+| `Cmd+Shift+D` / `Ctrl+Shift+Alt+D` | Split focused pane down |
+| `Cmd+Opt+←/→/↑/↓` / `Ctrl+Shift+←/→/↑/↓` | Move focus between panes |
+| `Cmd` / `Ctrl` + `=` / `-` / `0` | Increase, decrease, or reset font size |
 | Drag · `Cmd+C` / `Ctrl+Shift+C` | Select text · copy the selection |
 | `Cmd+V` / `Ctrl+Shift+V` / `Shift+Insert` | Paste (bracketed-paste safe) |
 | `Ctrl` / `Cmd` + click a URL | Open it (`open` / `xdg-open`) |
