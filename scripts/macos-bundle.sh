@@ -23,12 +23,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/macos-release-lib.sh"
+
 VERSION="${1:-0.1.0}"
 BIN="$ROOT/build/fangs"
 APP="$ROOT/dist/Fangs.app"
 BUNDLE_ID="io.github.rene-rodriguez.fangs"
 ENTITLEMENTS="$ROOT/packaging/macos/hardened-runtime.entitlements"
 SIGN_IDENTITY="${FANGS_CODESIGN_IDENTITY:-}"
+ARCH="$(uname -m)"
 
 # --- 0. Ensure the binary exists ---------------------------------------------
 if [ ! -x "$BIN" ]; then
@@ -147,7 +150,7 @@ if [ -n "$SIGN_IDENTITY" ]; then
     exit 1
   fi
 
-  NOTARY_ZIP="$ROOT/dist/fangs-$VERSION-macos-$(uname -m)-notary.zip"
+  NOTARY_ZIP="$ROOT/dist/fangs-$VERSION-macos-$ARCH-notary.zip"
   rm -f "$NOTARY_ZIP"
   ( cd "$ROOT/dist" && /usr/bin/ditto -c -k --keepParent "Fangs.app" "$NOTARY_ZIP" )
 
@@ -162,7 +165,7 @@ if [ -n "$SIGN_IDENTITY" ]; then
 fi
 
 # --- 7. Zip for distribution -------------------------------------------------
-ZIP="$ROOT/dist/fangs-$VERSION-macos-$(uname -m).zip"
+ZIP="$(fangs_macos_app_zip_path "$ROOT" "$VERSION" "$ARCH" "$SIGN_IDENTITY" "${FANGS_UNSIGNED_ZIP_SUFFIX:-}")"
 rm -f "$ZIP"
 ( cd "$ROOT/dist" && /usr/bin/ditto -c -k --keepParent "Fangs.app" "$ZIP" )
 

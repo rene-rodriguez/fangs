@@ -211,3 +211,11 @@ add_executable(ui_theme_tests
 target_compile_features(ui_theme_tests PRIVATE c_std_11)
 target_include_directories(ui_theme_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 add_test(NAME ui_theme_tests COMMAND ui_theme_tests)
+
+add_test(
+  NAME macos_release_lib_tests
+  COMMAND bash "${CMAKE_SOURCE_DIR}/tests/macos_release_lib_tests.sh")
+
+add_test(
+  NAME release_workflow_tests
+  COMMAND bash "${CMAKE_SOURCE_DIR}/tests/release_workflow_tests.sh")

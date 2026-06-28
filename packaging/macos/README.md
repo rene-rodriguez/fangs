@@ -5,7 +5,9 @@ Two artifacts live here:
 - **`scripts/macos-bundle.sh`** (in the repo root `scripts/`) — turns the built
   binary into a relocatable `Fangs.app` plus a distributable `.zip`. Local
   builds are ad-hoc signed by default; release builds use Developer ID signing,
-  notarization, and stapling when the signing environment is present.
+  notarization, and stapling when the signing environment is present. Until
+  Developer ID credentials are configured, CI marks tester app zips with an
+  explicit `-unsigned` suffix.
 - **`fangs.rb`** — a Homebrew **cask** that installs the prebuilt `.app`
   from a GitHub release.
 
@@ -51,15 +53,21 @@ brew install --cask <tap>/fangs
 
 ## Cutting a release (maintainer)
 
-1. Ensure the CI/release host has a paid Apple Developer ID certificate and
-   notarization credentials.
+1. For a notarized public macOS app zip, ensure the CI/release host has a paid
+   Apple Developer ID certificate and notarization credentials.
 2. `scripts/macos-bundle.sh <version>`
    with either `FANGS_NOTARY_KEYCHAIN_PROFILE` or
    `APPLE_ID` + `APPLE_TEAM_ID` + `APPLE_APP_SPECIFIC_PASSWORD`.
 3. Upload `dist/fangs-<version>-macos-arm64.zip` to the GitHub release `v<version>`.
 4. In `fangs.rb`, set `version` and paste the `sha256` the bundler printed.
 
-The GitHub release workflow expects these secrets for notarized macOS assets:
+If the GitHub Actions secrets below are missing, the release workflow still
+builds and uploads the macOS CLI tarball plus an ad-hoc signed app zip named
+`fangs-<version>-macos-arm64-unsigned.zip`. That asset is intended for testers
+only; macOS Gatekeeper will not treat it as a notarized Developer ID release.
+
+The GitHub release workflow uses these secrets for notarized macOS assets when
+they are available:
 
 - `MACOS_DEVELOPER_ID_CERTIFICATE_BASE64`
 - `MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD`

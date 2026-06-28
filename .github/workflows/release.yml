@@ -99,7 +99,8 @@ jobs:
         run: bash scripts/package-macos.sh "$TAG"
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
-      - name: Require macOS signing and notarization secrets
+      - name: Detect macOS signing and notarization secrets
+        id: macos_signing
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
@@ -108,15 +109,25 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
-          missing=0
+          missing=()
           for name in CERTIFICATE_BASE64 CERTIFICATE_PASSWORD CODESIGN_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD; do
             if [ -z "${!name}" ]; then
-              echo "::error::$name is required for notarized macOS releases"
-              missing=1
+              missing+=("$name")
             fi
           done
-          exit "$missing"
+
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "macOS Developer ID signing and notarization secrets are configured."
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            printf 'macOS Developer ID signing disabled; missing secrets:'
+            printf ' %s' "${missing[@]}"
+            echo
+            echo "The .app zip will be ad-hoc signed and marked unsigned for testers."
+          fi
       - name: Import Developer ID certificate
+        if: steps.macos_signing.outputs.available == 'true'
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
@@ -136,20 +147,38 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH"
           security default-keychain -s "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-      - name: Bundle .app (for the Homebrew cask)
+      - name: Bundle .app
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
           FANGS_CODESIGN_IDENTITY: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-        run: bash scripts/macos-bundle.sh "${TAG#v}"   # cask version has no leading 'v'
+          SIGNING_AVAILABLE: ${{ steps.macos_signing.outputs.available }}
+          FANGS_UNSIGNED_ZIP_SUFFIX: ${{ steps.macos_signing.outputs.available != 'true' }}
+        run: |
+          if [ "$SIGNING_AVAILABLE" != "true" ]; then
+            unset FANGS_CODESIGN_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD
+          fi
+          bash scripts/macos-bundle.sh "${TAG#v}"   # cask version has no leading 'v'
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
+          assets=(
+            "dist/fangs-macos-$(uname -m).tar.gz"
+          )
+          signed_zip="dist/fangs-${TAG#v}-macos-$(uname -m).zip"
+          unsigned_zip="dist/fangs-${TAG#v}-macos-$(uname -m)-unsigned.zip"
+
+          if [ -f "$signed_zip" ]; then
+            assets+=("$signed_zip")
+          fi
+          if [ -f "$unsigned_zip" ]; then
+            assets+=("$unsigned_zip")
+          fi
+
           gh release upload "$TAG" \
-            "dist/fangs-macos-$(uname -m).tar.gz" \
-            "dist/fangs-${TAG#v}-macos-$(uname -m).zip" \
+            "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" --clobber
