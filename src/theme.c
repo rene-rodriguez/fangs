@@ -62,6 +62,66 @@ static const Theme MONOKAI = {
     .is_light = false,
 };
 
+// Solarized Dark.
+static const Theme SOLARIZEDDARK = {
+    .bg = {  0,  43,  54}, .fg = {131, 148, 150}, .cursor = {147, 161, 161},
+    .ansi = {
+        {  7,  54,  66}, {220,  50,  47}, {133, 153,   0}, {181, 137,   0},
+        { 38, 139, 210}, {211,  54, 130}, { 42, 161, 152}, {238, 232, 213},
+        {  0,  43,  54}, {203,  75,  22}, { 88, 110, 117}, {101, 123, 131},
+        {131, 148, 150}, {108, 113, 196}, {147, 161, 161}, {253, 246, 227},
+    },
+    .is_light = false,
+};
+
+// Catppuccin Mocha.
+static const Theme CATPPUCCINMOCHA = {
+    .bg = { 30,  30,  46}, .fg = {205, 214, 244}, .cursor = {245, 224, 220},
+    .ansi = {
+        { 69,  71,  90}, {243, 139, 168}, {166, 227, 161}, {249, 226, 175},
+        {137, 180, 250}, {245, 194, 231}, {148, 226, 213}, {166, 173, 200},
+        { 88,  91, 112}, {243, 139, 168}, {166, 227, 161}, {249, 226, 175},
+        {137, 180, 250}, {245, 194, 231}, {148, 226, 213}, {186, 194, 222},
+    },
+    .is_light = false,
+};
+
+// Ayu Mirage.
+static const Theme AYUMIRAGE = {
+    .bg = { 31,  36,  48}, .fg = {203, 204, 198}, .cursor = {255, 204, 102},
+    .ansi = {
+        { 25,  30,  42}, {255,  51,  51}, {186, 230, 126}, {255, 167,  89},
+        {115, 208, 255}, {212, 191, 255}, {149, 230, 203}, {199, 199, 199},
+        {104, 104, 104}, {242, 121, 131}, {166, 204, 112}, {255, 204, 102},
+        { 92, 207, 230}, {255, 174,  87}, {149, 230, 203}, {255, 255, 255},
+    },
+    .is_light = false,
+};
+
+// Tokyo Night.
+static const Theme TOKYONIGHT = {
+    .bg = { 26,  27,  38}, .fg = {192, 202, 245}, .cursor = {192, 202, 245},
+    .ansi = {
+        { 21,  22,  30}, {247, 118, 142}, {158, 206, 106}, {224, 175, 104},
+        {122, 162, 247}, {187, 154, 247}, {125, 207, 255}, {169, 177, 214},
+        { 65,  72, 104}, {247, 118, 142}, {158, 206, 106}, {224, 175, 104},
+        {122, 162, 247}, {187, 154, 247}, {125, 207, 255}, {192, 202, 245},
+    },
+    .is_light = false,
+};
+
+// Rose Pine.
+static const Theme ROSEPINE = {
+    .bg = { 25,  23,  36}, .fg = {224, 222, 244}, .cursor = {235, 188, 186},
+    .ansi = {
+        { 38,  35,  58}, {235, 111, 146}, { 49, 116, 143}, {246, 193, 119},
+        {156, 207, 216}, {196, 167, 231}, {235, 188, 186}, {224, 222, 244},
+        {110, 106, 134}, {235, 111, 146}, { 49, 116, 143}, {246, 193, 119},
+        {156, 207, 216}, {196, 167, 231}, {235, 188, 186}, {224, 222, 244},
+    },
+    .is_light = false,
+};
+
 // One Light.
 static const Theme ONELIGHT = {
     .bg = {250, 250, 250}, .fg = {56, 58, 66}, .cursor = {64, 120, 242},
@@ -110,6 +170,78 @@ static const Theme GRUVBOXLIGHT = {
     .is_light = true,
 };
 
+// Solarized Light.
+static const Theme SOLARIZEDLIGHT = {
+    .bg = {253, 246, 227}, .fg = {101, 123, 131}, .cursor = { 88, 110, 117},
+    .ansi = {
+        {  7,  54,  66}, {220,  50,  47}, {133, 153,   0}, {181, 137,   0},
+        { 38, 139, 210}, {211,  54, 130}, { 42, 161, 152}, {238, 232, 213},
+        {  0,  43,  54}, {203,  75,  22}, { 88, 110, 117}, {101, 123, 131},
+        {131, 148, 150}, {108, 113, 196}, {147, 161, 161}, {253, 246, 227},
+    },
+    .is_light = true,
+};
+
+// Catppuccin Latte.
+static const Theme CATPPUCCINLATTE = {
+    .bg = {239, 241, 245}, .fg = { 76,  79, 105}, .cursor = {220, 138, 120},
+    .ansi = {
+        { 92,  95, 119}, {210,  15,  57}, { 64, 160,  43}, {223, 142,  29},
+        { 30, 102, 245}, {234, 118, 203}, { 23, 146, 153}, {172, 176, 190},
+        {108, 111, 133}, {210,  15,  57}, { 64, 160,  43}, {223, 142,  29},
+        { 30, 102, 245}, {234, 118, 203}, { 23, 146, 153}, {188, 192, 204},
+    },
+    .is_light = true,
+};
+
+// Ayu Light.
+static const Theme AYULIGHT = {
+    .bg = {250, 250, 250}, .fg = { 92, 103, 115}, .cursor = {255, 153,  64},
+    .ansi = {
+        {  0,   0,   0}, {240, 113, 120}, {134, 179,   0}, {242, 174,  73},
+        { 85, 180, 212}, {163, 122, 204}, { 76, 191, 153}, { 92, 103, 115},
+        {171, 176, 182}, {240, 113, 120}, {134, 179,   0}, {242, 174,  73},
+        { 85, 180, 212}, {163, 122, 204}, { 76, 191, 153}, {255, 255, 255},
+    },
+    .is_light = true,
+};
+
+// Tokyo Night Day.
+static const Theme TOKYONIGHTDAY = {
+    .bg = {225, 226, 231}, .fg = { 55,  96, 191}, .cursor = { 55,  96, 191},
+    .ansi = {
+        {180, 181, 185}, {245,  42, 101}, { 88, 117,  57}, {140, 108,  62},
+        { 46, 125, 233}, {152,  84, 241}, {  0, 113, 151}, { 97, 114, 176},
+        {161, 166, 197}, {255,  71, 116}, { 92, 133,  36}, {162, 118,  41},
+        { 53, 138, 255}, {164,  99, 255}, {  0, 126, 168}, { 55,  96, 191},
+    },
+    .is_light = true,
+};
+
+// Rose Pine Dawn.
+static const Theme ROSEPINEDAWN = {
+    .bg = {250, 244, 237}, .fg = { 87,  82, 121}, .cursor = {180,  99, 122},
+    .ansi = {
+        {242, 233, 225}, {180,  99, 122}, { 40, 105, 131}, {234, 157,  52},
+        { 86, 148, 159}, {144, 122, 169}, {215, 130, 126}, { 87,  82, 121},
+        {152, 147, 165}, {180,  99, 122}, { 40, 105, 131}, {234, 157,  52},
+        { 86, 148, 159}, {144, 122, 169}, {215, 130, 126}, { 87,  82, 121},
+    },
+    .is_light = true,
+};
+
+// Everforest Light.
+static const Theme EVERFORESTLIGHT = {
+    .bg = {253, 246, 227}, .fg = { 92, 106, 114}, .cursor = { 92, 106, 114},
+    .ansi = {
+        { 92, 106, 114}, {248,  85,  82}, {141, 161,   1}, {223, 160,   0},
+        { 58, 148, 197}, {223, 105, 186}, { 53, 167, 124}, {223, 221, 200},
+        {166, 176, 160}, {248,  85,  82}, {141, 161,   1}, {223, 160,   0},
+        { 58, 148, 197}, {223, 105, 186}, { 53, 167, 124}, { 92, 106, 114},
+    },
+    .is_light = true,
+};
+
 typedef struct { const char *slug; const char *name; const Theme *theme; } ThemeEntry;
 
 static const ThemeEntry ENTRIES[] = {
@@ -118,10 +250,21 @@ static const ThemeEntry ENTRIES[] = {
     {"githubdark", "GitHub Dark", &GITHUBDARK},
     {"gruvbox",    "Gruvbox",     &GRUVBOX},
     {"monokai",     "Monokai",      &MONOKAI},
+    {"solarizeddark", "Solarized Dark", &SOLARIZEDDARK},
+    {"catppuccinmocha", "Catppuccin Mocha", &CATPPUCCINMOCHA},
+    {"ayumirage", "Ayu Mirage", &AYUMIRAGE},
+    {"tokyonight", "Tokyo Night", &TOKYONIGHT},
+    {"rosepine", "Rose Pine", &ROSEPINE},
     {"onelight",    "One Light",    &ONELIGHT},
     {"lightmodern", "Light Modern", &LIGHTMODERN},
     {"githublight", "GitHub Light", &GITHUBLIGHT},
     {"gruvboxlight","Gruvbox Light",&GRUVBOXLIGHT},
+    {"solarizedlight", "Solarized Light", &SOLARIZEDLIGHT},
+    {"catppuccinlatte", "Catppuccin Latte", &CATPPUCCINLATTE},
+    {"ayulight", "Ayu Light", &AYULIGHT},
+    {"tokyonightday", "Tokyo Night Day", &TOKYONIGHTDAY},
+    {"rosepinedawn", "Rose Pine Dawn", &ROSEPINEDAWN},
+    {"everforestlight", "Everforest Light", &EVERFORESTLIGHT},
 };
 static const int ENTRY_COUNT = (int)(sizeof(ENTRIES) / sizeof(ENTRIES[0]));
 
