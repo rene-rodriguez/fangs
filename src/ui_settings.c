@@ -24,6 +24,8 @@ typedef enum {
 
 static bool settings_open = false;
 static bool draft_valid = false;
+static bool theme_mode_dropdown_open = false;
+static bool theme_name_dropdown_open = false;
 static AppConfig draft;
 static bool editing[EDIT_COUNT] = {0};
 
@@ -31,6 +33,14 @@ static void clear_editing(void)
 {
     for (int i = 0; i < EDIT_COUNT; i++)
         editing[i] = false;
+}
+
+static void reset_settings_state(void)
+{
+    draft_valid = false;
+    theme_mode_dropdown_open = false;
+    theme_name_dropdown_open = false;
+    clear_editing();
 }
 
 static int provider_index(const char *provider)
@@ -71,13 +81,56 @@ static void apply_provider_defaults(AppConfig *c, const char *provider)
     }
 }
 
-// Build a ';'-joined list of theme display names for GuiComboBox.
-static const char *theme_combo_list(void)
+static bool theme_index_is_light(int index)
+{
+    return theme_resolve(theme_slug(index)).is_light;
+}
+
+static int theme_registry_index_for_mode(bool want_light, int mode_index)
+{
+    int seen = 0;
+    for (int i = 0; i < theme_count(); i++) {
+        if (theme_index_is_light(i) != want_light)
+            continue;
+        if (seen == mode_index)
+            return i;
+        seen++;
+    }
+
+    for (int i = 0; i < theme_count(); i++)
+        if (theme_index_is_light(i) == want_light)
+            return i;
+    return 0;
+}
+
+static int theme_mode_index_of(const char *slug, bool want_light)
+{
+    int registry_index = theme_index_of(slug);
+    int mode_index = 0;
+    for (int i = 0; i < theme_count(); i++) {
+        if (theme_index_is_light(i) != want_light)
+            continue;
+        if (i == registry_index)
+            return mode_index;
+        mode_index++;
+    }
+    return 0;
+}
+
+static const char *theme_slug_for_mode_index(bool want_light, int mode_index)
+{
+    return theme_slug(theme_registry_index_for_mode(want_light, mode_index));
+}
+
+// Build a ';'-joined list of theme display names for the selected mode.
+static const char *theme_combo_list(bool want_light)
 {
     static char buf[256];
     buf[0] = '\0';
     for (int i = 0; i < theme_count(); i++) {
-        if (i > 0)
+        if (theme_index_is_light(i) != want_light)
+            continue;
+        if (buf[0] != '\0')
             strncat(buf, ";", sizeof(buf) - strlen(buf) - 1);
         strncat(buf, theme_name(i), sizeof(buf) - strlen(buf) - 1);
     }
@@ -121,8 +174,7 @@ bool ui_settings_open(void)
 void ui_settings_toggle(void)
 {
     settings_open = !settings_open;
-    draft_valid = false;
-    clear_editing();
+    reset_settings_state();
 }
 
 void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
@@ -141,8 +193,7 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
 
     if (IsKeyPressed(KEY_ESCAPE)) {
         settings_open = false;
-        draft_valid = false;
-        clear_editing();
+        reset_settings_state();
         return;
     }
 
@@ -151,7 +202,7 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
     DrawRectangle(0, 0, screen_w, screen_h, UI2RAY(g_ui_theme.modal_overlay));
 
     float panel_w = 620.0f * s;
-    float panel_h = 560.0f * s;
+    float panel_h = 610.0f * s;
     if (panel_w > screen_w - 32.0f*s) panel_w = (float)screen_w - 32.0f*s;
     if (panel_h > screen_h - 32.0f*s) panel_h = (float)screen_h - 32.0f*s;
     Rectangle panel = {
@@ -182,15 +233,45 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
                          &draft.font_size, 8, 72, EDIT_FONT_SIZE, s);
     y += row_h + gap + 18.0f*s;
 
-    GuiLabel((Rectangle){x, y - 22.0f*s, half_w, 18*s}, "Theme");
-    int active_theme = theme_index_of(draft.theme);
-    Rectangle theme_bounds = {x, y, half_w, row_h};
-    if (CheckCollisionPointRec(GetMousePosition(), theme_bounds))
-        SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
-    GuiComboBox(theme_bounds, theme_combo_list(), &active_theme);
-    snprintf(draft.theme, sizeof(draft.theme), "%s", theme_slug(active_theme));
+    bool theme_mode_light = theme_resolve(draft.theme).is_light;
+    int active_theme_mode = theme_mode_light ? 1 : 0;
+    int prev_theme_mode = active_theme_mode;
+    int active_theme = theme_mode_index_of(draft.theme, theme_mode_light);
+    Rectangle theme_mode_bounds = {x, y, half_w, row_h};
+    Rectangle theme_bounds = {x + half_w + col_gap, y, half_w, row_h};
+    bool lock_controls_for_theme_dropdown =
+        theme_mode_dropdown_open || theme_name_dropdown_open;
+    if (lock_controls_for_theme_dropdown)
+        GuiLock();
 
-    draw_labeled_spinner("Scrollback", (Rectangle){x + half_w + col_gap, y, half_w, row_h},
+    GuiLabel((Rectangle){theme_mode_bounds.x, y - 22.0f*s, half_w, 18*s}, "Theme mode");
+    GuiLabel((Rectangle){theme_bounds.x, y - 22.0f*s, half_w, 18*s}, "Theme");
+    if (CheckCollisionPointRec(GetMousePosition(), theme_mode_bounds)
+        || CheckCollisionPointRec(GetMousePosition(), theme_bounds))
+        SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
+    if (!theme_mode_dropdown_open) {
+        if (GuiDropdownBox(theme_mode_bounds, "Dark;Light", &active_theme_mode, theme_mode_dropdown_open)) {
+            theme_mode_dropdown_open = true;
+            clear_editing();
+        }
+    }
+    if (active_theme_mode != prev_theme_mode) {
+        theme_mode_light = active_theme_mode == 1;
+        active_theme = 0;
+        snprintf(draft.theme, sizeof(draft.theme), "%s",
+                 theme_slug_for_mode_index(theme_mode_light, active_theme));
+    }
+    if (!theme_name_dropdown_open) {
+        if (GuiDropdownBox(theme_bounds, theme_combo_list(theme_mode_light), &active_theme, theme_name_dropdown_open)) {
+            theme_name_dropdown_open = true;
+            clear_editing();
+        }
+        snprintf(draft.theme, sizeof(draft.theme), "%s",
+                 theme_slug_for_mode_index(theme_mode_light, active_theme));
+    }
+    y += row_h + gap + 18.0f*s;
+
+    draw_labeled_spinner("Scrollback", (Rectangle){x, y, half_w, row_h},
                          &draft.scrollback, 100, 100000, EDIT_SCROLLBACK, s);
     y += row_h + gap + 28.0f*s;
 
@@ -254,16 +335,33 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
 
     if (GuiButton(cancel, "Cancel")) {
         settings_open = false;
-        draft_valid = false;
-        clear_editing();
+        reset_settings_state();
     }
 
     if (GuiButton(save, "Save")) {
         *cfg = draft;
         settings_open = false;
-        draft_valid = false;
-        clear_editing();
+        reset_settings_state();
         if (out_saved)
             *out_saved = true;
+    }
+
+    if (lock_controls_for_theme_dropdown) {
+        if (theme_mode_dropdown_open) {
+            if (GuiDropdownBox(theme_mode_bounds, "Dark;Light", &active_theme_mode, theme_mode_dropdown_open))
+                theme_mode_dropdown_open = false;
+            if (active_theme_mode != prev_theme_mode) {
+                theme_mode_light = active_theme_mode == 1;
+                active_theme = 0;
+                snprintf(draft.theme, sizeof(draft.theme), "%s",
+                         theme_slug_for_mode_index(theme_mode_light, active_theme));
+            }
+        } else if (theme_name_dropdown_open) {
+            if (GuiDropdownBox(theme_bounds, theme_combo_list(theme_mode_light), &active_theme, theme_name_dropdown_open))
+                theme_name_dropdown_open = false;
+            snprintf(draft.theme, sizeof(draft.theme), "%s",
+                     theme_slug_for_mode_index(theme_mode_light, active_theme));
+        }
+        GuiUnlock();
     }
 }

@@ -228,6 +228,10 @@ add_test(
   COMMAND bash "${CMAKE_SOURCE_DIR}/tests/macos_app_install_docs_tests.sh")
 
 add_test(
+  NAME settings_theme_dropdown_tests
+  COMMAND bash "${CMAKE_SOURCE_DIR}/tests/settings_theme_dropdown_tests.sh")
+
+add_test(
   NAME macos_release_lib_tests
   COMMAND bash "${CMAKE_SOURCE_DIR}/tests/macos_release_lib_tests.sh")
 

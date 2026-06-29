@@ -56,7 +56,19 @@ static void test_palette256(void)
 
 static void test_selector(void)
 {
-    EXPECT_TRUE(theme_count() >= 5);
+    EXPECT_TRUE(theme_count() == 20);
+
+    int dark_count = 0;
+    int light_count = 0;
+    for (int i = 0; i < theme_count(); i++) {
+        Theme t = theme_resolve(theme_slug(i));
+        if (t.is_light)
+            light_count++;
+        else
+            dark_count++;
+    }
+    EXPECT_TRUE(dark_count == 10);
+    EXPECT_TRUE(light_count == 10);
 
     int gi = theme_index_of("gruvbox");          // slug ↔ index round-trip
     EXPECT_TRUE(strcmp(theme_slug(gi), "gruvbox") == 0);
@@ -74,6 +86,20 @@ static void test_selector(void)
     EXPECT_TRUE(theme_resolve("lightmodern").is_light);
     EXPECT_TRUE(theme_resolve("githublight").is_light);
     EXPECT_TRUE(theme_resolve("gruvboxlight").is_light);
+
+    // Expanded balanced catalog.
+    EXPECT_TRUE(!theme_resolve("solarizeddark").is_light);
+    EXPECT_TRUE(!theme_resolve("catppuccinmocha").is_light);
+    EXPECT_TRUE(!theme_resolve("ayumirage").is_light);
+    EXPECT_TRUE(!theme_resolve("tokyonight").is_light);
+    EXPECT_TRUE(!theme_resolve("rosepine").is_light);
+
+    EXPECT_TRUE(theme_resolve("solarizedlight").is_light);
+    EXPECT_TRUE(theme_resolve("catppuccinlatte").is_light);
+    EXPECT_TRUE(theme_resolve("ayulight").is_light);
+    EXPECT_TRUE(theme_resolve("tokyonightday").is_light);
+    EXPECT_TRUE(theme_resolve("rosepinedawn").is_light);
+    EXPECT_TRUE(theme_resolve("everforestlight").is_light);
 }
 
 int main(void)
