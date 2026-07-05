@@ -29,7 +29,8 @@ struct Session {
 };
 
 Session *session_create(uint16_t cols, uint16_t rows, int cell_w, int cell_h,
-                        int max_scrollback, const char *cwd)
+                        int max_scrollback, const char *cwd,
+                        bool kitty_images, int kitty_image_storage_mb)
 {
     Session *s = (Session *)calloc(1, sizeof(Session));
     if (!s)
@@ -46,7 +47,8 @@ Session *session_create(uint16_t cols, uint16_t rows, int cell_w, int cell_h,
     else
         snprintf(s->cwd, sizeof(s->cwd), "%s", getenv("HOME") ? getenv("HOME") : "/");
 
-    s->te = term_engine_create(cols, rows, cell_w, cell_h, max_scrollback);
+    s->te = term_engine_create(cols, rows, cell_w, cell_h, max_scrollback,
+                               kitty_images, kitty_image_storage_mb);
     if (!s->te) {
         free(s);
         return NULL;

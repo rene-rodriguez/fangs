@@ -19,7 +19,9 @@ struct TermEngine {
 
 TermEngine *term_engine_create(uint16_t cols, uint16_t rows,
                                int cell_width, int cell_height,
-                               int max_scrollback)
+                               int max_scrollback,
+                               bool kitty_images,
+                               int kitty_image_storage_mb)
 {
     TermEngine *te = calloc(1, sizeof(*te));
     if (!te) return NULL;
@@ -38,11 +40,17 @@ TermEngine *term_engine_create(uint16_t cols, uint16_t rows,
     ghostty_terminal_resize(te->terminal, cols, rows,
                             (uint32_t)cell_width, (uint32_t)cell_height);
 
-    // Enable Kitty graphics (storage limit + non-inline transmit mediums).
-    uint64_t kitty_limit = 64 * 1024 * 1024;
+    if (kitty_image_storage_mb < 0)
+        kitty_image_storage_mb = 0;
+
+    // Enable Kitty graphics only when requested and bounded by a non-zero
+    // storage limit. A zero limit disables the protocol in libghostty-vt.
+    uint64_t kitty_limit = kitty_images
+        ? (uint64_t)kitty_image_storage_mb * 1024ULL * 1024ULL
+        : 0;
     ghostty_terminal_set(te->terminal,
         GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &kitty_limit);
-    bool on = true;
+    bool on = kitty_limit > 0;
     ghostty_terminal_set(te->terminal, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE, &on);
     ghostty_terminal_set(te->terminal, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE, &on);
     ghostty_terminal_set(te->terminal, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM, &on);

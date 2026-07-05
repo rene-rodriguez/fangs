@@ -69,6 +69,15 @@ static bool parse_bool_value(const char *value, bool *out)
     return false;
 }
 
+static int clamp_int(int value, int min, int max)
+{
+    if (value < min)
+        return min;
+    if (value > max)
+        return max;
+    return value;
+}
+
 static void apply_key_value(AppConfig *c, const char *section,
                             const char *key, const char *value)
 {
@@ -85,6 +94,14 @@ static void apply_key_value(AppConfig *c, const char *section,
             int parsed = 0;
             if (parse_int_value(value, &parsed) && parsed > 0)
                 c->scrollback = parsed;
+        } else if (strcmp(key, "kitty_images") == 0) {
+            bool parsed = false;
+            if (parse_bool_value(value, &parsed))
+                c->kitty_images = parsed;
+        } else if (strcmp(key, "kitty_image_storage_mb") == 0) {
+            int parsed = 0;
+            if (parse_int_value(value, &parsed))
+                c->kitty_image_storage_mb = clamp_int(parsed, 0, 1024);
         } else if (strcmp(key, "cursor_style") == 0) {
             int parsed = 0;
             if (parse_int_value(value, &parsed) && parsed >= 0 && parsed <= 2)
@@ -147,6 +164,8 @@ void config_defaults(AppConfig *c)
     c->font_size = 16;
     copy_string(c->theme, sizeof(c->theme), "dark");
     c->scrollback = 1000;
+    c->kitty_images = true;
+    c->kitty_image_storage_mb = 64;
 
     copy_string(c->provider, sizeof(c->provider), "openai");
     copy_string(c->endpoint, sizeof(c->endpoint),
@@ -250,6 +269,8 @@ bool config_save(const AppConfig *c, const char *path)
         "font_size = %d\n"
         "theme = %s\n"
         "scrollback = %d\n"
+        "kitty_images = %s\n"
+        "kitty_image_storage_mb = %d\n"
         "cursor_style = %d\n"
         "cursor_blink = %s\n"
         "\n"
@@ -270,6 +291,8 @@ bool config_save(const AppConfig *c, const char *path)
         c->font_size,
         c->theme,
         c->scrollback,
+        c->kitty_images ? "true" : "false",
+        c->kitty_image_storage_mb,
         c->cursor_style,
         c->cursor_blink ? "true" : "false",
         c->window_width,

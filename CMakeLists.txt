@@ -81,6 +81,7 @@ add_executable(fangs
   src/ai_http.c
   src/sse.c
   src/context.c
+  src/kitty_images.c
   src/redact.c
   src/cmdextract.c
   src/ui_inline.c
@@ -171,6 +172,23 @@ add_executable(theme_tests
 target_compile_features(theme_tests PRIVATE c_std_11)
 target_include_directories(theme_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 add_test(NAME theme_tests COMMAND theme_tests)
+
+add_executable(term_engine_tests
+  tests/term_engine_tests.c
+  src/term_engine.c
+  src/theme.c)
+target_compile_features(term_engine_tests PRIVATE c_std_11)
+target_include_directories(term_engine_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(term_engine_tests ghostty-vt)
+add_test(NAME term_engine_tests COMMAND term_engine_tests)
+
+add_executable(kitty_images_tests
+  tests/kitty_images_tests.c
+  src/kitty_images.c)
+target_compile_features(kitty_images_tests PRIVATE c_std_11)
+target_include_directories(kitty_images_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(kitty_images_tests raylib ghostty-vt)
+add_test(NAME kitty_images_tests COMMAND kitty_images_tests)
 
 add_executable(cmdblocks_osc_tests
   tests/cmdblocks_osc_tests.c

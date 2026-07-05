@@ -17,12 +17,15 @@ written to be executable as a build plan, not just descriptive.
 - BYOK AI sidebar chat with terminal-context awareness and a "Run" action.
 - Inline natural-language → command generation (`Ctrl+Space`), staged at the prompt.
 - `ini` dotfile config + RayGUI settings modal with hot reload.
+- Static Kitty graphics protocol image rendering for PNG, RGBA, RGB, grayscale, and
+  grayscale+alpha payloads. Protocol parsing/storage remains inside `libghostty-vt`; Fangs owns
+  only Raylib texture upload, placement, and draw ordering.
 
 ### Out of scope (v1)
 - Windows (the engine supports it; we don't target it yet).
 - Tabs, splits/panes beyond the single terminal + sidebar split. *(Now planned as a post-v1 enhancement — see §16.)*
 - Multi-turn agentic tool-use, file editing, or command auto-execution.
-- Sixel/kitty-graphics-dependent features (the engine supports them; we don't build product on them in v1).
+- Sixel, Kitty animations, image editing, and AI image understanding.
 - Telemetry, accounts, sync — by design, never.
 
 ### Non-negotiable invariants
@@ -150,6 +153,8 @@ font_family = JetBrainsMono Nerd Font
 font_size   = 14
 theme       = dark            ; dark | light | <named>
 scrollback  = 10000
+kitty_images = true           ; set false to disable Kitty graphics protocol images
+kitty_image_storage_mb = 64   ; 0 disables image storage, max 1024
 
 [ai]
 provider    = openai          ; openai | anthropic | ollama | custom (all OpenAI-compatible unless anthropic)

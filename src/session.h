@@ -15,7 +15,8 @@ typedef struct Session Session;
 // and `cell_h` are the pixel size of a cell. `cwd` is the initial working
 // directory (NULL → $HOME). Returns NULL on failure.
 Session *session_create(uint16_t cols, uint16_t rows, int cell_w, int cell_h,
-                        int max_scrollback, const char *cwd);
+                        int max_scrollback, const char *cwd,
+                        bool kitty_images, int kitty_image_storage_mb);
 
 // Destroy a session: join the child, free the engine, close the PTY.
 void session_destroy(Session *s);

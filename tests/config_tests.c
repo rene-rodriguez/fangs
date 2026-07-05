@@ -77,6 +77,8 @@ static void test_defaults(void)
     EXPECT_INT(cfg.font_size, 16);
     EXPECT_STR(cfg.theme, "dark");
     EXPECT_INT(cfg.scrollback, 1000);
+    EXPECT_TRUE(cfg.kitty_images);
+    EXPECT_INT(cfg.kitty_image_storage_mb, 64);
     EXPECT_STR(cfg.provider, "openai");
     EXPECT_STR(cfg.endpoint, "https://api.openai.com/v1/chat/completions");
     EXPECT_STR(cfg.model, "gpt-4o-mini");
@@ -116,6 +118,8 @@ static void test_load_parses_ini_sections(void)
         "font_size   = 21\n"
         "theme = light ; inline comment\n"
         "scrollback=5000\n"
+        "kitty_images = false\n"
+        "kitty_image_storage_mb = 128\n"
         "\n"
         "[window]\n"
         "width = 1440\n"
@@ -138,6 +142,8 @@ static void test_load_parses_ini_sections(void)
     EXPECT_INT(cfg.font_size, 21);
     EXPECT_STR(cfg.theme, "light");
     EXPECT_INT(cfg.scrollback, 5000);
+    EXPECT_TRUE(!cfg.kitty_images);
+    EXPECT_INT(cfg.kitty_image_storage_mb, 128);
     EXPECT_INT(cfg.window_width, 1440);
     EXPECT_INT(cfg.window_height, 900);
     EXPECT_INT(cfg.window_x, 120);
@@ -152,6 +158,28 @@ static void test_load_parses_ini_sections(void)
     free(path);
 }
 
+static void test_load_clamps_kitty_image_storage(void)
+{
+    char *path = temp_config_path();
+    write_file(path,
+        "[terminal]\n"
+        "kitty_image_storage_mb = 2048\n");
+
+    AppConfig cfg;
+    EXPECT_TRUE(config_load(&cfg, path));
+
+    EXPECT_INT(cfg.kitty_image_storage_mb, 1024);
+
+    write_file(path,
+        "[terminal]\n"
+        "kitty_image_storage_mb = -4\n");
+
+    EXPECT_TRUE(config_load(&cfg, path));
+    EXPECT_INT(cfg.kitty_image_storage_mb, 0);
+
+    free(path);
+}
+
 static void test_save_round_trips_app_config(void)
 {
     char *path = temp_config_path();
@@ -162,6 +190,8 @@ static void test_save_round_trips_app_config(void)
     cfg.font_size = 18;
     snprintf(cfg.theme, sizeof(cfg.theme), "%s", "light");
     cfg.scrollback = 3000;
+    cfg.kitty_images = false;
+    cfg.kitty_image_storage_mb = 96;
     cfg.window_width = 1280;
     cfg.window_height = 720;
     cfg.window_x = 42;
@@ -181,6 +211,8 @@ static void test_save_round_trips_app_config(void)
     EXPECT_INT(loaded.font_size, 18);
     EXPECT_STR(loaded.theme, "light");
     EXPECT_INT(loaded.scrollback, 3000);
+    EXPECT_TRUE(!loaded.kitty_images);
+    EXPECT_INT(loaded.kitty_image_storage_mb, 96);
     EXPECT_INT(loaded.window_width, 1280);
     EXPECT_INT(loaded.window_height, 720);
     EXPECT_INT(loaded.window_x, 42);
@@ -204,6 +236,7 @@ int main(void)
     test_defaults();
     test_load_missing_file_creates_defaults();
     test_load_parses_ini_sections();
+    test_load_clamps_kitty_image_storage();
     test_save_round_trips_app_config();
 
     if (failures != 0) {

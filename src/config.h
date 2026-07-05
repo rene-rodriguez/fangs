@@ -8,6 +8,8 @@ typedef struct {
     int font_size;
     char theme[32];
     int scrollback;
+    bool kitty_images;
+    int kitty_image_storage_mb;
 
     char provider[32];
     char endpoint[256];

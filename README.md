@@ -49,6 +49,9 @@ drops the rest:
   gets a separator, a colored gutter, and a **✓ / ✗ exit-status badge**; hover to copy its output,
   and jump between commands with `Cmd+↑` / `Cmd+↓`. A pure render overlay — the byte stream stays
   untouched. (See [`docs/shell-integration.md`](docs/shell-integration.md).)
+- **Kitty image graphics** — static Kitty protocol images render in the grid, including PNG,
+  RGBA, RGB, grayscale, and grayscale+alpha payloads. Useful for file previews, editor plugins,
+  and CLI image tools; Sixel and animations are intentionally out of scope for now.
 - **Live configuration** — an INI dotfile is the source of truth, with an in-app settings modal
   (`Ctrl+,`) that round-trips to it and hot-reloads instantly. No restarts.
 - **First-class theming** — One Dark, Dark Modern, GitHub Dark, Gruvbox, Monokai, and light
@@ -142,6 +145,9 @@ vendored Zig and the FetchContent deps are cached).
 Settings live in `~/.config/fangs/config` (INI), editable in-app via `Ctrl+,` (`Cmd+,` on
 macOS). **Save** writes the file and hot-reloads live — font size resizes the grid, theme changes
 apply instantly, no restart.
+
+Kitty image rendering is enabled by default. Advanced users can disable it or tune the storage
+budget in the dotfile with `kitty_images = false` or `kitty_image_storage_mb = 64`.
 
 The AI features are **bring-your-own-key**: set the **`FANGS_API_KEY`** environment variable
 (preferred), or store a key in the settings modal (written `0600`). When the env var is set, the

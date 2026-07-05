@@ -10,6 +10,7 @@
 #ifndef FANGS_TERM_ENGINE_H
 #define FANGS_TERM_ENGINE_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <ghostty/vt.h>
@@ -18,11 +19,14 @@
 
 typedef struct TermEngine TermEngine;
 
-// Create the engine: terminal + encoders + render state + iterators, with
-// Kitty graphics enabled. Returns NULL on failure.
+// Create the engine: terminal + encoders + render state + iterators.
+// Kitty graphics can be disabled or bounded by the storage limit. Returns
+// NULL on failure.
 TermEngine *term_engine_create(uint16_t cols, uint16_t rows,
                                int cell_width, int cell_height,
-                               int max_scrollback);
+                               int max_scrollback,
+                               bool kitty_images,
+                               int kitty_image_storage_mb);
 void        term_engine_destroy(TermEngine *te);
 
 // Feed PTY output into the VT parser.

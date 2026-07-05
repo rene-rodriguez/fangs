@@ -60,6 +60,8 @@ Fast evidence even before eyeballing. Both write a PNG you (I) can inspect:
 ```sh
 # Command-block overlay (canned OSC-133 → separators + ✓/✗ badges + copy button):
 FANGS_BLOCKS_SMOKE_SCREENSHOT=/tmp/fangs_blocks.png ./build/fangs
+# Kitty image rendering (canned inline PNG via Kitty graphics protocol):
+FANGS_KITTY_SMOKE_SCREENSHOT=/tmp/fangs_kitty.png ./build/fangs
 # Split layout + sidebar:
 FANGS_PHASE3_SMOKE_SCREENSHOT=/tmp/fangs_phase3.png ./build/fangs
 ```
@@ -108,6 +110,27 @@ Walk this checklist (✅ each):
       button that stages (no auto-Enter).
 - [ ] **Inline generation** — `Ctrl+Space`, type *"undo last git commit"* → command
       staged at the prompt, no trailing newline, you press Enter.
+
+## 3a. Kitty Images
+
+Fangs supports static Kitty graphics protocol images. In the window, run:
+
+```sh
+python3 - <<'PY'
+import base64, sys
+png = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGP8z8Dwn4GBgYGJAQoAHxcC"
+    "AsuzUSwAAAAASUVORK5CYII="
+)
+sys.stdout.write("\033_Gf=100,a=T,s=2,v=2;" + base64.b64encode(png).decode() + "\033\\\n")
+PY
+```
+
+Check (✅):
+
+- [ ] A small image appears in the terminal grid.
+- [ ] Text before/after the image remains readable.
+- [ ] In a split pane, the image draws inside the pane that emitted it, not at the window origin.
 
 ## 4. Command blocks (needs the OSC-133 shell snippet)
 

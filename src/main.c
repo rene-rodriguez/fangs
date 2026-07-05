@@ -15,6 +15,7 @@
 #include "config.h"
 #include "context.h"
 #include "inline_cmd.h"
+#include "kitty_images.h"
 #include "layout.h"
 #include "pane.h"
 #include "pty.h"
@@ -140,9 +141,12 @@ static Session *sync_active_session(TermEngine **te_out,
 // Returns the Session pointer for handle extraction, or NULL on failure.
 static Session *app_init_first_tab(uint16_t cols, uint16_t rows,
                                     int cell_w, int cell_h,
-                                    int max_scrollback)
+                                    int max_scrollback,
+                                    bool kitty_images,
+                                    int kitty_image_storage_mb)
 {
-    Session *s = session_create(cols, rows, cell_w, cell_h, max_scrollback, NULL);
+    Session *s = session_create(cols, rows, cell_w, cell_h, max_scrollback, NULL,
+                                kitty_images, kitty_image_storage_mb);
     if (!s) return NULL;
 
     Tab *tab = &app.tabs[0];
@@ -168,12 +172,15 @@ static Session *app_switch_tab(int idx, TermEngine **te, int *pty_fd,
 static Session *app_add_tab(uint16_t cols, uint16_t rows,
                              int cell_w, int cell_h,
                              int max_scrollback, const char *cwd,
+                             bool kitty_images,
+                             int kitty_image_storage_mb,
                              TermEngine **te, int *pty_fd,
                              pid_t *child, bool *child_exited)
 {
     if (app.n_tabs >= FANGS_MAX_TABS) return NULL;
 
-    Session *s = session_create(cols, rows, cell_w, cell_h, max_scrollback, cwd);
+    Session *s = session_create(cols, rows, cell_w, cell_h, max_scrollback, cwd,
+                                kitty_images, kitty_image_storage_mb);
     if (!s) return NULL;
 
     Tab *tab = &app.tabs[app.n_tabs];
@@ -229,6 +236,8 @@ static bool app_close_active(void)
 static Session *app_split_focused(PaneKind dir, uint16_t cols, uint16_t rows,
                                    int cell_w, int cell_h,
                                    int max_scrollback, const char *cwd,
+                                   bool kitty_images,
+                                   int kitty_image_storage_mb,
                                    TermEngine **te, int *pty_fd,
                                    pid_t *child, bool *child_exited)
 {
@@ -236,7 +245,8 @@ static Session *app_split_focused(PaneKind dir, uint16_t cols, uint16_t rows,
     Tab *tab = &app.tabs[app.active];
     if (!tab->root || !tab->focused) return NULL;
 
-    Session *new_s = session_create(cols, rows, cell_w, cell_h, max_scrollback, cwd);
+    Session *new_s = session_create(cols, rows, cell_w, cell_h, max_scrollback, cwd,
+                                    kitty_images, kitty_image_storage_mb);
     if (!new_s) return NULL;
 
     PaneNode *new_root = pane_split(tab->root, tab->focused, dir, new_s, 0.5f);
@@ -960,156 +970,6 @@ static bool handle_scrollbar(GhosttyTerminal terminal,
     return *dragging;
 }
 
-// Deferred texture cleanup — textures uploaded during a frame can't be
-// freed until after EndDrawing() flushes the draw commands to the GPU.
-#define MAX_DEFERRED_TEXTURES 256
-static Texture2D deferred_textures[MAX_DEFERRED_TEXTURES];
-static int deferred_texture_count = 0;
-
-static void defer_unload_texture(Texture2D tex)
-{
-    if (deferred_texture_count < MAX_DEFERRED_TEXTURES)
-        deferred_textures[deferred_texture_count++] = tex;
-    else
-        UnloadTexture(tex); // overflow fallback — may glitch but won't leak
-}
-
-static void flush_deferred_textures(void)
-{
-    for (int i = 0; i < deferred_texture_count; i++)
-        UnloadTexture(deferred_textures[i]);
-    deferred_texture_count = 0;
-}
-
-// Draw all Kitty graphics placements for a given z-layer.
-//
-// The layer filter is applied by the iterator itself via
-// ghostty_kitty_graphics_placement_iterator_set(), so we only see
-// placements matching the requested layer.
-//
-// WARNING: This is deliberately simple but very inefficient.  Every
-// visible image is re-uploaded to the GPU every frame and destroyed
-// right after.  A real implementation should cache Texture2D objects
-// keyed by image ID and only re-upload when the image is re-transmitted
-// or evicted from the terminal's storage.
-static void render_kitty_images(GhosttyTerminal terminal,
-                                GhosttyKittyGraphics graphics,
-                                GhosttyKittyGraphicsPlacementIterator placement_iter,
-                                int cell_width, int cell_height, int pad,
-                                GhosttyKittyPlacementLayer layer)
-{
-    // Configure the layer filter on the iterator so
-    // placement_next() only yields matching placements.
-    ghostty_kitty_graphics_placement_iterator_set(placement_iter,
-        GHOSTTY_KITTY_GRAPHICS_PLACEMENT_ITERATOR_OPTION_LAYER, &layer);
-
-    // Re-populate the iterator for this layer scan.
-    if (ghostty_kitty_graphics_get(graphics,
-            GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR,
-            &placement_iter) != GHOSTTY_SUCCESS)
-        return;
-
-    while (ghostty_kitty_graphics_placement_next(placement_iter)) {
-        // Look up the image for this placement.
-        uint32_t image_id = 0;
-        ghostty_kitty_graphics_placement_get(placement_iter,
-            GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID, &image_id);
-
-        GhosttyKittyGraphicsImage image_handle =
-            ghostty_kitty_graphics_image(graphics, image_id);
-        if (!image_handle)
-            continue;
-
-        // Get viewport-relative position.  Returns NO_VALUE when the
-        // placement is entirely off-screen or is a virtual (unicode
-        // placeholder) placement, so both cases are handled in one call.
-        int32_t vp_col = 0, vp_row = 0;
-        if (ghostty_kitty_graphics_placement_viewport_pos(
-                placement_iter, image_handle, terminal,
-                &vp_col, &vp_row) != GHOSTTY_SUCCESS)
-            continue;
-
-        // Read image dimensions and pixel data.  We only handle RGBA
-        // (the PNG decoder we registered converts everything to RGBA).
-        uint32_t img_w = 0, img_h = 0;
-        ghostty_kitty_graphics_image_get(image_handle,
-            GHOSTTY_KITTY_IMAGE_DATA_WIDTH, &img_w);
-        ghostty_kitty_graphics_image_get(image_handle,
-            GHOSTTY_KITTY_IMAGE_DATA_HEIGHT, &img_h);
-        if (img_w == 0 || img_h == 0)
-            continue;
-
-        GhosttyKittyImageFormat fmt = GHOSTTY_KITTY_IMAGE_FORMAT_RGBA;
-        ghostty_kitty_graphics_image_get(image_handle,
-            GHOSTTY_KITTY_IMAGE_DATA_FORMAT, &fmt);
-        if (fmt != GHOSTTY_KITTY_IMAGE_FORMAT_RGBA)
-            continue;
-
-        const uint8_t *data_ptr = NULL;
-        size_t data_len = 0;
-        ghostty_kitty_graphics_image_get(image_handle,
-            GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR, &data_ptr);
-        ghostty_kitty_graphics_image_get(image_handle,
-            GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN, &data_len);
-        if (!data_ptr || data_len < (size_t)img_w * img_h * 4)
-            continue;
-
-        // Compute grid cell count for rendered size.
-        uint32_t grid_cols = 0, grid_rows = 0;
-        if (ghostty_kitty_graphics_placement_grid_size(
-                placement_iter, image_handle, terminal,
-                &grid_cols, &grid_rows) != GHOSTTY_SUCCESS)
-            continue;
-        if (grid_cols == 0 || grid_rows == 0)
-            continue;
-
-        uint32_t dest_w = grid_cols * (uint32_t)cell_width;
-        uint32_t dest_h = grid_rows * (uint32_t)cell_height;
-
-        // Get the resolved source rectangle (handles "0 = full image"
-        // semantics and clamps to image bounds).
-        uint32_t src_x = 0, src_y = 0, src_w = 0, src_h = 0;
-        if (ghostty_kitty_graphics_placement_source_rect(
-                placement_iter, image_handle,
-                &src_x, &src_y, &src_w, &src_h) != GHOSTTY_SUCCESS)
-            continue;
-
-        // Read the sub-cell pixel offsets.
-        uint32_t x_offset = 0, y_offset = 0;
-        ghostty_kitty_graphics_placement_get(placement_iter,
-            GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_X_OFFSET, &x_offset);
-        ghostty_kitty_graphics_placement_get(placement_iter,
-            GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Y_OFFSET, &y_offset);
-
-        // Upload the RGBA data to a temporary texture, draw, and free.
-        Image img = {
-            .data    = (void *)(uintptr_t)data_ptr,
-            .width   = (int)img_w,
-            .height  = (int)img_h,
-            .mipmaps = 1,
-            .format  = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,
-        };
-        Texture2D tex = LoadTextureFromImage(img);
-        SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
-
-        int dest_x = pad + (int)vp_col * cell_width  + (int)x_offset;
-        int dest_y = pad + (int)vp_row * cell_height + (int)y_offset;
-
-        Rectangle src_rect = {
-            (float)src_x, (float)src_y,
-            (float)src_w, (float)src_h
-        };
-        Rectangle dst_rect = {
-            (float)dest_x, (float)dest_y,
-            (float)dest_w, (float)dest_h
-        };
-        DrawTexturePro(tex, src_rect, dst_rect,
-                       (Vector2){0, 0}, 0.0f, WHITE);
-
-        defer_unload_texture(tex);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
@@ -1404,6 +1264,7 @@ static void render_terminal(GhosttyRenderState render_state,
                             const GhosttyTerminalScrollbar *scrollbar,
                             GhosttyTerminal terminal,
                             GhosttyKittyGraphicsPlacementIterator placement_iter,
+                            KittyImageRenderer *kitty_renderer,
                             int origin_x, int origin_y,
                             AppConfig *cfg,
                             int frame_count)
@@ -1432,13 +1293,113 @@ static void render_terminal(GhosttyRenderState render_state,
 
     // --- Layer 1: images below cell backgrounds (z < INT32_MIN/2) ---
     if (has_kitty && placement_iter) {
-        render_kitty_images(terminal, kitty_gfx, placement_iter,
-                            cell_width, cell_height, pad,
-                            GHOSTTY_KITTY_PLACEMENT_LAYER_BELOW_BG);
+        kitty_image_renderer_draw_layer(kitty_renderer, terminal, kitty_gfx, placement_iter,
+                                        origin_x, origin_y,
+                                        cell_width, cell_height, pad,
+                                        GHOSTTY_KITTY_PLACEMENT_LAYER_BELOW_BG);
     }
 
-    // Small padding from the pane rect edges.
+    // Background/capture pass: draw cell backgrounds and selection, and build
+    // the text/URL capture grids before below-text images are painted.
     int y = origin_y + pad;
+    while (ghostty_render_state_row_iterator_next(row_iter)) {
+        if (ghostty_render_state_row_get(row_iter,
+                GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &cells) != GHOSTTY_SUCCESS)
+            continue;
+
+        int x = origin_x + pad;
+
+        while (ghostty_render_state_row_cells_next(cells)) {
+            int sel_row = (y - (origin_y + pad)) / cell_height;
+            int sel_col = (x - (origin_x + pad)) / cell_width;
+            bool cell_selected = sel_contains(sel_row, sel_col);
+
+            uint32_t grapheme_len = 0;
+            ghostty_render_state_row_cells_get(cells,
+                GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &grapheme_len);
+
+            if (grapheme_len == 0) {
+                GhosttyColorRgb bg = {0};
+                if (ghostty_render_state_row_cells_get(cells,
+                        GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &bg) == GHOSTTY_SUCCESS) {
+                    DrawRectangle(x, y, cell_width, cell_height,
+                                  (Color){ bg.r, bg.g, bg.b, 255 });
+                }
+
+                if (cell_selected) {
+                    DrawRectangle(x, y, cell_width, cell_height, UI2RAY(g_ui_theme.selection));
+                    sel_capture(sel_row, " ", 1);
+                }
+                row_capture(sel_row, sel_col, " ", 1);
+
+                x += cell_width;
+                continue;
+            }
+
+            uint32_t codepoints[16];
+            uint32_t len = grapheme_len < 16 ? grapheme_len : 16;
+            ghostty_render_state_row_cells_get(cells,
+                GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF, codepoints);
+
+            char text[64];
+            int pos = 0;
+            for (uint32_t i = 0; i < len && pos < 60; i++) {
+                char u8[4];
+                int n = utf8_encode(codepoints[i], u8);
+                memcpy(&text[pos], u8, n);
+                pos += n;
+            }
+            text[pos] = '\0';
+
+            GhosttyColorRgb fg = colors.foreground;
+            ghostty_render_state_row_cells_get(cells,
+                GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR, &fg);
+
+            GhosttyColorRgb bg_rgb = colors.background;
+            bool has_bg = ghostty_render_state_row_cells_get(cells,
+                GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &bg_rgb) == GHOSTTY_SUCCESS;
+
+            GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
+            ghostty_render_state_row_cells_get(cells,
+                GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style);
+
+            if (style.inverse) {
+                GhosttyColorRgb tmp = fg;
+                fg = bg_rgb;
+                bg_rgb = tmp;
+                has_bg = true;
+            }
+
+            if (has_bg)
+                DrawRectangle(x, y, cell_width, cell_height,
+                              (Color){ bg_rgb.r, bg_rgb.g, bg_rgb.b, 255 });
+
+            if (cell_selected) {
+                DrawRectangle(x, y, cell_width, cell_height, UI2RAY(g_ui_theme.selection));
+                sel_capture(sel_row, text, pos);
+            }
+            row_capture(sel_row, sel_col, text, pos);
+
+            x += cell_width;
+        }
+
+        y += cell_height;
+    }
+
+    // --- Layer 2: images below text (INT32_MIN/2 <= z < 0) ---
+    if (has_kitty && placement_iter) {
+        kitty_image_renderer_draw_layer(kitty_renderer, terminal, kitty_gfx, placement_iter,
+                                        origin_x, origin_y,
+                                        cell_width, cell_height, pad,
+                                        GHOSTTY_KITTY_PLACEMENT_LAYER_BELOW_TEXT);
+    }
+
+    // Text/decorations pass.
+    if (ghostty_render_state_get(render_state,
+            GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &row_iter) != GHOSTTY_SUCCESS)
+        return;
+
+    y = origin_y + pad;
 
     while (ghostty_render_state_row_iterator_next(row_iter)) {
         // Get the cells for this row (reuses the same cells handle).
@@ -1459,24 +1420,6 @@ static void render_terminal(GhosttyRenderState render_state,
                 GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &grapheme_len);
 
             if (grapheme_len == 0) {
-                // The cell has no text, but it might have a background
-                // color (e.g. from an erase with a color set).  The
-                // BG_COLOR data query resolves content-tag bg colors
-                // and palette indices for us, returning INVALID_VALUE
-                // when the cell has no background.
-                GhosttyColorRgb bg = {0};
-                if (ghostty_render_state_row_cells_get(cells,
-                        GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &bg) == GHOSTTY_SUCCESS) {
-                    DrawRectangle(x, y, cell_width, cell_height,
-                                  (Color){ bg.r, bg.g, bg.b, 255 });
-                }
-
-                if (cell_selected) {
-                    DrawRectangle(x, y, cell_width, cell_height, UI2RAY(g_ui_theme.selection));
-                    sel_capture(sel_row, " ", 1);
-                }
-                row_capture(sel_row, sel_col, " ", 1);
-
                 x += cell_width;
                 continue;
             }
@@ -1526,18 +1469,6 @@ static void render_terminal(GhosttyRenderState render_state,
             }
 
             Color ray_fg = { fg.r, fg.g, fg.b, 255 };
-
-            // Draw a background rectangle if the cell has a non-default bg
-            // or if inverse mode forced a swap.
-            if (has_bg) {
-                DrawRectangle(x, y, cell_width, cell_height, (Color){ bg_rgb.r, bg_rgb.g, bg_rgb.b, 255 });
-            }
-
-            if (cell_selected) {
-                DrawRectangle(x, y, cell_width, cell_height, UI2RAY(g_ui_theme.selection));
-                sel_capture(sel_row, text, pos);
-            }
-            row_capture(sel_row, sel_col, text, pos);
 
             // Italic: apply a simple shear by shifting the top of the glyph
             // to the right.  The offset is proportional to font size so it
@@ -1593,17 +1524,6 @@ static void render_terminal(GhosttyRenderState render_state,
             GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY, &clean);
 
         y += cell_height;
-    }
-
-    // --- Layer 2: images below text (INT32_MIN/2 <= z < 0) ---
-    // Drawn after cell backgrounds but before the cursor and any
-    // above-text images.  In our single-pass renderer the cell text
-    // has already been drawn, but this still achieves the correct
-    // visual for the common case where images sit behind text.
-    if (has_kitty && placement_iter) {
-        render_kitty_images(terminal, kitty_gfx, placement_iter,
-                            cell_width, cell_height, pad,
-                            GHOSTTY_KITTY_PLACEMENT_LAYER_BELOW_TEXT);
     }
 
     // Draw the cursor with proper visual style, blink, and focus-loss
@@ -1677,9 +1597,10 @@ static void render_terminal(GhosttyRenderState render_state,
 
     // --- Layer 3: images above text (z >= 0) ---
     if (has_kitty && placement_iter) {
-        render_kitty_images(terminal, kitty_gfx, placement_iter,
-                            cell_width, cell_height, pad,
-                            GHOSTTY_KITTY_PLACEMENT_LAYER_ABOVE_TEXT);
+        kitty_image_renderer_draw_layer(kitty_renderer, terminal, kitty_gfx, placement_iter,
+                                        origin_x, origin_y,
+                                        cell_width, cell_height, pad,
+                                        GHOSTTY_KITTY_PLACEMENT_LAYER_ABOVE_TEXT);
     }
 
     // Draw the scrollbar when there is scrollback content to scroll through.
@@ -2136,13 +2057,22 @@ int main(void)
     AiStream *active_stream = NULL;   // in-flight sidebar AI request
     AiStream *inline_stream = NULL;   // in-flight inline (Ctrl+Space) request
     char inline_answer[8192] = "";    // accumulates the inline command reply
+    Font mono_font = {0};
+    Font bold_font = {0};
+    KittyImageRenderer *kitty_renderer = kitty_image_renderer_create();
+    if (!kitty_renderer) {
+        fprintf(stderr, "failed to create kitty image renderer\n");
+        toast_push(TOAST_ERROR, "Failed to create image renderer.");
+        exit_code = 1;
+        goto cleanup;
+    }
 
     // g_cmdblocks is set by sync_active_session() per-frame; prime it NULL.
     g_cmdblocks = NULL;
 
     int cell_width = 0;
     int cell_height = 0;
-    Font mono_font = load_terminal_font(font_size, &cell_width, &cell_height);
+    mono_font = load_terminal_font(font_size, &cell_width, &cell_height);
     if (mono_font.texture.id == 0) {
         fprintf(stderr, "LoadFontFromMemory failed\n");
         toast_push(TOAST_ERROR, "Failed to load terminal font.");
@@ -2151,7 +2081,6 @@ int main(void)
     }
 
     // Load the bold variant for SGR bold rendering (§E4).
-    Font bold_font = {0};
     {
         Vector2 dpi_scale = fangs_content_scale();
         int font_size_px = (int)(font_size * dpi_scale.y);
@@ -2193,7 +2122,8 @@ int main(void)
 
     // Initialise the first tab/session via the App (§16.5).
     Session *s = app_init_first_tab(term_cols, term_rows, cell_width, cell_height,
-                                     cfg.scrollback);
+                                     cfg.scrollback,
+                                     cfg.kitty_images, cfg.kitty_image_storage_mb);
     if (!s) {
         fprintf(stderr, "failed to create initial session\n");
         toast_push(TOAST_ERROR, "Failed to create terminal session.");
@@ -2252,6 +2182,13 @@ int main(void)
     bool blocks_smoke = (blocks_smoke_path && blocks_smoke_path[0] != '\0');
     bool blocks_smoke_started = false;
     int  blocks_smoke_frames = 0;
+
+    // Kitty image visual smoke: feed a tiny inline PNG through Ghostty's
+    // Kitty graphics parser, render a few frames, then export a screenshot.
+    const char *kitty_smoke_path = getenv("FANGS_KITTY_SMOKE_SCREENSHOT");
+    bool kitty_smoke = (kitty_smoke_path && kitty_smoke_path[0] != '\0');
+    bool kitty_smoke_started = false;
+    int  kitty_smoke_frames = 0;
     int frame_count = 0;
 
     // Each frame: handle resize → read pty → process input → render.
@@ -2282,6 +2219,16 @@ int main(void)
                 "\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\";
             cmdblocks_feed(g_cmdblocks, te, (const uint8_t *)canned, sizeof(canned) - 1);
             blocks_smoke_started = true;
+        }
+
+        if (kitty_smoke && !kitty_smoke_started) {
+            static const char canned[] =
+                "\x1b[2J\x1b[3J\x1b[H"
+                "Kitty image smoke\r\n"
+                "\x1b_Gf=100,a=T,s=2,v=2;iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGP8z8Dwn4GBgYGJAQoAHxcCAsuzUSwAAAAASUVORK5CYII=\x1b\\"
+                "\r\n";
+            cmdblocks_feed(g_cmdblocks, te, (const uint8_t *)canned, sizeof(canned) - 1);
+            kitty_smoke_started = true;
         }
 
         // Config changes from the settings modal or the font-zoom chord are
@@ -2455,6 +2402,7 @@ int main(void)
                 Session *cur = sync_active_session(&te, &pty_fd, &child, &child_exited);
                 app_add_tab(term_cols, term_rows, cell_width, cell_height,
                             cfg.scrollback, session_cwd(cur),
+                            cfg.kitty_images, cfg.kitty_image_storage_mb,
                             &te, &pty_fd, &child, &child_exited);
                 prev_term_area_w = -1;
                 while (GetCharPressed() != 0) { }
@@ -2495,6 +2443,7 @@ int main(void)
                 app_split_focused(vertical ? PANE_VSPLIT : PANE_HSPLIT,
                                   term_cols, term_rows, cell_width, cell_height,
                                   cfg.scrollback, session_cwd(cur),
+                                  cfg.kitty_images, cfg.kitty_image_storage_mb,
                                   &te, &pty_fd, &child, &child_exited);
                 prev_term_area_w = -1;
                 while (GetCharPressed() != 0) { }
@@ -2789,6 +2738,7 @@ int main(void)
 
         // Draw every pane in the active tab. For single-pane layouts this
         // renders once at (lo.terminal.x, lo.terminal.y, lo.terminal.w, lo.terminal.h).
+        kitty_image_renderer_begin_frame(kitty_renderer);
         BeginDrawing();
         ClearBackground(win_bg);
 
@@ -2848,7 +2798,7 @@ int main(void)
             render_terminal(lrs, lri, lrc, mono_font, bold_font,
                             cell_width, cell_height, font_size, pad,
                             lpane_term_area_w, lsb_ptr, lterm, lpi,
-                            px, py, &cfg, frame_count);
+                            kitty_renderer, px, py, &cfg, frame_count);
 
             // Focused-pane highlight (a 1-pixel bright border).
             if (leaf == tab->focused) {
@@ -3033,15 +2983,22 @@ int main(void)
 
         EndDrawing();
 
-        // Free any textures that were uploaded during this frame's
-        // kitty image rendering.  Safe now that EndDrawing() has
-        // flushed all draw commands to the GPU.
-        flush_deferred_textures();
+        // Free transient image textures after EndDrawing() flushes commands.
+        kitty_image_renderer_end_frame(kitty_renderer);
 
         if (blocks_smoke && blocks_smoke_started) {
             blocks_smoke_frames++;
             if (blocks_smoke_frames >= 3) {
                 if (!export_screen_image(blocks_smoke_path))
+                    exit_code = 1;
+                break;
+            }
+        }
+
+        if (kitty_smoke && kitty_smoke_started) {
+            kitty_smoke_frames++;
+            if (kitty_smoke_frames >= 3) {
+                if (!export_screen_image(kitty_smoke_path))
                     exit_code = 1;
                 break;
             }
@@ -3095,6 +3052,9 @@ cleanup:
     }
     if (mono_font.texture.id != 0)
         UnloadFont(mono_font);
+    if (bold_font.texture.id != 0)
+        UnloadFont(bold_font);
+    kitty_image_renderer_destroy(kitty_renderer);
     if (!save_window_geometry(&cfg, config_path))
         fprintf(stderr, "warning: failed to save window geometry at %s\n", config_path);
     CloseWindow();
