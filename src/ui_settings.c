@@ -223,6 +223,13 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
     float full_w = panel.width - margin * 2.0f;
     float half_w = (full_w - col_gap) / 2.0f;
 
+    // Lock every other control while a theme dropdown is open so stray clicks
+    // can't land on the rows hidden under the open list. We unlock again just
+    // before drawing the dropdowns themselves (below) so they stay live on top.
+    bool any_dropdown_open = theme_mode_dropdown_open || theme_name_dropdown_open;
+    if (any_dropdown_open)
+        GuiLock();
+
     GuiLabel((Rectangle){x, y, full_w, 20*s}, "Terminal");
     y += 32.0f*s;
 
@@ -233,42 +240,20 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
                          &draft.font_size, 8, 72, EDIT_FONT_SIZE, s);
     y += row_h + gap + 18.0f*s;
 
+    // The dropdown boxes are drawn last (see below) so their open lists paint
+    // over the rows beneath them; here we only resolve the current selection,
+    // reserve the row, and label it.
     bool theme_mode_light = theme_resolve(draft.theme).is_light;
     int active_theme_mode = theme_mode_light ? 1 : 0;
     int prev_theme_mode = active_theme_mode;
     int active_theme = theme_mode_index_of(draft.theme, theme_mode_light);
     Rectangle theme_mode_bounds = {x, y, half_w, row_h};
     Rectangle theme_bounds = {x + half_w + col_gap, y, half_w, row_h};
-    bool lock_controls_for_theme_dropdown =
-        theme_mode_dropdown_open || theme_name_dropdown_open;
-    if (lock_controls_for_theme_dropdown)
-        GuiLock();
-
     GuiLabel((Rectangle){theme_mode_bounds.x, y - 22.0f*s, half_w, 18*s}, "Theme mode");
     GuiLabel((Rectangle){theme_bounds.x, y - 22.0f*s, half_w, 18*s}, "Theme");
     if (CheckCollisionPointRec(GetMousePosition(), theme_mode_bounds)
         || CheckCollisionPointRec(GetMousePosition(), theme_bounds))
         SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
-    if (!theme_mode_dropdown_open) {
-        if (GuiDropdownBox(theme_mode_bounds, "Dark;Light", &active_theme_mode, theme_mode_dropdown_open)) {
-            theme_mode_dropdown_open = true;
-            clear_editing();
-        }
-    }
-    if (active_theme_mode != prev_theme_mode) {
-        theme_mode_light = active_theme_mode == 1;
-        active_theme = 0;
-        snprintf(draft.theme, sizeof(draft.theme), "%s",
-                 theme_slug_for_mode_index(theme_mode_light, active_theme));
-    }
-    if (!theme_name_dropdown_open) {
-        if (GuiDropdownBox(theme_bounds, theme_combo_list(theme_mode_light), &active_theme, theme_name_dropdown_open)) {
-            theme_name_dropdown_open = true;
-            clear_editing();
-        }
-        snprintf(draft.theme, sizeof(draft.theme), "%s",
-                 theme_slug_for_mode_index(theme_mode_light, active_theme));
-    }
     y += row_h + gap + 18.0f*s;
 
     draw_labeled_spinner("Scrollback", (Rectangle){x, y, half_w, row_h},
@@ -346,22 +331,33 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
             *out_saved = true;
     }
 
-    if (lock_controls_for_theme_dropdown) {
-        if (theme_mode_dropdown_open) {
-            if (GuiDropdownBox(theme_mode_bounds, "Dark;Light", &active_theme_mode, theme_mode_dropdown_open))
-                theme_mode_dropdown_open = false;
-            if (active_theme_mode != prev_theme_mode) {
-                theme_mode_light = active_theme_mode == 1;
-                active_theme = 0;
-                snprintf(draft.theme, sizeof(draft.theme), "%s",
-                         theme_slug_for_mode_index(theme_mode_light, active_theme));
-            }
-        } else if (theme_name_dropdown_open) {
-            if (GuiDropdownBox(theme_bounds, theme_combo_list(theme_mode_light), &active_theme, theme_name_dropdown_open))
-                theme_name_dropdown_open = false;
-            snprintf(draft.theme, sizeof(draft.theme), "%s",
-                     theme_slug_for_mode_index(theme_mode_light, active_theme));
-        }
+    if (any_dropdown_open)
         GuiUnlock();
+
+    // Draw both theme dropdowns last so an open list paints over the controls
+    // beneath it, toggling edit mode on each click. Opening one closes the
+    // other, so at most one list is ever live.
+    if (GuiDropdownBox(theme_bounds, theme_combo_list(theme_mode_light), &active_theme, theme_name_dropdown_open)) {
+        theme_name_dropdown_open = !theme_name_dropdown_open;
+        if (theme_name_dropdown_open) {
+            theme_mode_dropdown_open = false;
+            clear_editing();
+        }
     }
+    if (GuiDropdownBox(theme_mode_bounds, "Dark;Light", &active_theme_mode, theme_mode_dropdown_open)) {
+        theme_mode_dropdown_open = !theme_mode_dropdown_open;
+        if (theme_mode_dropdown_open) {
+            theme_name_dropdown_open = false;
+            clear_editing();
+        }
+    }
+
+    // Switching mode snaps the theme to that mode's first entry; otherwise the
+    // selected index maps straight back to a registry slug.
+    if (active_theme_mode != prev_theme_mode) {
+        theme_mode_light = (active_theme_mode == 1);
+        active_theme = 0;
+    }
+    snprintf(draft.theme, sizeof(draft.theme), "%s",
+             theme_slug_for_mode_index(theme_mode_light, active_theme));
 }

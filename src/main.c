@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <time.h>
 
 #include "raylib.h"
 #include "raygui.h"
@@ -327,6 +328,27 @@ static Vector2 fangs_content_scale(void)
     return (Vector2){1.0f, 1.0f};
 }
 
+// Codepoints baked into the terminal font atlas. Passing NULL/0 to
+// LoadFontFromMemory only rasterizes the default 95 basic-Latin glyphs, so
+// any other codepoint falls back to raylib's GLYPH_NOTFOUND '?' glyph at
+// render time. TUI apps (tmux, vim, htop, ...) draw window borders with the
+// Unicode box-drawing and block-element blocks, both fully covered by
+// JetBrains Mono, so include them explicitly to keep those glyphs intact.
+static const int *terminal_font_codepoints(int *out_count)
+{
+    static int codepoints[95 + 128 + 32];
+    static bool built = false;
+    if (!built) {
+        int n = 0;
+        for (int cp = 0x20; cp <= 0x7E; cp++) codepoints[n++] = cp;     // Basic Latin
+        for (int cp = 0x2500; cp <= 0x257F; cp++) codepoints[n++] = cp; // Box Drawing
+        for (int cp = 0x2580; cp <= 0x259F; cp++) codepoints[n++] = cp; // Block Elements
+        built = true;
+    }
+    *out_count = 95 + 128 + 32;
+    return codepoints;
+}
+
 static Font load_terminal_font(int font_size, int *cell_width, int *cell_height)
 {
     Vector2 dpi_scale = fangs_content_scale();
@@ -334,8 +356,10 @@ static Font load_terminal_font(int font_size, int *cell_width, int *cell_height)
     if (font_size_px < 1)
         font_size_px = 1;
 
+    int cp_count = 0;
+    const int *cps = terminal_font_codepoints(&cp_count);
     Font font = LoadFontFromMemory(".ttf", font_jetbrains_mono,
-                         (int)sizeof(font_jetbrains_mono), font_size_px, NULL, 0);
+                         (int)sizeof(font_jetbrains_mono), font_size_px, (int *)cps, cp_count);
     if (font.texture.id == 0)
         return font;
 
@@ -1734,8 +1758,11 @@ static bool rebuild_terminal_font(Font *font, Font *bold_font, int font_size,
         Vector2 dpi_scale = fangs_content_scale();
         int font_size_px = (int)(font_size * dpi_scale.y);
         if (font_size_px < 1) font_size_px = 1;
+        int bold_cp_count = 0;
+        const int *bold_cps = terminal_font_codepoints(&bold_cp_count);
         *bold_font = LoadFontFromMemory(".ttf", font_jetbrains_mono_bold,
-                           (int)sizeof(font_jetbrains_mono_bold), font_size_px, NULL, 0);
+                           (int)sizeof(font_jetbrains_mono_bold), font_size_px,
+                           (int *)bold_cps, bold_cp_count);
         if (bold_font->texture.id != 0)
             SetTextureFilter(bold_font->texture, TEXTURE_FILTER_BILINEAR);
     }
@@ -2085,8 +2112,11 @@ int main(void)
         Vector2 dpi_scale = fangs_content_scale();
         int font_size_px = (int)(font_size * dpi_scale.y);
         if (font_size_px < 1) font_size_px = 1;
+        int bold_cp_count = 0;
+        const int *bold_cps = terminal_font_codepoints(&bold_cp_count);
         bold_font = LoadFontFromMemory(".ttf", font_jetbrains_mono_bold,
-                           (int)sizeof(font_jetbrains_mono_bold), font_size_px, NULL, 0);
+                           (int)sizeof(font_jetbrains_mono_bold), font_size_px,
+                           (int *)bold_cps, bold_cp_count);
         if (bold_font.texture.id != 0)
             SetTextureFilter(bold_font.texture, TEXTURE_FILTER_BILINEAR);
     }
@@ -2982,6 +3012,24 @@ int main(void)
         }
 
         EndDrawing();
+
+        // Opt-in frame-timing diagnostic: FANGS_PERF=1 logs REAL wall-clock fps.
+        if (getenv("FANGS_PERF")) {
+            static struct timespec last = {0}; static double acc = 0, worst = 0; static int n = 0;
+            struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+            if (last.tv_sec != 0) {
+                double dt = (now.tv_sec - last.tv_sec) * 1000.0
+                          + (now.tv_nsec - last.tv_nsec) / 1.0e6;
+                acc += dt; n++;
+                if (dt > worst) worst = dt;
+                if (n >= 60) {
+                    fprintf(stderr, "[PERF] real avg=%.1fms (=%.0f fps) worst=%.1fms settings_open=%d\n",
+                            acc / n, 1000.0 / (acc / n), worst, ui_settings_open());
+                    acc = 0; n = 0; worst = 0;
+                }
+            }
+            last = now;
+        }
 
         // Free transient image textures after EndDrawing() flushes commands.
         kitty_image_renderer_end_frame(kitty_renderer);
