@@ -104,6 +104,7 @@ add_executable(fangs
   src/workspace_info.c
   src/workspace_status.c
   src/ui_workspace_rail_model.c
+  src/ui_workspace_rail.c
   "${FONT_HEADER}"
   "${FONT_BOLD_HEADER}")
 target_compile_features(fangs PRIVATE c_std_11)

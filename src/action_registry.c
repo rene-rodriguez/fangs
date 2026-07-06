@@ -143,6 +143,13 @@ static const FangsAction ACTIONS[] = {
         "Restore the default terminal font size",
         "Cmd+0 / Ctrl+0",
     },
+    {
+        FANGS_ACTION_TOGGLE_WORKSPACE_RAIL,
+        "workspace.toggle_rail",
+        "Toggle Workspace Rail",
+        "Show or hide vertical tabs, panes, and notifications",
+        "",
+    },
 };
 
 const FangsAction *action_registry_all(int *out_count)

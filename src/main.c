@@ -33,6 +33,10 @@
 #include "ui_toast.h"
 #include "ui_effects.h"
 #include "ui_workflow_prompt.h"
+#include "workspace_info.h"
+#include "workspace_status.h"
+#include "ui_workspace_rail.h"
+#include "ui_workspace_rail_model.h"
 
 // Font embedded into the binary at compile time (CMake bin2header from
 // assets/JetBrainsMono-Regular.ttf and JetBrainsMono-Bold.ttf).
@@ -70,6 +74,47 @@ static App app = {0};
 // Pointer to the active session's CmdBlocks, kept in sync by
 // sync_active_session(). Used by feed_engine() and the draw loop.
 static CmdBlocks *g_cmdblocks = NULL;
+
+// Workspace attention model for notification rings (workspace rail).
+static WorkspaceStatus g_workspace_status = {0};
+static bool g_workspace_status_inited = false;
+
+// Per-pane last-seen command-block completion sequence for detecting new
+// completions in background panes.
+static unsigned long g_pane_seen_completion[128] = {0};
+static uint64_t g_pane_seen_ids[128] = {0};
+static int g_pane_seen_count = 0;
+
+// Last-focused pane ID for clearing attention on focus switch.
+static uint64_t g_last_focused_pane_id = 0;
+
+// Produce a stable numeric pane ID from a session pointer.
+static uint64_t pane_id_for_session(const Session *s)
+{
+    // Use the session pointer value directly — it's stable within a process.
+    return (uint64_t)(uintptr_t)s;
+}
+
+// Track a pane's last-seen command-block completion sequence.
+// Returns the previous sequence (0 if unknown) and updates the stored value.
+static unsigned long pane_update_completion_seq(const Session *s, unsigned long seq)
+{
+    uint64_t id = pane_id_for_session(s);
+    for (int i = 0; i < g_pane_seen_count; i++) {
+        if (g_pane_seen_ids[i] == id) {
+            unsigned long prev = g_pane_seen_completion[i];
+            g_pane_seen_completion[i] = seq;
+            return prev;
+        }
+    }
+    // Not found — add.
+    if (g_pane_seen_count < 128) {
+        g_pane_seen_ids[g_pane_seen_count] = id;
+        g_pane_seen_completion[g_pane_seen_count] = seq;
+        g_pane_seen_count++;
+    }
+    return 0;
+}
 
 // ---------------------------------------------------------------------------
 // Pane-rect collector for multi-pane rendering (§16.4)
@@ -2383,6 +2428,12 @@ static void execute_host_action(FangsActionId action,
         ui_sidebar_toggle();
         ui_sidebar_focus(ui_sidebar_visible());
         break;
+    case FANGS_ACTION_TOGGLE_WORKSPACE_RAIL:
+        cfg->workspace_rail = !cfg->workspace_rail;
+        config_save(cfg, config_path);
+        if (prev_term_area_w)
+            *prev_term_area_w = -1;
+        break;
     case FANGS_ACTION_INLINE_COMMAND:
         if (!ui_inline_active())
             open_inline_at_cursor(*render_state, cell_width, cell_height, pad);
@@ -2591,10 +2642,10 @@ int main(void)
     const int sidebar_width = 380;   // logical px; the UI renders in logical space
     const int min_terminal_w = 320;  // (crispness comes from the 2x font texture)
 
-    Layout lo = layout_compute(GetScreenWidth(), GetScreenHeight(),
-                               ui_sidebar_visible(),
-                               sidebar_width, pad,
-                               min_terminal_w);
+    Layout lo = layout_compute_with_rail(GetScreenWidth(), GetScreenHeight(),
+                                         cfg.workspace_rail, 260, 56,
+                                         ui_sidebar_visible(), sidebar_width,
+                                         pad, min_terminal_w);
     int term_area_w = lo.terminal.w;
 
     uint16_t term_cols = 0;
@@ -2626,6 +2677,13 @@ int main(void)
     pid_t child = -1;
     bool child_exited = true;
     sync_active_session(&te, &pty_fd, &child, &child_exited);
+
+    // Init workspace attention model for the rail.
+    if (!g_workspace_status_inited) {
+        workspace_status_init(&g_workspace_status);
+        g_workspace_status_inited = true;
+    }
+
     GhosttyTerminal terminal = term_engine_terminal(te);
     GhosttyRenderState render_state = term_engine_render_state(te);
     GhosttyRenderStateRowIterator row_iter = term_engine_row_iter(te);
@@ -3047,9 +3105,9 @@ int main(void)
             }
         }
 
-        lo = layout_compute(w, h, ui_sidebar_visible(),
-                            sidebar_width, pad,
-                            min_terminal_w);
+        lo = layout_compute_with_rail(w, h, cfg.workspace_rail, 260, 56,
+                                      ui_sidebar_visible(), sidebar_width,
+                                      pad, min_terminal_w);
         term_area_w = lo.terminal.w;
         if (w != prev_width || h != prev_height || term_area_w != prev_term_area_w) {
             compute_terminal_grid(term_area_w, pad, cell_width, cell_height,
@@ -3086,12 +3144,40 @@ int main(void)
         if (!blocks_smoke) {
             if (app.n_tabs > 0 && app.active >= 0) {
                 Tab *tab = &app.tabs[app.active];
+
+                // Clear workspace attention when focus changes to a pane.
+                if (tab->focused && tab->focused->kind == PANE_LEAF) {
+                    uint64_t focused_id = pane_id_for_session(tab->focused->leaf.session);
+                    if (focused_id != g_last_focused_pane_id) {
+                        workspace_status_clear(&g_workspace_status, focused_id);
+                        g_last_focused_pane_id = focused_id;
+                    }
+                }
+
                 PaneNode *leaves[64];
                 int n_leaves = 0;
                 pane_collect_leaves(tab->root, leaves, 64, &n_leaves);
                 for (int i = 0; i < n_leaves; i++) {
                     Session *ss = leaves[i]->leaf.session;
-                    session_feed_pty(ss);
+                    bool focused = (leaves[i] == tab->focused);
+                    uint64_t pane_id = pane_id_for_session(ss);
+
+                    // Feed PTY and detect background output activity.
+                    SessionFeedStats stats = session_feed_pty_stats(ss);
+                    if (stats.bytes_read > 0 && !focused) {
+                        workspace_status_note_output(&g_workspace_status, pane_id, false, stats.bytes_read);
+                    }
+
+                    // Detect new command completions in background panes.
+                    CmdBlocks *cb = (CmdBlocks *)session_cmdblocks(ss);
+                    unsigned long seq = cmdblocks_completion_seq(cb);
+                    if (seq > 0) {
+                        unsigned long prev = pane_update_completion_seq(ss, seq);
+                        if (prev != seq && !focused) {
+                            int code = cmdblocks_latest_exit_code(cb);
+                            workspace_status_note_command(&g_workspace_status, pane_id, false, code);
+                        }
+                    }
                 }
             }
         }
@@ -3203,7 +3289,8 @@ int main(void)
                 lo.sidebar_visible, ui_sidebar_focused(),
                 settings_shortcut_consumed, sidebar_chord_consumed)) {
             handle_input(pty_fd, key_encoder, key_event, terminal);
-            if (!scrollbar_consumed && !selection_consumed && GetMouseX() < term_area_w)
+            if (!scrollbar_consumed && !selection_consumed && !rail_consumed_click
+                && GetMouseX() < term_area_w)
                 handle_mouse(pty_fd, mouse_encoder, mouse_event, terminal,
                              cell_width, cell_height, pad, term_area_w);
         }
@@ -3296,11 +3383,206 @@ int main(void)
                                  &scrollbar) == GHOSTTY_SUCCESS)
             scrollbar_ptr = &scrollbar;
 
-        // Draw every pane in the active tab. For single-pane layouts this
-        // renders once at (lo.terminal.x, lo.terminal.y, lo.terminal.w, lo.terminal.h).
+        // Track rail click consumption to prevent terminal mouse forwarding.
+        bool rail_consumed_click = false;
+
+        // ----------------------------------------------------------------
+        // Check for workspace rail click actions (before BeginDrawing so
+        // state changes like tab switch apply before this frame's draw).
+        // ----------------------------------------------------------------
+        if (lo.rail_visible && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
+            && GetMouseX() >= lo.rail.x && GetMouseX() < lo.rail.x + lo.rail.w) {
+            // Figure out which row was clicked by computing from mouse_y.
+            // We build the view model once to get row positions.
+            WorkspaceRailInput tab_inputs[WORKSPACE_RAIL_MAX_TABS];
+            int tab_input_count = 0;
+            WorkspaceRailInput pane_inputs[WORKSPACE_RAIL_MAX_PANES];
+            int pane_input_count = 0;
+
+            // Collect tab inputs.
+            for (int ti = 0; ti < app.n_tabs && ti < WORKSPACE_RAIL_MAX_TABS; ti++) {
+                Tab *tt = &app.tabs[ti];
+                uint64_t tid = 0;
+                const char *tlabel = "";
+                if (tt->root) {
+                    PaneNode *tleaves[64];
+                    int tnl = 0;
+                    pane_collect_leaves(tt->root, tleaves, 64, &tnl);
+                    if (tnl > 0 && tleaves[0]->kind == PANE_LEAF)
+                        tlabel = session_cwd(tleaves[0]->leaf.session);
+                }
+                char label_buf[64] = "", branch_buf[64] = "";
+                workspace_cwd_label(tlabel, getenv("HOME"), label_buf, (int)sizeof(label_buf));
+                if (tlabel && tlabel[0])
+                    workspace_git_branch(tlabel, branch_buf, (int)sizeof(branch_buf));
+                tab_inputs[tab_input_count].id = tid;
+                tab_inputs[tab_input_count].label = label_buf;
+                tab_inputs[tab_input_count].branch = branch_buf;
+                tab_inputs[tab_input_count].active = (ti == app.active) ? 1 : 0;
+                tab_input_count++;
+            }
+
+            // Collect pane inputs.
+            Tab *atab = &app.tabs[app.active];
+            if (atab->root) {
+                PaneNode *aleaves[WORKSPACE_RAIL_MAX_PANES];
+                int anl = 0;
+                pane_collect_leaves(atab->root, aleaves, WORKSPACE_RAIL_MAX_PANES, &anl);
+                for (int pi = 0; pi < anl && pi < WORKSPACE_RAIL_MAX_PANES; pi++) {
+                    if (aleaves[pi]->kind != PANE_LEAF) continue;
+                    Session *ps = aleaves[pi]->leaf.session;
+                    const char *pcwd = session_cwd(ps);
+                    char plabel[64] = "", pbranch[64] = "";
+                    workspace_cwd_label(pcwd, getenv("HOME"), plabel, (int)sizeof(plabel));
+                    if (pcwd && pcwd[0])
+                        workspace_git_branch(pcwd, pbranch, (int)sizeof(pbranch));
+                    pane_inputs[pane_input_count].id = pane_id_for_session(ps);
+                    pane_inputs[pane_input_count].label = plabel;
+                    pane_inputs[pane_input_count].branch = pbranch;
+                    pane_inputs[pane_input_count].active = (aleaves[pi] == atab->focused) ? 1 : 0;
+                    pane_input_count++;
+                }
+            }
+
+            // Reconstruct the view for hit testing.
+            WorkspaceRailView rv = {0};
+            workspace_rail_build(&rv, tab_inputs, tab_input_count,
+                                 pane_inputs, pane_input_count,
+                                 &g_workspace_status,
+                                 lo.rail_compact ? 1 : 0);
+            int row_h = lo.rail_compact ? 36 : 32;
+            int my = GetMouseY();
+            int y = lo.rail.y;
+
+            // Notification row.
+            if (rv.notification[0] != '\0' && !lo.rail_compact) {
+                y += row_h + 1;
+            }
+            if (!lo.rail_compact) y += 4;
+
+            // Check tab rows.
+            for (int i = 0; i < rv.tab_count; i++) {
+                int row_y = y;
+                if (my >= row_y && my < row_y + row_h) {
+                    if (i >= 0 && i < app.n_tabs && i != app.active) {
+                        app_switch_tab(i, &te, &pty_fd, &child, &child_exited);
+                        sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                                &terminal, &render_state, &row_iter,
+                                                &row_cells, &placement_iter,
+                                                &key_encoder, &key_event,
+                                                &mouse_encoder, &mouse_event);
+                        drain_char_queue();
+                        Tab *nt = &app.tabs[app.active];
+                        if (nt->focused && nt->focused->kind == PANE_LEAF)
+                            g_last_focused_pane_id = pane_id_for_session(nt->focused->leaf.session);
+                    }
+                    rail_consumed_click = true;
+                    break;
+                }
+                y = row_y + row_h + 1;
+            }
+
+            if (!rail_consumed_click) {
+                // Skip separator.
+                if (rv.pane_count > 0 && !lo.rail_compact) y += 6;
+                // Check pane rows.
+                for (int i = 0; i < rv.pane_count; i++) {
+                    int row_y = y;
+                    if (my >= row_y && my < row_y + row_h && i < pane_input_count) {
+                        uint64_t target_id = pane_inputs[i].id;
+                        if (target_id != 0) {
+                            PaneNode *aleaves2[WORKSPACE_RAIL_MAX_PANES];
+                            int anl2 = 0;
+                            pane_collect_leaves(atab->root, aleaves2, WORKSPACE_RAIL_MAX_PANES, &anl2);
+                            for (int pj = 0; pj < anl2; pj++) {
+                                if (aleaves2[pj]->kind != PANE_LEAF) continue;
+                                if (pane_id_for_session(aleaves2[pj]->leaf.session) == target_id) {
+                                    if (aleaves2[pj] != atab->focused) {
+                                        atab->focused = aleaves2[pj];
+                                        sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                                                &terminal, &render_state, &row_iter,
+                                                                &row_cells, &placement_iter,
+                                                                &key_encoder, &key_event,
+                                                                &mouse_encoder, &mouse_event);
+                                        drain_char_queue();
+                                        g_last_focused_pane_id = target_id;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        rail_consumed_click = true;
+                        break;
+                    }
+                    y = row_y + row_h + 1;
+                }
+            }
+        }
+
+        // Draw every pane in the active tab.
         kitty_image_renderer_begin_frame(kitty_renderer);
+
         BeginDrawing();
         ClearBackground(win_bg);
+
+        // Draw workspace rail inside the drawing block.
+        if (lo.rail_visible) {
+            WorkspaceRailInput tab_inputs[WORKSPACE_RAIL_MAX_TABS];
+            int tab_input_count = 0;
+            for (int ti = 0; ti < app.n_tabs && ti < WORKSPACE_RAIL_MAX_TABS; ti++) {
+                Tab *tt = &app.tabs[ti];
+                uint64_t tid = 0;
+                const char *tlabel = "";
+                if (tt->root) {
+                    PaneNode *tleaves[64];
+                    int tnl = 0;
+                    pane_collect_leaves(tt->root, tleaves, 64, &tnl);
+                    if (tnl > 0 && tleaves[0]->kind == PANE_LEAF)
+                        tlabel = session_cwd(tleaves[0]->leaf.session);
+                }
+                char label_buf[64] = "", branch_buf[64] = "";
+                workspace_cwd_label(tlabel, getenv("HOME"), label_buf, (int)sizeof(label_buf));
+                if (tlabel && tlabel[0])
+                    workspace_git_branch(tlabel, branch_buf, (int)sizeof(branch_buf));
+                tab_inputs[tab_input_count].id = tid;
+                tab_inputs[tab_input_count].label = label_buf;
+                tab_inputs[tab_input_count].branch = branch_buf;
+                tab_inputs[tab_input_count].active = (ti == app.active) ? 1 : 0;
+                tab_input_count++;
+            }
+
+            WorkspaceRailInput pane_inputs[WORKSPACE_RAIL_MAX_PANES];
+            int pane_input_count = 0;
+            Tab *atab = &app.tabs[app.active];
+            if (atab->root) {
+                PaneNode *aleaves[WORKSPACE_RAIL_MAX_PANES];
+                int anl = 0;
+                pane_collect_leaves(atab->root, aleaves, WORKSPACE_RAIL_MAX_PANES, &anl);
+                for (int pi = 0; pi < anl && pi < WORKSPACE_RAIL_MAX_PANES; pi++) {
+                    if (aleaves[pi]->kind != PANE_LEAF) continue;
+                    Session *ps = aleaves[pi]->leaf.session;
+                    const char *pcwd = session_cwd(ps);
+                    char plabel[64] = "", pbranch[64] = "";
+                    workspace_cwd_label(pcwd, getenv("HOME"), plabel, (int)sizeof(plabel));
+                    if (pcwd && pcwd[0])
+                        workspace_git_branch(pcwd, pbranch, (int)sizeof(pbranch));
+                    pane_inputs[pane_input_count].id = pane_id_for_session(ps);
+                    pane_inputs[pane_input_count].label = plabel;
+                    pane_inputs[pane_input_count].branch = pbranch;
+                    pane_inputs[pane_input_count].active = (aleaves[pi] == atab->focused) ? 1 : 0;
+                    pane_input_count++;
+                }
+            }
+
+            WorkspaceRailView rv = {0};
+            workspace_rail_build(&rv, tab_inputs, tab_input_count,
+                                 pane_inputs, pane_input_count,
+                                 &g_workspace_status,
+                                 lo.rail_compact ? 1 : 0);
+
+            ui_workspace_rail_draw(mono_font, lo.rail, &rv,
+                                  GetMouseX(), GetMouseY(), false);
+        }
 
         Tab *tab = &app.tabs[app.active];
         PaneNode *leaves[64];

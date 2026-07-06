@@ -27,6 +27,9 @@ typedef struct {
     int window_height;
     int window_x;
     int window_y;
+
+    // Workspace rail (left-side vertical tabs and panes).
+    bool workspace_rail;
 } AppConfig;
 
 void config_defaults(AppConfig *c);

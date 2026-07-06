@@ -21,6 +21,9 @@ kitty_image_storage_mb = 64
 cursor_style = 0      ;; 0=block, 1=bar, 2=underline
 cursor_blink = true
 
+[ui]
+workspace_rail = true  ;; left-side tabs, panes, and notification rings
+
 [window]
 width = 800
 height = 600

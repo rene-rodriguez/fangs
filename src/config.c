@@ -129,6 +129,12 @@ static void apply_key_value(AppConfig *c, const char *section,
             if (parse_int_value(value, &parsed))
                 c->window_y = parsed;
         }
+    } else if (strcmp(section, "ui") == 0) {
+        if (strcmp(key, "workspace_rail") == 0) {
+            bool parsed = false;
+            if (parse_bool_value(value, &parsed))
+                c->workspace_rail = parsed;
+        }
     } else if (strcmp(section, "ai") == 0) {
         if (strcmp(key, "provider") == 0) {
             copy_string(c->provider, sizeof(c->provider), value);
@@ -177,6 +183,8 @@ void config_defaults(AppConfig *c)
 
     c->cursor_style = 0;    // block
     c->cursor_blink  = true;
+
+    c->workspace_rail = true;
 
     c->window_width = 800;
     c->window_height = 600;
@@ -280,6 +288,9 @@ bool config_save(const AppConfig *c, const char *path)
         "x = %d\n"
         "y = %d\n"
         "\n"
+        "[ui]\n"
+        "workspace_rail = %s\n"
+        "\n"
         "[ai]\n"
         "provider = %s\n"
         "endpoint = %s\n"
@@ -299,6 +310,7 @@ bool config_save(const AppConfig *c, const char *path)
         c->window_height,
         c->window_x,
         c->window_y,
+        c->workspace_rail ? "true" : "false",
         c->provider,
         c->endpoint,
         c->model,

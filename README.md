@@ -38,6 +38,9 @@ drops the rest:
 
 ## Features
 
+- **Workspace rail** &nbsp;vertical tabs and panes on the left with project labels, git branches, and
+  notification rings for background output and failed commands. Click a row to switch focus. The rail
+  compacts or hides on narrow windows; toggle from the command palette.
 - **AI chat sidebar** &nbsp;`Cmd+B` / `Ctrl+Shift+B` — ask about what's on your screen. Fangs
   captures recent scrollback (redacted for keys, tokens, and passwords *before* it leaves your
   machine), streams the answer live, and keeps multi-turn context. Any command in the reply gets a
