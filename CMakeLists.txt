@@ -81,6 +81,7 @@ add_executable(fangs
   src/ui_palette_model.c
   src/ui_palette.c
   src/ui_workflow_prompt.c
+  src/ui_rename_prompt.c
   src/ui_settings.c
   src/term_engine.c
   src/ai_http.c
@@ -103,6 +104,8 @@ add_executable(fangs
   src/ui_effects.c
   src/workspace_info.c
   src/workspace_status.c
+  src/workspace_worktree.c
+  src/desktop_notify.c
   src/ui_workspace_rail_model.c
   src/ui_workspace_rail.c
   "${FONT_HEADER}"
@@ -145,6 +148,20 @@ add_executable(workspace_status_tests
 target_compile_features(workspace_status_tests PRIVATE c_std_11)
 target_include_directories(workspace_status_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 add_test(NAME workspace_status_tests COMMAND workspace_status_tests)
+
+add_executable(workspace_worktree_tests
+  tests/workspace_worktree_tests.c
+  src/workspace_worktree.c)
+target_compile_features(workspace_worktree_tests PRIVATE c_std_11)
+target_include_directories(workspace_worktree_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+add_test(NAME workspace_worktree_tests COMMAND workspace_worktree_tests)
+
+add_executable(desktop_notify_tests
+  tests/desktop_notify_tests.c
+  src/desktop_notify.c)
+target_compile_features(desktop_notify_tests PRIVATE c_std_11)
+target_include_directories(desktop_notify_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+add_test(NAME desktop_notify_tests COMMAND desktop_notify_tests)
 
 add_executable(ui_workspace_rail_model_tests
   tests/ui_workspace_rail_model_tests.c

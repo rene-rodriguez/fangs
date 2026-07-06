@@ -150,6 +150,20 @@ static const FangsAction ACTIONS[] = {
         "Show or hide vertical tabs, panes, and notifications",
         "",
     },
+    {
+        FANGS_ACTION_RENAME_WORKSPACE,
+        "workspace.rename",
+        "Rename Workspace",
+        "Set a custom name for the active workspace (empty resets to auto)",
+        "Cmd+Shift+R / Ctrl+Shift+R",
+    },
+    {
+        FANGS_ACTION_NEW_WORKTREE_WORKSPACE,
+        "workspace.new_worktree",
+        "New Worktree Workspace",
+        "Create a git worktree and open a workspace there",
+        "",
+    },
 };
 
 const FangsAction *action_registry_all(int *out_count)

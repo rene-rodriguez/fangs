@@ -92,8 +92,76 @@ static void test_b_and_c(void)
 static void test_ignores_other_osc(void)
 {
     CbHit h[8];
-    int n = collect("\x1b]0;my title\x07plain text\x1b]8;;http://x\x1b\\", h, 8);
+    int n = collect("plain text\x1b]8;;http://x\x1b\\\x1b]52;c;Zm9v\x1b\\", h, 8);
     EXPECT_EQ(n, 0);
+}
+
+// OSC 0/2 window titles are reported with their text.
+static void test_title(void)
+{
+    CbHit h[8];
+    int n = collect("\x1b]0;my title\x07\x1b]2;other\x1b\\", h, 8);
+    EXPECT_EQ(n, 2);
+    EXPECT_EQ(h[0].mark, CB_MARK_TITLE);
+    EXPECT_TRUE(strcmp(h[0].text, "my title") == 0);
+    EXPECT_EQ(h[1].mark, CB_MARK_TITLE);
+    EXPECT_TRUE(strcmp(h[1].text, "other") == 0);
+}
+
+// OSC 9 desktop notifications carry their message text.
+static void test_notify_osc9(void)
+{
+    CbHit h[8];
+    int n = collect("\x1b]9;Claude needs your input\x07", h, 8);
+    EXPECT_EQ(n, 1);
+    EXPECT_EQ(h[0].mark, CB_MARK_NOTIFY);
+    EXPECT_TRUE(strcmp(h[0].text, "Claude needs your input") == 0);
+}
+
+// ConEmu progress ("9;4;…") is not a notification.
+static void test_notify_skips_conemu_progress(void)
+{
+    CbHit h[8];
+    int n = collect("\x1b]9;4;1;50\x07", h, 8);
+    EXPECT_EQ(n, 0);
+}
+
+// OSC 777;notify;title;body joins title and body.
+static void test_notify_osc777(void)
+{
+    CbHit h[8];
+    int n = collect("\x1b]777;notify;Task done;build passed\x1b\\", h, 8);
+    EXPECT_EQ(n, 1);
+    EXPECT_EQ(h[0].mark, CB_MARK_NOTIFY);
+    EXPECT_TRUE(strcmp(h[0].text, "Task done: build passed") == 0);
+}
+
+// A bare BEL outside any OSC sequence is an attention ping; a BEL that
+// terminates an OSC sequence is not double-reported.
+static void test_bare_bell(void)
+{
+    CbHit h[8];
+    int n = collect("abc\adef\x1b]0;t\x07", h, 8);
+    EXPECT_EQ(n, 2);
+    EXPECT_EQ(h[0].mark, CB_MARK_BELL);
+    EXPECT_EQ(h[0].end, 4);
+    EXPECT_EQ(h[1].mark, CB_MARK_TITLE);
+}
+
+// Oversized titles are emitted truncated instead of dropped.
+static void test_title_overflow_truncated(void)
+{
+    char seq[512];
+    int len = snprintf(seq, sizeof(seq), "\x1b]2;");
+    for (int i = 0; i < 300; i++) seq[len++] = 'x';
+    seq[len++] = '\x07';
+    seq[len] = '\0';
+    CbHit h[8];
+    int n = collect(seq, h, 8);
+    EXPECT_EQ(n, 1);
+    EXPECT_EQ(h[0].mark, CB_MARK_TITLE);
+    EXPECT_TRUE(strlen(h[0].text) > 0);
+    EXPECT_TRUE(strlen(h[0].text) < CB_HIT_TEXT_MAX);
 }
 
 // The `end` offset must point just past the terminator (host flushes to it).
@@ -143,6 +211,12 @@ int main(void)
     test_done_no_code_and_params();
     test_b_and_c();
     test_ignores_other_osc();
+    test_title();
+    test_notify_osc9();
+    test_notify_skips_conemu_progress();
+    test_notify_osc777();
+    test_bare_bell();
+    test_title_overflow_truncated();
     test_end_offset();
     test_split_across_chunks();
     test_done_then_prompt_burst();

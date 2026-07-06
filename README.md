@@ -38,9 +38,19 @@ drops the rest:
 
 ## Features
 
-- **Workspace rail** &nbsp;vertical tabs and panes on the left with project labels, git branches, and
-  notification rings for background output and failed commands. Click a row to switch focus. The rail
-  compacts or hides on narrow windows; toggle from the command palette.
+- **Workspace rail** &nbsp;cmux-style vertical workspaces on the left, built for running several
+  coding agents side by side. Each row shows the agent/window title (or the project directory),
+  the git branch, and an attention dot with the latest unread event — background output, a failed
+  command, a dead session, or an agent ringing for input via BEL / OSC 9 / OSC 777 (the channels
+  Claude Code uses). Click a row to switch, click **+** for a new same-directory workspace (or
+  **Option/Alt-click** it to create an isolated git worktree under `.worktrees/`), click the
+  notification strip — or press `Cmd+Shift+U` — to jump straight to the pane that needs you.
+  The command palette also offers **New Worktree Workspace** for the same git worktree action.
+  `Cmd+Shift+[` / `Cmd+Shift+]` cycle workspaces (`Ctrl+Shift+…` on Linux). Splits of the active
+  workspace get their own section, and the rail compacts or hides on narrow windows; toggle it
+  from the palette. Rename any workspace with `Cmd+Shift+R` (or the palette) — a custom name pins
+  the row label, beating the agent title and directory; save an empty name to go back to automatic
+  labels.
 - **AI chat sidebar** &nbsp;`Cmd+B` / `Ctrl+Shift+B` — ask about what's on your screen. Fangs
   captures recent scrollback (redacted for keys, tokens, and passwords *before* it leaves your
   machine), streams the answer live, and keeps multi-turn context. Any command in the reply gets a
@@ -138,6 +148,9 @@ vendored Zig and the FetchContent deps are cached).
 | `Cmd+T` / `Ctrl+Shift+T` | New tab |
 | `Cmd+W` / `Ctrl+Shift+W` | Close focused pane (last pane closes the tab; last tab exits) |
 | `Cmd+1`–`9` / `Ctrl+Shift+1`–`9` | Select tab 1–9 |
+| `Cmd+Shift+[` / `]` (Linux: `Ctrl+Shift+[` / `]`) | Previous / next workspace |
+| `Cmd+Shift+U` / `Ctrl+Shift+U` | Jump to the most urgent unread pane |
+| `Cmd+Shift+R` / `Ctrl+Shift+R` | Rename the active workspace (empty resets to auto) |
 | `Cmd+D` / `Ctrl+Shift+D` | Split focused pane right |
 | `Cmd+Shift+D` / `Ctrl+Shift+Alt+D` | Split focused pane down |
 | `Cmd+Opt+←/→/↑/↓` / `Ctrl+Shift+←/→/↑/↓` | Move focus between panes |

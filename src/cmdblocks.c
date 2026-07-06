@@ -32,6 +32,10 @@ struct CmdBlocks {
 
     unsigned long  completion_seq;     // incremented each time OSC 133 D arrives
     int            latest_exit_code;   // exit code from the most recent OSC 133 D
+
+    unsigned long  notify_seq;         // incremented on BEL / OSC 9 / OSC 777
+    char           notify_text[CB_HIT_TEXT_MAX];  // latest notification message
+    char           title[CB_HIT_TEXT_MAX];        // latest OSC 0/2 window title
 };
 
 CmdBlocks *cmdblocks_create(void)
@@ -118,6 +122,11 @@ void cmdblocks_feed(CmdBlocks *cb, TermEngine *te, const uint8_t *data, size_t l
                 cb->cur_code = hit.code;
                 cb->cur_done = true;
             }
+        } else if (hit.mark == CB_MARK_BELL || hit.mark == CB_MARK_NOTIFY) {
+            cb->notify_seq++;
+            snprintf(cb->notify_text, sizeof(cb->notify_text), "%s", hit.text);
+        } else if (hit.mark == CB_MARK_TITLE) {
+            snprintf(cb->title, sizeof(cb->title), "%s", hit.text);
         }
         // CB_MARK_CMD / CB_MARK_EXEC: reserved, no-op for now.
     }
@@ -510,4 +519,19 @@ unsigned long cmdblocks_completion_seq(const CmdBlocks *cb)
 int cmdblocks_latest_exit_code(const CmdBlocks *cb)
 {
     return cb ? cb->latest_exit_code : -1;
+}
+
+unsigned long cmdblocks_notify_seq(const CmdBlocks *cb)
+{
+    return cb ? cb->notify_seq : 0;
+}
+
+const char *cmdblocks_notify_text(const CmdBlocks *cb)
+{
+    return cb ? cb->notify_text : "";
+}
+
+const char *cmdblocks_title(const CmdBlocks *cb)
+{
+    return cb ? cb->title : "";
 }

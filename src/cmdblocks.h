@@ -85,4 +85,12 @@ bool cmdblocks_navigate(CmdBlocks *cb, TermEngine *te, int dir);
 unsigned long cmdblocks_completion_seq(const CmdBlocks *cb);
 int           cmdblocks_latest_exit_code(const CmdBlocks *cb);
 
+// Attention API for the workspace rail: BEL / OSC 9 / OSC 777 notifications
+// bump the sequence; the text is the latest notification message ("" for a
+// bare BEL). The title is the latest OSC 0/2 window title ("" if never set) —
+// agents like Claude Code keep it updated with what they're doing.
+unsigned long cmdblocks_notify_seq(const CmdBlocks *cb);
+const char   *cmdblocks_notify_text(const CmdBlocks *cb);
+const char   *cmdblocks_title(const CmdBlocks *cb);
+
 #endif // FANGS_CMDBLOCKS_H

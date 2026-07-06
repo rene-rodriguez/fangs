@@ -153,6 +153,190 @@ static void test_tab_attention_contributes_to_notification(void)
     EXPECT_TRUE(strstr(view.notification, "exit 5") != NULL);
 }
 
+static void test_title_overrides_label(void)
+{
+    WorkspaceRailInput tabs[2] = {
+        { .id = 1, .label = "fangs", .branch = "main", .title = "✳ fixing tests", .active = 1 },
+        { .id = 2, .label = "api",   .branch = "dev",  .title = "",               .active = 0 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 2, NULL, 0, &st, 0);
+
+    // Non-ASCII is stripped for display (the UI font atlas is basic Latin).
+    EXPECT_STR(view.tabs[0].label, "fixing tests");
+    EXPECT_STR(view.tabs[1].label, "api");
+}
+
+static void test_custom_name_overrides_title_and_label(void)
+{
+    WorkspaceRailInput tabs[3] = {
+        { .id = 1, .label = "fangs", .branch = "main", .title = "agent title",
+          .name = "auth refactor", .active = 1 },
+        { .id = 2, .label = "fangs", .branch = "main", .title = "agent title",
+          .name = "", .active = 0 },
+        { .id = 3, .label = "fangs", .branch = "main", .title = "agent title",
+          .name = NULL, .active = 0 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 3, NULL, 0, &st, 0);
+
+    EXPECT_STR(view.tabs[0].label, "auth refactor");
+    EXPECT_STR(view.tabs[1].label, "agent title");   // empty name falls back
+    EXPECT_STR(view.tabs[2].label, "agent title");   // NULL name falls back
+}
+
+static void test_single_pane_hides_pane_section(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "a", .branch = NULL, .active = 1 },
+    };
+    WorkspaceRailInput one_pane[1] = {
+        { .id = 2, .label = "a", .branch = NULL, .active = 1 },
+    };
+    WorkspaceRailInput two_panes[2] = {
+        { .id = 2, .label = "a", .branch = NULL, .active = 1 },
+        { .id = 3, .label = "b", .branch = NULL, .active = 0 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, one_pane, 1, &st, 0);
+    EXPECT_INT(view.show_panes, 0);
+
+    workspace_rail_build(&view, tabs, 1, two_panes, 2, &st, 0);
+    EXPECT_INT(view.show_panes, 1);
+}
+
+static void test_layout_positions(void)
+{
+    WorkspaceRailInput tabs[2] = {
+        { .id = 1, .label = "a", .branch = NULL, .active = 1 },
+        { .id = 2, .label = "b", .branch = NULL, .active = 0 },
+    };
+    WorkspaceRailInput panes[2] = {
+        { .id = 3, .label = "a", .branch = NULL, .active = 1 },
+        { .id = 4, .label = "b", .branch = NULL, .active = 0 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 2, panes, 2, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    // No notification: tabs start right below the header.
+    EXPECT_INT(view.notif_h, 0);
+    EXPECT_INT(view.tabs[0].y, WORKSPACE_RAIL_HEADER_H);
+    EXPECT_INT(view.tabs[1].y, WORKSPACE_RAIL_HEADER_H + WORKSPACE_RAIL_ROW_H);
+
+    // Splits section sits after the tab rows; panes follow it.
+    EXPECT_INT(view.section_y, WORKSPACE_RAIL_HEADER_H + 2 * WORKSPACE_RAIL_ROW_H);
+    EXPECT_INT(view.panes[0].y, view.section_y + WORKSPACE_RAIL_SECTION_H);
+
+    // Footer is pinned to the bottom.
+    EXPECT_INT(view.footer_y, 800 - WORKSPACE_RAIL_FOOTER_H);
+
+    // With an unread event the notification strip pushes rows down.
+    workspace_status_note_command(&st, 2, false, 1);
+    workspace_rail_build(&view, tabs, 2, panes, 2, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+    EXPECT_INT(view.notif_h, WORKSPACE_RAIL_NOTIF_H);
+    EXPECT_INT(view.tabs[0].y, WORKSPACE_RAIL_HEADER_H + WORKSPACE_RAIL_NOTIF_H);
+}
+
+static void test_hit_targets(void)
+{
+    WorkspaceRailInput tabs[2] = {
+        { .id = 1, .label = "act", .branch = NULL, .active = 1 },
+        { .id = 2, .label = "b", .branch = NULL, .active = 0 },
+    };
+    WorkspaceRailInput panes[2] = {
+        { .id = 3, .label = "act", .branch = NULL, .active = 1 },
+        { .id = 4, .label = "b", .branch = NULL, .active = 0 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+    workspace_status_note_notify(&st, 2, false, "needs input");
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 2, panes, 2, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    // Outside the rail.
+    WorkspaceRailAction act = workspace_rail_hit(&view, 300, 100);
+    EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_NONE);
+
+    // "+" button.
+    act = workspace_rail_hit(&view, view.plus_x + 1, view.plus_y + 1);
+    EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_NEW_TAB);
+
+    // Notification strip jumps to the offending pane.
+    act = workspace_rail_hit(&view, 10, view.notif_y + 1);
+    EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_JUMP_ATTENTION);
+    EXPECT_TRUE(act.pane_id == 2);
+
+    // Second tab row.
+    act = workspace_rail_hit(&view, 10, view.tabs[1].y + 1);
+    EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_SWITCH_TAB);
+    EXPECT_INT(act.index, 1);
+
+    // Second pane row.
+    act = workspace_rail_hit(&view, 10, view.panes[1].y + 1);
+    EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_FOCUS_PANE);
+    EXPECT_INT(act.index, 1);
+    EXPECT_TRUE(act.pane_id == 4);
+
+    // Empty space below the rows.
+    act = workspace_rail_hit(&view, 10, view.panes[1].y + view.panes[1].h + 5);
+    EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_NONE);
+}
+
+static void test_hit_skips_hidden_pane_section(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "act", .branch = NULL, .active = 1 },
+    };
+    WorkspaceRailInput panes[1] = {
+        { .id = 2, .label = "act", .branch = NULL, .active = 1 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, panes, 1, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    // Where the pane row would be, but the section is hidden.
+    WorkspaceRailAction act = workspace_rail_hit(&view, 10,
+        view.tabs[0].y + view.tabs[0].h + 5);
+    EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_NONE);
+}
+
+static void test_working_flag_propagates_to_rows(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "agent", .branch = "main", .active = 1, .working = 1 },
+    };
+    WorkspaceRailInput panes[1] = {
+        { .id = 2, .label = "agent", .branch = "main", .active = 1, .working = 1 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, panes, 1, &st, 0);
+
+    EXPECT_INT(view.tabs[0].working, 1);
+    EXPECT_INT(view.panes[0].working, 1);
+}
+
 int main(void)
 {
     test_row_ordering();
@@ -161,5 +345,12 @@ int main(void)
     test_notification_text();
     test_attention_from_status();
     test_tab_attention_contributes_to_notification();
+    test_title_overrides_label();
+    test_custom_name_overrides_title_and_label();
+    test_single_pane_hides_pane_section();
+    test_layout_positions();
+    test_hit_targets();
+    test_hit_skips_hidden_pane_section();
+    test_working_flag_propagates_to_rows();
     return failures ? 1 : 0;
 }

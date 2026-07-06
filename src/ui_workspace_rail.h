@@ -1,26 +1,18 @@
-// ui_workspace_rail — Raylib rendering and mouse hit handling for the left
-// workspace rail.
+// ui_workspace_rail — Raylib rendering for the left workspace rail.
 //
-// This module draws the rail inside the Layout.rail rectangle and returns
-// click actions. It uses Font, UiTheme, and row data from WorkspaceRailView.
+// This module only paints a laid-out WorkspaceRailView. Geometry and click
+// hit-testing live in ui_workspace_rail_model, and main.c resolves clicks
+// through workspace_rail_hit() before drawing, so painting and hit targets
+// can never drift apart.
 #ifndef FANGS_UI_WORKSPACE_RAIL_H
 #define FANGS_UI_WORKSPACE_RAIL_H
 
-#include "layout.h"
 #include "raylib.h"
 #include "ui_workspace_rail_model.h"
 
-typedef struct {
-    WorkspaceRailActionType type;
-    int index;
-    uint64_t pane_id;
-} WorkspaceRailAction;
-
-// Draw the workspace rail and return any click action that occurred.
-// mouse_pressed should be true on the frame IsMouseButtonPressed(MOUSE_BUTTON_LEFT).
-WorkspaceRailAction ui_workspace_rail_draw(Font font, Rect bounds,
-                                           const WorkspaceRailView *view,
-                                           int mouse_x, int mouse_y,
-                                           bool mouse_pressed);
+// Draw the workspace rail. workspace_rail_layout() must have run on the view.
+// The mouse position drives hover feedback only.
+void ui_workspace_rail_draw(Font font, const WorkspaceRailView *view,
+                            int mouse_x, int mouse_y);
 
 #endif // FANGS_UI_WORKSPACE_RAIL_H

@@ -14,6 +14,7 @@
 #include "ai_provider.h"
 #include "cmdblocks.h"
 #include "config.h"
+#include "desktop_notify.h"
 #include "context.h"
 #include "inline_cmd.h"
 #include "kitty_images.h"
@@ -33,8 +34,10 @@
 #include "ui_toast.h"
 #include "ui_effects.h"
 #include "ui_workflow_prompt.h"
+#include "ui_rename_prompt.h"
 #include "workspace_info.h"
 #include "workspace_status.h"
+#include "workspace_worktree.h"
 #include "ui_workspace_rail.h"
 #include "ui_workspace_rail_model.h"
 
@@ -58,7 +61,7 @@
 typedef struct {
     PaneNode *root;
     PaneNode *focused;
-    char title[64];
+    char name[64];   // user-set workspace name ("" = automatic rail label)
 } Tab;
 
 // App: the whole terminal window.
@@ -79,14 +82,19 @@ static CmdBlocks *g_cmdblocks = NULL;
 static WorkspaceStatus g_workspace_status = {0};
 static bool g_workspace_status_inited = false;
 
-// Per-pane last-seen command-block completion sequence for detecting new
-// completions in background panes.
+// Per-pane last-seen command-block completion and notification sequences for
+// detecting new events in background panes.
 static unsigned long g_pane_seen_completion[128] = {0};
+static unsigned long g_pane_seen_notify[128] = {0};
 static uint64_t g_pane_seen_ids[128] = {0};
 static int g_pane_seen_count = 0;
 
 // Last-focused pane ID for clearing attention on focus switch.
 static uint64_t g_last_focused_pane_id = 0;
+
+// Pending "jump to unread" target (set by Cmd+Shift+U or a click on the
+// rail's notification strip; consumed before drawing).
+static uint64_t g_jump_request = 0;
 
 // Produce a stable numeric pane ID from a session pointer.
 static uint64_t pane_id_for_session(const Session *s)
@@ -95,25 +103,41 @@ static uint64_t pane_id_for_session(const Session *s)
     return (uint64_t)(uintptr_t)s;
 }
 
+// Find or create the seen-sequence slot for a pane. Returns -1 when full.
+static int pane_seen_slot(const Session *s)
+{
+    uint64_t id = pane_id_for_session(s);
+    for (int i = 0; i < g_pane_seen_count; i++) {
+        if (g_pane_seen_ids[i] == id)
+            return i;
+    }
+    if (g_pane_seen_count >= 128)
+        return -1;
+    g_pane_seen_ids[g_pane_seen_count] = id;
+    g_pane_seen_completion[g_pane_seen_count] = 0;
+    g_pane_seen_notify[g_pane_seen_count] = 0;
+    return g_pane_seen_count++;
+}
+
 // Track a pane's last-seen command-block completion sequence.
 // Returns the previous sequence (0 if unknown) and updates the stored value.
 static unsigned long pane_update_completion_seq(const Session *s, unsigned long seq)
 {
-    uint64_t id = pane_id_for_session(s);
-    for (int i = 0; i < g_pane_seen_count; i++) {
-        if (g_pane_seen_ids[i] == id) {
-            unsigned long prev = g_pane_seen_completion[i];
-            g_pane_seen_completion[i] = seq;
-            return prev;
-        }
-    }
-    // Not found — add.
-    if (g_pane_seen_count < 128) {
-        g_pane_seen_ids[g_pane_seen_count] = id;
-        g_pane_seen_completion[g_pane_seen_count] = seq;
-        g_pane_seen_count++;
-    }
-    return 0;
+    int i = pane_seen_slot(s);
+    if (i < 0) return 0;
+    unsigned long prev = g_pane_seen_completion[i];
+    g_pane_seen_completion[i] = seq;
+    return prev;
+}
+
+// Same for the notification sequence (BEL / OSC 9 / OSC 777).
+static unsigned long pane_update_notify_seq(const Session *s, unsigned long seq)
+{
+    int i = pane_seen_slot(s);
+    if (i < 0) return 0;
+    unsigned long prev = g_pane_seen_notify[i];
+    g_pane_seen_notify[i] = seq;
+    return prev;
 }
 
 static bool pane_id_list_contains(const uint64_t *ids, int count, uint64_t id)
@@ -133,6 +157,7 @@ static void pane_prune_completion_seen(const uint64_t *live_ids, int live_count)
         if (write_idx != i) {
             g_pane_seen_ids[write_idx] = g_pane_seen_ids[i];
             g_pane_seen_completion[write_idx] = g_pane_seen_completion[i];
+            g_pane_seen_notify[write_idx] = g_pane_seen_notify[i];
         }
         write_idx++;
     }
@@ -163,6 +188,128 @@ static uint64_t tab_attention_id(Tab *tab)
         }
     }
     return best_id;
+}
+
+// ---------------------------------------------------------------------------
+// Workspace rail input snapshot (§ workspace-rail-spec)
+// ---------------------------------------------------------------------------
+
+// Stable string storage for rail inputs — the view builder only keeps
+// pointers, so labels must outlive the collection loop.
+typedef struct {
+    WorkspaceRailInput tabs[WORKSPACE_RAIL_MAX_TABS];
+    int tab_count;
+    WorkspaceRailInput panes[WORKSPACE_RAIL_MAX_PANES];
+    int pane_count;
+    char tab_labels[WORKSPACE_RAIL_MAX_TABS][64];
+    char tab_branches[WORKSPACE_RAIL_MAX_TABS][64];
+    char pane_labels[WORKSPACE_RAIL_MAX_PANES][64];
+    char pane_branches[WORKSPACE_RAIL_MAX_PANES][64];
+} RailInputs;
+
+static RailInputs g_rail_inputs;
+static WorkspaceRailView g_rail_view;
+
+// First leaf session of a tab, or NULL.
+static Session *tab_first_leaf_session(Tab *tab)
+{
+    if (!tab || !tab->root)
+        return NULL;
+    PaneNode *leaves[WORKSPACE_RAIL_MAX_PANES];
+    int n = 0;
+    pane_collect_leaves(tab->root, leaves, WORKSPACE_RAIL_MAX_PANES, &n);
+    for (int i = 0; i < n; i++) {
+        if (leaves[i]->kind == PANE_LEAF)
+            return leaves[i]->leaf.session;
+    }
+    return NULL;
+}
+
+// Snapshot tab and pane descriptors for the rail. A tab is represented by its
+// focused pane (falling back to the first leaf): cwd label, git branch, and
+// the OSC 0/2 window title so agent tabs read as what they're doing.
+static void collect_rail_inputs(uint64_t now_ms)
+{
+    RailInputs *ri = &g_rail_inputs;
+    const char *home = getenv("HOME");
+    ri->tab_count = 0;
+    ri->pane_count = 0;
+
+    for (int ti = 0; ti < app.n_tabs && ti < WORKSPACE_RAIL_MAX_TABS; ti++) {
+        Tab *tt = &app.tabs[ti];
+        int i = ri->tab_count;
+        Session *rep = NULL;
+        if (tt->focused && tt->focused->kind == PANE_LEAF)
+            rep = tt->focused->leaf.session;
+        if (!rep)
+            rep = tab_first_leaf_session(tt);
+
+        const char *cwd = rep ? session_cwd(rep) : "";
+        ri->tab_labels[i][0] = '\0';
+        ri->tab_branches[i][0] = '\0';
+        workspace_cwd_label(cwd, home, ri->tab_labels[i],
+                            (int)sizeof(ri->tab_labels[i]));
+        if (cwd && cwd[0])
+            workspace_git_branch(cwd, ri->tab_branches[i],
+                                 (int)sizeof(ri->tab_branches[i]));
+
+        ri->tabs[i].id = tab_attention_id(tt);
+        ri->tabs[i].label = ri->tab_labels[i];
+        ri->tabs[i].branch = ri->tab_branches[i];
+        ri->tabs[i].title = rep
+            ? cmdblocks_title((CmdBlocks *)session_cmdblocks(rep)) : "";
+        ri->tabs[i].name = tt->name;
+        ri->tabs[i].active = (ti == app.active) ? 1 : 0;
+
+        // Compute working state: aggregate over all leaf panes in this tab.
+        int working = 0;
+        if (tt->root) {
+            PaneNode *tleaves[WORKSPACE_RAIL_MAX_PANES];
+            int tnl = 0;
+            pane_collect_leaves(tt->root, tleaves, WORKSPACE_RAIL_MAX_PANES, &tnl);
+            uint64_t tpids[WORKSPACE_RAIL_MAX_PANES];
+            int ntp = 0;
+            for (int pi = 0; pi < tnl && pi < WORKSPACE_RAIL_MAX_PANES; pi++) {
+                if (tleaves[pi]->kind != PANE_LEAF) continue;
+                tpids[ntp++] = pane_id_for_session(tleaves[pi]->leaf.session);
+            }
+            if (workspace_status_any_working_at(&g_workspace_status, tpids, ntp, now_ms))
+                working = 1;
+        }
+        ri->tabs[i].working = working;
+        ri->tab_count++;
+    }
+
+    Tab *atab = (app.n_tabs > 0 && app.active >= 0) ? &app.tabs[app.active] : NULL;
+    if (atab && atab->root) {
+        PaneNode *aleaves[WORKSPACE_RAIL_MAX_PANES];
+        int anl = 0;
+        pane_collect_leaves(atab->root, aleaves, WORKSPACE_RAIL_MAX_PANES, &anl);
+        for (int pi = 0; pi < anl && ri->pane_count < WORKSPACE_RAIL_MAX_PANES; pi++) {
+            if (aleaves[pi]->kind != PANE_LEAF)
+                continue;
+            int i = ri->pane_count;
+            Session *ps = aleaves[pi]->leaf.session;
+            const char *pcwd = session_cwd(ps);
+            ri->pane_labels[i][0] = '\0';
+            ri->pane_branches[i][0] = '\0';
+            workspace_cwd_label(pcwd, home, ri->pane_labels[i],
+                                (int)sizeof(ri->pane_labels[i]));
+            if (pcwd && pcwd[0])
+                workspace_git_branch(pcwd, ri->pane_branches[i],
+                                     (int)sizeof(ri->pane_branches[i]));
+
+            uint64_t pid = pane_id_for_session(ps);
+            ri->panes[i].id = pid;
+            ri->panes[i].label = ri->pane_labels[i];
+            ri->panes[i].branch = ri->pane_branches[i];
+            ri->panes[i].title = cmdblocks_title((CmdBlocks *)session_cmdblocks(ps));
+            ri->panes[i].name = NULL;   // panes are never renamed
+            ri->panes[i].active = (aleaves[pi] == atab->focused) ? 1 : 0;
+            ri->panes[i].working = workspace_status_is_working_at(&g_workspace_status, pid, now_ms) ? 1 : 0;
+            ri->pane_count++;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -279,7 +426,7 @@ static Session *app_init_first_tab(uint16_t cols, uint16_t rows,
     Tab *tab = &app.tabs[0];
     tab->root    = pane_leaf(s);
     tab->focused = tab->root;
-    snprintf(tab->title, sizeof(tab->title), "1");
+    tab->name[0] = '\0';
     app.n_tabs  = 1;
     app.active  = 0;
     return s;
@@ -315,10 +462,31 @@ static Session *app_add_tab(uint16_t cols, uint16_t rows,
     Tab *tab = &app.tabs[app.n_tabs];
     tab->root    = pane_leaf(s);
     tab->focused = tab->root;
-    snprintf(tab->title, sizeof(tab->title), "%d", app.n_tabs + 1);
+    tab->name[0] = '\0';
     app.n_tabs++;
     app.active = app.n_tabs - 1;  // switch to the new tab
     return sync_active_session(te, pty_fd, child, child_exited);
+}
+
+// Like app_add_tab but sets tab->name immediately after creation.
+static Session *app_add_tab_named(uint16_t cols, uint16_t rows,
+                                  int cell_w, int cell_h,
+                                  int max_scrollback, const char *cwd,
+                                  const char *name,
+                                  bool kitty_images,
+                                  int kitty_image_storage_mb,
+                                  TermEngine **te, int *pty_fd,
+                                  pid_t *child, bool *child_exited)
+{
+    Session *s = app_add_tab(cols, rows, cell_w, cell_h, max_scrollback, cwd,
+                             kitty_images, kitty_image_storage_mb,
+                             te, pty_fd, child, child_exited);
+    if (s && name && name[0]) {
+        Tab *tab = &app.tabs[app.active];
+        strncpy(tab->name, name, sizeof(tab->name) - 1);
+        tab->name[sizeof(tab->name) - 1] = '\0';
+    }
+    return s;
 }
 
 // Close the active tab or focused pane in it.
@@ -2491,6 +2659,49 @@ static void execute_host_action(FangsActionId action,
         if (prev_term_area_w)
             *prev_term_area_w = -1;
         break;
+    case FANGS_ACTION_RENAME_WORKSPACE:
+        if (app.n_tabs > 0 && app.active >= 0)
+            ui_rename_prompt_open(app.active, app.tabs[app.active].name);
+        break;
+    case FANGS_ACTION_NEW_WORKTREE_WORKSPACE: {
+        if (app.n_tabs >= FANGS_MAX_TABS) {
+            toast_push(TOAST_WARN, "Maximum workspaces reached");
+            break;
+        }
+        Session *cur = sync_runtime_for_action(te, pty_fd, child, child_exited,
+                                               terminal, render_state, row_iter,
+                                               row_cells, placement_iter,
+                                               key_encoder, key_event,
+                                               mouse_encoder, mouse_event);
+        if (!cur) break;
+        WorkspaceWorktreeResult wtr;
+        memset(&wtr, 0, sizeof(wtr));
+        if (workspace_worktree_create(session_cwd(cur), &wtr)) {
+            Session *ns = app_add_tab_named(term_cols, term_rows,
+                                            cell_width, cell_height,
+                                            cfg->scrollback, wtr.path,
+                                            wtr.branch,
+                                            cfg->kitty_images,
+                                            cfg->kitty_image_storage_mb,
+                                            te, pty_fd, child, child_exited);
+            if (!ns) {
+                // Best-effort clean up the worktree we just created.
+                workspace_worktree_remove_created(&wtr);
+                toast_push(TOAST_WARN, "Failed to open workspace for worktree");
+            } else {
+                toast_push(TOAST_INFO, "Created worktree");
+            }
+        } else {
+            toast_push(TOAST_WARN, wtr.error);
+        }
+        sync_runtime_for_action(te, pty_fd, child, child_exited,
+                                terminal, render_state, row_iter, row_cells,
+                                placement_iter, key_encoder, key_event,
+                                mouse_encoder, mouse_event);
+        if (prev_term_area_w)
+            *prev_term_area_w = -1;
+        break;
+    }
     case FANGS_ACTION_INLINE_COMMAND:
         if (!ui_inline_active())
             open_inline_at_cursor(*render_state, cell_width, cell_height,
@@ -2800,6 +3011,11 @@ int main(void)
     // Each frame: handle resize → read pty → process input → render.
     while (!WindowShouldClose()) {
         frame_count++;
+
+        struct timespec _now_ts;
+        clock_gettime(CLOCK_MONOTONIC, &_now_ts);
+        uint64_t now_ms = (uint64_t)_now_ts.tv_sec * 1000 + (uint64_t)_now_ts.tv_nsec / 1000000;
+
         sync_active_runtime(&te, &pty_fd, &child, &child_exited,
                             &terminal, &render_state, &row_iter, &row_cells,
                             &placement_iter, &key_encoder, &key_event,
@@ -2872,7 +3088,7 @@ int main(void)
         bool palette_chord_consumed = false;
         if (IsKeyPressed(KEY_P) && (cmd_down || (ctrl_down && shift_down))
             && !ui_settings_open() && !ui_inline_active()
-            && !ui_workflow_prompt_active()) {
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active()) {
             Session *cur = sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
                                                    &terminal, &render_state, &row_iter,
                                                    &row_cells, &placement_iter,
@@ -2892,7 +3108,7 @@ int main(void)
         if (IsKeyPressed(KEY_COMMA)
             && (IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER)
                 || IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))
-            && !ui_palette_is_open() && !ui_workflow_prompt_active()) {
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()) {
             ui_settings_toggle();
             settings_shortcut_consumed = true;
             drain_char_queue();
@@ -2904,7 +3120,7 @@ int main(void)
                 || ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))
                     && (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT))));
         if (sidebar_chord && !ui_settings_open() && !ui_palette_is_open()
-            && !ui_workflow_prompt_active()) {
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active()) {
             ui_sidebar_toggle();
             ui_sidebar_focus(ui_sidebar_visible());
             sidebar_chord_consumed = true;
@@ -2915,7 +3131,7 @@ int main(void)
         bool inline_chord = IsKeyPressed(KEY_SPACE)
             && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL));
         if (inline_chord && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active()) {
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()) {
             open_inline_at_cursor(render_state, cell_width, cell_height,
                                   lo.terminal.x, lo.terminal.y, pad);
             drain_char_queue();
@@ -2923,7 +3139,7 @@ int main(void)
 
         int mouse_cursor = MOUSE_CURSOR_DEFAULT;
         if (!ui_settings_open() && !ui_inline_active() && !ui_palette_is_open()
-            && !ui_workflow_prompt_active()
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
             && GetMouseX() >= lo.terminal.x && GetMouseX() < lo.terminal.x + term_area_w
             && GetMouseY() >= lo.terminal.y && GetMouseY() < lo.terminal.y + lo.terminal.h) {
             int ucc = (GetMouseX() - lo.terminal.x - pad) / cell_width;
@@ -2946,7 +3162,7 @@ int main(void)
         // keys aren't also forwarded to the child shell.
         bool block_nav_consumed = false;
         if ((cmd_down || ctrl_down) && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
             && !g_search_active && !ui_sidebar_focused()) {
             if (IsKeyPressed(KEY_UP))   block_nav_consumed = cmdblocks_navigate(g_cmdblocks, te, -1);
             if (IsKeyPressed(KEY_DOWN)) block_nav_consumed = cmdblocks_navigate(g_cmdblocks, te, +1);
@@ -2960,7 +3176,7 @@ int main(void)
         bool ask_last_command_consumed = false;
         if (tab_chord && shift_down && IsKeyPressed(KEY_SLASH)
             && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
             && !g_search_active) {
             ask_ai_about_latest_block(te, term_rows);
             ask_last_command_consumed = true;
@@ -2979,7 +3195,7 @@ int main(void)
         // prompt (all raygui GuiTextBox, which now handles paste itself) would
         // be bypassed and the paste would land in the terminal behind them.
         bool text_field_capturing = ui_settings_open() || ui_inline_active()
-            || ui_palette_is_open() || ui_workflow_prompt_active()
+            || ui_palette_is_open() || ui_workflow_prompt_active() || ui_rename_prompt_active()
             || ui_sidebar_focused() || g_search_active;
         if ((((ctrl_down && shift_down) || cmd_down) && IsKeyPressed(KEY_V))
             || (shift_down && IsKeyPressed(KEY_INSERT))) {
@@ -2993,7 +3209,7 @@ int main(void)
         // Find overlay: Ctrl+F / Cmd+F toggles; while open it captures typing.
         bool search_consumed = false;
         if ((ctrl_down || cmd_down) && IsKeyPressed(KEY_F)
-            && !ui_palette_is_open() && !ui_workflow_prompt_active()) {
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()) {
             g_search_active = !g_search_active;
             if (!g_search_active) g_search_query[0] = '\0';
             search_consumed = true;
@@ -3010,7 +3226,7 @@ int main(void)
         // end-of-frame apply_config() reload the font + reflow the grid + pty.
         bool zoom_consumed = false;
         if ((ctrl_down || cmd_down) && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
             && !g_search_active && !ui_sidebar_focused()) {
             int new_size = cfg.font_size;
             if (IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD))
@@ -3031,7 +3247,7 @@ int main(void)
         // Intercepted before handle_input so these key events never reach the
         // shell — and gated on tab_chord so bare Ctrl+<key> still does.
         if (tab_chord && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
             && !g_search_active && !ui_sidebar_focused()) {
 
             // --- New tab: Cmd/Ctrl+T ---
@@ -3112,6 +3328,50 @@ int main(void)
                 prev_term_area_w = -1;
                 drain_char_queue();
             }
+
+            // --- Prev/next workspace: Cmd+Shift+[ / ] (macOS) /
+            //     Ctrl+Shift+[ / ] (Linux) ---
+            if (shift_down && app.n_tabs > 1
+                && (IsKeyPressed(KEY_LEFT_BRACKET) || IsKeyPressed(KEY_RIGHT_BRACKET))) {
+                int dir = IsKeyPressed(KEY_RIGHT_BRACKET) ? 1 : -1;
+                int next = (app.active + dir + app.n_tabs) % app.n_tabs;
+                app_switch_tab(next, &te, &pty_fd, &child, &child_exited);
+                sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                        &terminal, &render_state, &row_iter,
+                                        &row_cells, &placement_iter,
+                                        &key_encoder, &key_event,
+                                        &mouse_encoder, &mouse_event);
+                prev_term_area_w = -1;
+                drain_char_queue();
+            }
+
+            // --- Jump to the most severe unread pane: Cmd+Shift+U
+            //     (Ctrl+Shift+U on Linux). Resolved before drawing. ---
+            if (shift_down && IsKeyPressed(KEY_U)) {
+                uint64_t ids[WORKSPACE_STATUS_MAX_PANES];
+                int n = 0;
+                for (int ti = 0; ti < app.n_tabs; ti++) {
+                    if (!app.tabs[ti].root)
+                        continue;
+                    PaneNode *jl[WORKSPACE_RAIL_MAX_PANES];
+                    int jn = 0;
+                    pane_collect_leaves(app.tabs[ti].root, jl,
+                                        WORKSPACE_RAIL_MAX_PANES, &jn);
+                    for (int pj = 0; pj < jn && n < WORKSPACE_STATUS_MAX_PANES; pj++) {
+                        if (jl[pj]->kind != PANE_LEAF)
+                            continue;
+                        ids[n++] = pane_id_for_session(jl[pj]->leaf.session);
+                    }
+                }
+                g_jump_request = workspace_status_top_pane(&g_workspace_status, ids, n);
+            }
+
+            // --- Rename workspace: Cmd+Shift+R (Ctrl+Shift+R on Linux) ---
+            if (shift_down && IsKeyPressed(KEY_R)
+                && app.n_tabs > 0 && app.active >= 0) {
+                ui_rename_prompt_open(app.active, app.tabs[app.active].name);
+                drain_char_queue();
+            }
         }
 
         // --- Pane focus move: Cmd+Opt+Arrow (macOS) / Ctrl+Shift+Arrow (Linux).
@@ -3121,7 +3381,7 @@ int main(void)
         if (focus_chord && app.n_tabs > 0
             && pane_count_leaves(app.tabs[app.active].root) > 1
             && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
             && !g_search_active && !ui_sidebar_focused()) {
             int dx = 0, dy = 0;
             if (IsKeyPressed(KEY_LEFT))       dx = -1;
@@ -3216,6 +3476,7 @@ int main(void)
 
                 uint64_t live_ids[WORKSPACE_STATUS_MAX_PANES];
                 int live_count = 0;
+                bool window_focused_now = IsWindowFocused();
 
                 for (int ti = 0; ti < app.n_tabs; ti++) {
                     Tab *tab = &app.tabs[ti];
@@ -3230,15 +3491,16 @@ int main(void)
                             continue;
 
                         Session *ss = leaves[i]->leaf.session;
-                        bool focused = (ti == app.active && leaves[i] == active_tab->focused);
+                        bool active_pane = (ti == app.active && leaves[i] == active_tab->focused);
+                        bool focused = window_focused_now && active_pane;
                         uint64_t pane_id = pane_id_for_session(ss);
                         if (live_count < WORKSPACE_STATUS_MAX_PANES)
                             live_ids[live_count++] = pane_id;
 
                         // Feed PTY and detect background output activity.
                         SessionFeedStats stats = session_feed_pty_stats(ss);
-                        workspace_status_note_output(&g_workspace_status, pane_id,
-                                                     focused, stats.bytes_read);
+                        workspace_status_note_output_at(&g_workspace_status, pane_id,
+                                                        focused, stats.bytes_read, now_ms);
 
                         if ((stats.eof || stats.error) && !focused) {
                             session_reap(ss);
@@ -3257,6 +3519,36 @@ int main(void)
                                                               focused, code);
                             }
                         }
+
+                        // Detect agent notifications (BEL / OSC 9 / OSC 777) —
+                        // the channels Claude Code and friends ring when they
+                        // need input.
+                        unsigned long nseq = cmdblocks_notify_seq(cb);
+                        if (nseq > 0) {
+                            unsigned long nprev = pane_update_notify_seq(ss, nseq);
+                            if (nprev != nseq) {
+                                workspace_status_note_notify(&g_workspace_status, pane_id,
+                                                             focused,
+                                                             cmdblocks_notify_text(cb));
+                                if (!window_focused_now) {
+                                    char ws_label[128];
+                                    const char *ctitle = cmdblocks_title(cb);
+                                    if (ctitle && ctitle[0]) {
+                                        snprintf(ws_label, sizeof(ws_label), "%s", ctitle);
+                                    } else {
+                                        const char *cwd = session_cwd(ss);
+                                        if (cwd && cwd[0]) {
+                                            workspace_cwd_label(cwd, getenv("HOME") ? getenv("HOME") : "",
+                                                                ws_label, (int)sizeof(ws_label));
+                                        } else {
+                                            snprintf(ws_label, sizeof(ws_label), "shell");
+                                        }
+                                    }
+                                    desktop_notify_agent_ring(ws_label,
+                                                             cmdblocks_notify_text(cb));
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -3272,6 +3564,17 @@ int main(void)
         // asked for them.
         bool focused = IsWindowFocused();
         if (focused != prev_focused) {
+            // Window gained focus: clear the active pane's attention since
+            // the user can now see it directly.
+            if (focused && app.n_tabs > 0 && app.active >= 0) {
+                Tab *tab = &app.tabs[app.active];
+                if (tab->focused && tab->focused->kind == PANE_LEAF) {
+                    uint64_t id = pane_id_for_session(tab->focused->leaf.session);
+                    workspace_status_clear(&g_workspace_status, id);
+                    g_last_focused_pane_id = id;
+                }
+            }
+
             bool focus_mode = false;
             if (!child_exited
                 && ghostty_terminal_mode_get(terminal,
@@ -3318,7 +3621,7 @@ int main(void)
         // (e.g. vim, tmux) as spurious mouse events.
         bool scrollbar_consumed = false;
         if (!ui_settings_open() && !ui_palette_is_open()
-            && !ui_workflow_prompt_active()) {
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active()) {
             scrollbar_consumed = handle_scrollbar(terminal, render_state,
                                                    &scrollbar_dragging,
                                                    lo.terminal.x, lo.terminal.y,
@@ -3332,12 +3635,12 @@ int main(void)
         ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &mouse_tracking);
         bool can_select = (!mouse_tracking || shift_down)
                           && !ui_settings_open() && !ui_inline_active()
-                          && !ui_palette_is_open() && !ui_workflow_prompt_active();
+                          && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active();
         bool selection_consumed = false;
         // Ctrl/Cmd+click on a URL opens it (handled before starting a selection).
         if ((ctrl_down || cmd_down) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
             && mouse_in_terminal && !ui_palette_is_open()
-            && !ui_workflow_prompt_active()) {
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active()) {
             int ucc = (GetMouseX() - lo.terminal.x - pad) / cell_width;
             int ucr = (GetMouseY() - lo.terminal.y - pad) / cell_height;
             char url[2048];
@@ -3370,7 +3673,7 @@ int main(void)
         // Forward keyboard/mouse input only while the child is alive and no UI
         // element is capturing keys. Sidebar visibility alone does not block.
         if (!ui_inline_active() && !ui_palette_is_open()
-            && !ui_workflow_prompt_active()
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
             && !inline_chord && !palette_chord_consumed && !clipboard_consumed
             && !g_search_active && !search_consumed && !block_nav_consumed
             && !zoom_consumed
@@ -3474,138 +3777,163 @@ int main(void)
                                  &scrollbar) == GHOSTTY_SUCCESS)
             scrollbar_ptr = &scrollbar;
 
-        // Track rail click consumption to prevent terminal mouse forwarding.
-        bool rail_consumed_click = false;
-
         // ----------------------------------------------------------------
-        // Check for workspace rail click actions (before BeginDrawing so
-        // state changes like tab switch apply before this frame's draw).
+        // Workspace rail clicks (before BeginDrawing so state changes like
+        // tab switches apply before this frame's draw). Uses the same
+        // build/layout/hit model as drawing, so click targets can't drift
+        // from what's on screen. Clicks inside the rail never reach the
+        // terminal: pane rects start to the right of the rail.
         // ----------------------------------------------------------------
         if (lo.rail_visible && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
-            && GetMouseX() >= lo.rail.x && GetMouseX() < lo.rail.x + lo.rail.w) {
-            // Figure out which row was clicked by computing from mouse_y.
-            // We build the view model once to get row positions.
-            WorkspaceRailInput tab_inputs[WORKSPACE_RAIL_MAX_TABS];
-            int tab_input_count = 0;
-            WorkspaceRailInput pane_inputs[WORKSPACE_RAIL_MAX_PANES];
-            int pane_input_count = 0;
-
-            // Collect tab inputs.
-            for (int ti = 0; ti < app.n_tabs && ti < WORKSPACE_RAIL_MAX_TABS; ti++) {
-                Tab *tt = &app.tabs[ti];
-                uint64_t tid = tab_attention_id(tt);
-                const char *tlabel = "";
-                if (tt->root) {
-                    PaneNode *tleaves[64];
-                    int tnl = 0;
-                    pane_collect_leaves(tt->root, tleaves, 64, &tnl);
-                    if (tnl > 0 && tleaves[0]->kind == PANE_LEAF)
-                        tlabel = session_cwd(tleaves[0]->leaf.session);
-                }
-                char label_buf[64] = "", branch_buf[64] = "";
-                workspace_cwd_label(tlabel, getenv("HOME"), label_buf, (int)sizeof(label_buf));
-                if (tlabel && tlabel[0])
-                    workspace_git_branch(tlabel, branch_buf, (int)sizeof(branch_buf));
-                tab_inputs[tab_input_count].id = tid;
-                tab_inputs[tab_input_count].label = label_buf;
-                tab_inputs[tab_input_count].branch = branch_buf;
-                tab_inputs[tab_input_count].active = (ti == app.active) ? 1 : 0;
-                tab_input_count++;
-            }
-
-            // Collect pane inputs.
-            Tab *atab = &app.tabs[app.active];
-            if (atab->root) {
-                PaneNode *aleaves[WORKSPACE_RAIL_MAX_PANES];
-                int anl = 0;
-                pane_collect_leaves(atab->root, aleaves, WORKSPACE_RAIL_MAX_PANES, &anl);
-                for (int pi = 0; pi < anl && pi < WORKSPACE_RAIL_MAX_PANES; pi++) {
-                    if (aleaves[pi]->kind != PANE_LEAF) continue;
-                    Session *ps = aleaves[pi]->leaf.session;
-                    const char *pcwd = session_cwd(ps);
-                    char plabel[64] = "", pbranch[64] = "";
-                    workspace_cwd_label(pcwd, getenv("HOME"), plabel, (int)sizeof(plabel));
-                    if (pcwd && pcwd[0])
-                        workspace_git_branch(pcwd, pbranch, (int)sizeof(pbranch));
-                    pane_inputs[pane_input_count].id = pane_id_for_session(ps);
-                    pane_inputs[pane_input_count].label = plabel;
-                    pane_inputs[pane_input_count].branch = pbranch;
-                    pane_inputs[pane_input_count].active = (aleaves[pi] == atab->focused) ? 1 : 0;
-                    pane_input_count++;
-                }
-            }
-
-            // Reconstruct the view for hit testing.
-            WorkspaceRailView rv = {0};
-            workspace_rail_build(&rv, tab_inputs, tab_input_count,
-                                 pane_inputs, pane_input_count,
+            && GetMouseX() >= lo.rail.x && GetMouseX() < lo.rail.x + lo.rail.w
+            && GetMouseY() >= lo.rail.y && GetMouseY() < lo.rail.y + lo.rail.h) {
+            collect_rail_inputs(now_ms);
+            workspace_rail_build(&g_rail_view,
+                                 g_rail_inputs.tabs, g_rail_inputs.tab_count,
+                                 g_rail_inputs.panes, g_rail_inputs.pane_count,
                                  &g_workspace_status,
                                  lo.rail_compact ? 1 : 0);
-            int row_h = lo.rail_compact ? 36 : 32;
-            int my = GetMouseY();
-            int y = lo.rail.y;
+            workspace_rail_layout(&g_rail_view, lo.rail.x, lo.rail.y,
+                                  lo.rail.w, lo.rail.h);
+            WorkspaceRailAction act = workspace_rail_hit(&g_rail_view,
+                                                         GetMouseX(), GetMouseY());
 
-            // Notification row.
-            if (rv.notification[0] != '\0' && !lo.rail_compact) {
-                y += row_h + 1;
-            }
-            if (!lo.rail_compact) y += 4;
-
-            // Check tab rows.
-            for (int i = 0; i < rv.tab_count; i++) {
-                int row_y = y;
-                if (my >= row_y && my < row_y + row_h) {
-                    if (i >= 0 && i < app.n_tabs && i != app.active) {
-                        app_switch_tab(i, &te, &pty_fd, &child, &child_exited);
-                        sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
-                                                &terminal, &render_state, &row_iter,
-                                                &row_cells, &placement_iter,
-                                                &key_encoder, &key_event,
-                                                &mouse_encoder, &mouse_event);
-                        drain_char_queue();
-                        Tab *nt = &app.tabs[app.active];
-                        if (nt->focused && nt->focused->kind == PANE_LEAF)
-                            g_last_focused_pane_id = pane_id_for_session(nt->focused->leaf.session);
-                    }
-                    rail_consumed_click = true;
-                    break;
+            switch (act.type) {
+            case WORKSPACE_RAIL_ACTION_SWITCH_TAB:
+                if (act.index >= 0 && act.index < app.n_tabs
+                    && act.index != app.active) {
+                    app_switch_tab(act.index, &te, &pty_fd, &child, &child_exited);
+                    sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                            &terminal, &render_state, &row_iter,
+                                            &row_cells, &placement_iter,
+                                            &key_encoder, &key_event,
+                                            &mouse_encoder, &mouse_event);
+                    prev_term_area_w = -1;
+                    drain_char_queue();
                 }
-                y = row_y + row_h + 1;
-            }
-
-            if (!rail_consumed_click) {
-                // Skip separator.
-                if (rv.pane_count > 0 && !lo.rail_compact) y += 6;
-                // Check pane rows.
-                for (int i = 0; i < rv.pane_count; i++) {
-                    int row_y = y;
-                    if (my >= row_y && my < row_y + row_h && i < pane_input_count) {
-                        uint64_t target_id = pane_inputs[i].id;
-                        if (target_id != 0) {
-                            PaneNode *aleaves2[WORKSPACE_RAIL_MAX_PANES];
-                            int anl2 = 0;
-                            pane_collect_leaves(atab->root, aleaves2, WORKSPACE_RAIL_MAX_PANES, &anl2);
-                            for (int pj = 0; pj < anl2; pj++) {
-                                if (aleaves2[pj]->kind != PANE_LEAF) continue;
-                                if (pane_id_for_session(aleaves2[pj]->leaf.session) == target_id) {
-                                    if (aleaves2[pj] != atab->focused) {
-                                        atab->focused = aleaves2[pj];
-                                        sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
-                                                                &terminal, &render_state, &row_iter,
-                                                                &row_cells, &placement_iter,
-                                                                &key_encoder, &key_event,
-                                                                &mouse_encoder, &mouse_event);
-                                        drain_char_queue();
-                                        g_last_focused_pane_id = target_id;
-                                    }
-                                    break;
-                                }
-                            }
+                break;
+            case WORKSPACE_RAIL_ACTION_FOCUS_PANE: {
+                Tab *atab = &app.tabs[app.active];
+                if (atab->root && act.pane_id != 0) {
+                    PaneNode *aleaves[WORKSPACE_RAIL_MAX_PANES];
+                    int anl = 0;
+                    pane_collect_leaves(atab->root, aleaves,
+                                        WORKSPACE_RAIL_MAX_PANES, &anl);
+                    for (int pj = 0; pj < anl; pj++) {
+                        if (aleaves[pj]->kind != PANE_LEAF)
+                            continue;
+                        if (pane_id_for_session(aleaves[pj]->leaf.session) != act.pane_id)
+                            continue;
+                        if (aleaves[pj] != atab->focused) {
+                            atab->focused = aleaves[pj];
+                            sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                                    &terminal, &render_state, &row_iter,
+                                                    &row_cells, &placement_iter,
+                                                    &key_encoder, &key_event,
+                                                    &mouse_encoder, &mouse_event);
+                            drain_char_queue();
                         }
-                        rail_consumed_click = true;
                         break;
                     }
-                    y = row_y + row_h + 1;
+                }
+                break;
+            }
+            case WORKSPACE_RAIL_ACTION_NEW_TAB: {
+                // Option/Alt-click → worktree workspace; normal click → same-dir.
+                bool alt_held = IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT);
+                if (alt_held) {
+                    if (app.n_tabs >= FANGS_MAX_TABS) {
+                        toast_push(TOAST_WARN, "Maximum workspaces reached");
+                        break;
+                    }
+                    Session *cur = sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                                           &terminal, &render_state, &row_iter,
+                                                           &row_cells, &placement_iter,
+                                                           &key_encoder, &key_event,
+                                                           &mouse_encoder, &mouse_event);
+                    if (!cur) break;
+                    WorkspaceWorktreeResult wtr;
+                    memset(&wtr, 0, sizeof(wtr));
+                    if (workspace_worktree_create(session_cwd(cur), &wtr)) {
+                        Session *ns = app_add_tab_named(term_cols, term_rows,
+                                                        cell_width, cell_height,
+                                                        cfg.scrollback, wtr.path,
+                                                        wtr.branch,
+                                                        cfg.kitty_images,
+                                                        cfg.kitty_image_storage_mb,
+                                                        &te, &pty_fd, &child, &child_exited);
+                        if (!ns) {
+                            workspace_worktree_remove_created(&wtr);
+                            toast_push(TOAST_WARN, "Failed to open workspace for worktree");
+                        } else {
+                            toast_push(TOAST_INFO, "Created worktree");
+                        }
+                    } else {
+                        toast_push(TOAST_WARN, wtr.error);
+                    }
+                } else {
+                    Session *cur = sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                                           &terminal, &render_state, &row_iter,
+                                                           &row_cells, &placement_iter,
+                                                           &key_encoder, &key_event,
+                                                           &mouse_encoder, &mouse_event);
+                    app_add_tab(term_cols, term_rows, cell_width, cell_height,
+                                cfg.scrollback, session_cwd(cur),
+                                cfg.kitty_images, cfg.kitty_image_storage_mb,
+                                &te, &pty_fd, &child, &child_exited);
+                }
+                sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                        &terminal, &render_state, &row_iter,
+                                        &row_cells, &placement_iter,
+                                        &key_encoder, &key_event,
+                                        &mouse_encoder, &mouse_event);
+                prev_term_area_w = -1;
+                drain_char_queue();
+                break;
+            }
+            case WORKSPACE_RAIL_ACTION_JUMP_ATTENTION:
+                g_jump_request = act.pane_id;
+                break;
+            case WORKSPACE_RAIL_ACTION_NONE:
+            default:
+                break;
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Resolve a pending jump-to-unread request (Cmd+Shift+U or a
+        // notification-strip click): switch to the tab owning the target
+        // pane and focus it. Attention clears through the normal
+        // focus-change path at the top of the next frame.
+        // ----------------------------------------------------------------
+        if (g_jump_request != 0) {
+            uint64_t target = g_jump_request;
+            g_jump_request = 0;
+            bool found = false;
+            for (int ti = 0; ti < app.n_tabs && !found; ti++) {
+                Tab *tt = &app.tabs[ti];
+                if (!tt->root)
+                    continue;
+                PaneNode *jleaves[WORKSPACE_RAIL_MAX_PANES];
+                int jn = 0;
+                pane_collect_leaves(tt->root, jleaves, WORKSPACE_RAIL_MAX_PANES, &jn);
+                for (int pj = 0; pj < jn; pj++) {
+                    if (jleaves[pj]->kind != PANE_LEAF)
+                        continue;
+                    if (pane_id_for_session(jleaves[pj]->leaf.session) != target)
+                        continue;
+                    if (ti != app.active)
+                        app_switch_tab(ti, &te, &pty_fd, &child, &child_exited);
+                    app.tabs[app.active].focused = jleaves[pj];
+                    sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                            &terminal, &render_state, &row_iter,
+                                            &row_cells, &placement_iter,
+                                            &key_encoder, &key_event,
+                                            &mouse_encoder, &mouse_event);
+                    prev_term_area_w = -1;
+                    drain_char_queue();
+                    found = true;
+                    break;
                 }
             }
         }
@@ -3618,61 +3946,16 @@ int main(void)
 
         // Draw workspace rail inside the drawing block.
         if (lo.rail_visible) {
-            WorkspaceRailInput tab_inputs[WORKSPACE_RAIL_MAX_TABS];
-            int tab_input_count = 0;
-            for (int ti = 0; ti < app.n_tabs && ti < WORKSPACE_RAIL_MAX_TABS; ti++) {
-                Tab *tt = &app.tabs[ti];
-                uint64_t tid = tab_attention_id(tt);
-                const char *tlabel = "";
-                if (tt->root) {
-                    PaneNode *tleaves[64];
-                    int tnl = 0;
-                    pane_collect_leaves(tt->root, tleaves, 64, &tnl);
-                    if (tnl > 0 && tleaves[0]->kind == PANE_LEAF)
-                        tlabel = session_cwd(tleaves[0]->leaf.session);
-                }
-                char label_buf[64] = "", branch_buf[64] = "";
-                workspace_cwd_label(tlabel, getenv("HOME"), label_buf, (int)sizeof(label_buf));
-                if (tlabel && tlabel[0])
-                    workspace_git_branch(tlabel, branch_buf, (int)sizeof(branch_buf));
-                tab_inputs[tab_input_count].id = tid;
-                tab_inputs[tab_input_count].label = label_buf;
-                tab_inputs[tab_input_count].branch = branch_buf;
-                tab_inputs[tab_input_count].active = (ti == app.active) ? 1 : 0;
-                tab_input_count++;
-            }
-
-            WorkspaceRailInput pane_inputs[WORKSPACE_RAIL_MAX_PANES];
-            int pane_input_count = 0;
-            Tab *atab = &app.tabs[app.active];
-            if (atab->root) {
-                PaneNode *aleaves[WORKSPACE_RAIL_MAX_PANES];
-                int anl = 0;
-                pane_collect_leaves(atab->root, aleaves, WORKSPACE_RAIL_MAX_PANES, &anl);
-                for (int pi = 0; pi < anl && pi < WORKSPACE_RAIL_MAX_PANES; pi++) {
-                    if (aleaves[pi]->kind != PANE_LEAF) continue;
-                    Session *ps = aleaves[pi]->leaf.session;
-                    const char *pcwd = session_cwd(ps);
-                    char plabel[64] = "", pbranch[64] = "";
-                    workspace_cwd_label(pcwd, getenv("HOME"), plabel, (int)sizeof(plabel));
-                    if (pcwd && pcwd[0])
-                        workspace_git_branch(pcwd, pbranch, (int)sizeof(pbranch));
-                    pane_inputs[pane_input_count].id = pane_id_for_session(ps);
-                    pane_inputs[pane_input_count].label = plabel;
-                    pane_inputs[pane_input_count].branch = pbranch;
-                    pane_inputs[pane_input_count].active = (aleaves[pi] == atab->focused) ? 1 : 0;
-                    pane_input_count++;
-                }
-            }
-
-            WorkspaceRailView rv = {0};
-            workspace_rail_build(&rv, tab_inputs, tab_input_count,
-                                 pane_inputs, pane_input_count,
+            collect_rail_inputs(now_ms);
+            workspace_rail_build(&g_rail_view,
+                                 g_rail_inputs.tabs, g_rail_inputs.tab_count,
+                                 g_rail_inputs.panes, g_rail_inputs.pane_count,
                                  &g_workspace_status,
                                  lo.rail_compact ? 1 : 0);
-
-            ui_workspace_rail_draw(mono_font, lo.rail, &rv,
-                                  GetMouseX(), GetMouseY(), false);
+            workspace_rail_layout(&g_rail_view, lo.rail.x, lo.rail.y,
+                                  lo.rail.w, lo.rail.h);
+            ui_workspace_rail_draw(mono_font, &g_rail_view,
+                                   GetMouseX(), GetMouseY());
         }
 
         Tab *tab = &app.tabs[app.active];
@@ -3749,7 +4032,7 @@ int main(void)
                     && GetMouseX() >= px && GetMouseX() < px + pw
                     && GetMouseY() >= py && GetMouseY() < py + ph
                     && !ui_settings_open() && !ui_inline_active()
-                    && !ui_palette_is_open() && !ui_workflow_prompt_active()
+                    && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
                     && !ui_sidebar_focused();
                 if (cmdblocks_draw(g_cmdblocks, te, mono_font, &theme,
                                    cell_width, cell_height, font_size,
@@ -3898,6 +4181,19 @@ int main(void)
         const char *workflow_command = ui_workflow_prompt_take_command();
         if (workflow_command)
             stage_command_text(workflow_command, pty_fd);
+
+        // Workspace rename prompt: draw, then apply an accepted name.
+        ui_rename_prompt_draw(mono_font, 1.0f);
+        {
+            int rename_tab = -1;
+            char rename_name[RENAME_PROMPT_NAME_MAX];
+            if (ui_rename_prompt_take(&rename_tab, rename_name,
+                                      (int)sizeof(rename_name))
+                && rename_tab >= 0 && rename_tab < app.n_tabs) {
+                snprintf(app.tabs[rename_tab].name,
+                         sizeof(app.tabs[rename_tab].name), "%s", rename_name);
+            }
+        }
 
         // Draw toast notifications (fading pills, bottom-right).
         {

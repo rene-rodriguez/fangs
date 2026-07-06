@@ -15,20 +15,28 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// The four OSC 133 semantic marks. We act on PROMPT (block top) and DONE
-// (exit code); CMD/EXEC are recognized but reserved for future use.
+// Marks the scanner reports. OSC 133 drives command blocks; the rest feed the
+// workspace rail: BELL/NOTIFY mark background panes that want attention (the
+// channels Claude Code and other agents use), TITLE labels the pane.
 typedef enum {
     CB_MARK_NONE = 0,
     CB_MARK_PROMPT,   // OSC 133;A      — prompt start (= top of a command block)
     CB_MARK_CMD,      // OSC 133;B      — prompt end / typed-command start
     CB_MARK_EXEC,     // OSC 133;C      — command began executing
     CB_MARK_DONE,     // OSC 133;D;<n>  — command finished (n = exit code)
+    CB_MARK_BELL,     // bare BEL (0x07) outside any OSC sequence
+    CB_MARK_NOTIFY,   // OSC 9;<msg> or OSC 777;notify;<title>;<body>
+    CB_MARK_TITLE,    // OSC 0;<t> / OSC 2;<t> — window title
 } CbMark;
+
+#define CB_HIT_TEXT_MAX 128
 
 typedef struct {
     CbMark mark;
     int    code;   // exit code for CB_MARK_DONE; -1 when absent/unknown
     size_t end;    // index in the current chunk just past the OSC terminator
+    char   text[CB_HIT_TEXT_MAX];  // NOTIFY message / TITLE text (may be
+                                   // truncated); empty for other marks
 } CbHit;
 
 // Persistent scanner state across feed chunks. Zero-initialize, or call
@@ -36,9 +44,10 @@ typedef struct {
 typedef struct {
     bool in_osc;     // currently inside an OSC string (after ESC ])
     bool esc;        // previous byte was ESC (top level: detect "]"; in OSC: detect ST "\")
-    bool overflow;   // current OSC outgrew buf — ignore it
+    bool overflow;   // current OSC outgrew buf (133 marks are dropped;
+                     // NOTIFY/TITLE text is emitted truncated)
     int  len;        // bytes accumulated in buf
-    char buf[48];    // OSC payload after "ESC ]" (only "133;…" interests us)
+    char buf[192];   // OSC payload after "ESC ]"
 } CbParser;
 
 void cb_parser_reset(CbParser *p);

@@ -34,6 +34,33 @@ static void test_failed_background_command_marks_warn(void)
     EXPECT_TRUE(strstr(text, "exit 2") != NULL);
 }
 
+static void test_background_notify_marks_warn_with_text(void)
+{
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+    workspace_status_note_output(&st, 10, false, 12);
+    workspace_status_note_notify(&st, 10, false, "Claude needs your input");
+    EXPECT_INT(workspace_status_level(&st, 10), WORKSPACE_ATTENTION_WARN);
+    EXPECT_STR(workspace_status_text(&st, 10), "Claude needs your input");
+}
+
+static void test_notify_empty_text_uses_default(void)
+{
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+    workspace_status_note_notify(&st, 10, false, "");
+    EXPECT_INT(workspace_status_level(&st, 10), WORKSPACE_ATTENTION_WARN);
+    EXPECT_STR(workspace_status_text(&st, 10), "needs attention");
+}
+
+static void test_focused_notify_does_not_mark(void)
+{
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+    workspace_status_note_notify(&st, 10, true, "ping");
+    EXPECT_INT(workspace_status_level(&st, 10), WORKSPACE_ATTENTION_NONE);
+}
+
 static void test_command_warning_does_not_downgrade_exit_error(void)
 {
     WorkspaceStatus st;
@@ -93,15 +120,54 @@ static void test_remove_single_pane(void)
     EXPECT_INT(workspace_status_level(&st, 20), WORKSPACE_ATTENTION_INFO);
 }
 
+static void test_active_pane_can_be_marked_when_caller_says_not_focused(void)
+{
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    workspace_status_note_notify(&st, 10, false, "approve?");
+
+    EXPECT_INT(workspace_status_level(&st, 10), WORKSPACE_ATTENTION_WARN);
+    EXPECT_TRUE(strstr(workspace_status_text(&st, 10), "approve?") != NULL);
+}
+
+static void test_output_marks_working_without_unread_when_focused(void)
+{
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    workspace_status_note_output_at(&st, 10, true, 42, 1000);
+
+    EXPECT_INT(workspace_status_level(&st, 10), WORKSPACE_ATTENTION_NONE);
+    EXPECT_TRUE(workspace_status_is_working_at(&st, 10, 1500));
+}
+
+static void test_working_expires_after_silence(void)
+{
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    workspace_status_note_output_at(&st, 10, false, 42, 1000);
+
+    EXPECT_TRUE(workspace_status_is_working_at(&st, 10, 2999));
+    EXPECT_TRUE(!workspace_status_is_working_at(&st, 10, 3001));
+}
+
 int main(void)
 {
     test_background_output_marks_info();
     test_active_output_does_not_mark_unread();
     test_failed_background_command_marks_warn();
+    test_background_notify_marks_warn_with_text();
+    test_notify_empty_text_uses_default();
+    test_focused_notify_does_not_mark();
     test_command_warning_does_not_downgrade_exit_error();
     test_focus_clears_one_pane();
     test_tab_aggregate_and_notification();
     test_prune_removes_missing();
     test_remove_single_pane();
+    test_active_pane_can_be_marked_when_caller_says_not_focused();
+    test_output_marks_working_without_unread_when_focused();
+    test_working_expires_after_silence();
     return failures ? 1 : 0;
 }
