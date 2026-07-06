@@ -128,6 +128,13 @@ target_compile_features(config_tests PRIVATE c_std_11)
 target_include_directories(config_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 add_test(NAME config_tests COMMAND config_tests)
 
+add_executable(workspace_info_tests
+  tests/workspace_info_tests.c
+  src/workspace_info.c)
+target_compile_features(workspace_info_tests PRIVATE c_std_11)
+target_include_directories(workspace_info_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+add_test(NAME workspace_info_tests COMMAND workspace_info_tests)
+
 add_executable(layout_tests
   tests/layout_tests.c
   src/layout.c)
