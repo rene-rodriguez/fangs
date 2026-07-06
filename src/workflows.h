@@ -48,5 +48,7 @@ int workflows_collect_vars(const char *command, WorkflowVar *vars, int max_vars)
 bool workflows_expand_command(const char *command,
                               const WorkflowValue *values, int value_count,
                               char *out, int out_size);
+bool workflows_append_saved_command(const char *path, const char *command,
+                                    char *out_id, int out_id_size);
 
 #endif // FANGS_WORKFLOWS_H

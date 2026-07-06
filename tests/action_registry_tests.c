@@ -27,17 +27,20 @@ static void test_registry_exposes_existing_core_actions(void)
     const FangsAction *settings = action_registry_find(FANGS_ACTION_OPEN_SETTINGS);
     const FangsAction *sidebar  = action_registry_find(FANGS_ACTION_TOGGLE_SIDEBAR);
     const FangsAction *latest   = action_registry_find(FANGS_ACTION_ASK_LATEST_BLOCK);
+    const FangsAction *save     = action_registry_find(FANGS_ACTION_SAVE_LATEST_BLOCK_WORKFLOW);
     const FangsAction *split    = action_registry_find(FANGS_ACTION_SPLIT_RIGHT);
 
     EXPECT_TRUE(settings != NULL);
     EXPECT_TRUE(sidebar != NULL);
     EXPECT_TRUE(latest != NULL);
+    EXPECT_TRUE(save != NULL);
     EXPECT_TRUE(split != NULL);
 
     EXPECT_STR_EQ(settings->name, "settings.open");
     EXPECT_STR_EQ(settings->label, "Open Settings");
     EXPECT_STR_EQ(sidebar->name, "ai.toggle_sidebar");
     EXPECT_STR_EQ(latest->name, "blocks.ask_latest");
+    EXPECT_STR_EQ(save->name, "blocks.save_latest_workflow");
     EXPECT_STR_EQ(split->name, "pane.split_right");
 }
 

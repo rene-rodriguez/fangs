@@ -177,6 +177,11 @@ The command palette also loads local runbooks from:
 Runbooks are refreshed whenever the palette opens. Selecting one stages its command at the prompt;
 it does not press Enter for you.
 
+With shell integration enabled, the command palette action **Save Latest Command as Runbook**
+appends the most recent command block's command to the active project's `.fangs/workflows` file.
+If the project has no `.fangs` or `.git` marker above the active session, Fangs writes to
+`.fangs/workflows` under the active session's current directory.
+
 ```ini
 [workflow.test]
 label = Run Tests

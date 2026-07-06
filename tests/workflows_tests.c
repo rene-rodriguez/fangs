@@ -54,6 +54,25 @@ static char *temp_path(void)
     return path;
 }
 
+static char *temp_nested_workflow_path(void)
+{
+    char templ[] = "/tmp/fangs-workflows-test-XXXXXX";
+    char *dir = mkdtemp(templ);
+    if (!dir) {
+        fprintf(stderr, "mkdtemp: %s\n", strerror(errno));
+        exit(2);
+    }
+
+    size_t len = strlen(dir) + strlen("/.fangs/workflows") + 1;
+    char *path = malloc(len);
+    if (!path) {
+        fprintf(stderr, "malloc failed\n");
+        exit(2);
+    }
+    snprintf(path, len, "%s/.fangs/workflows", dir);
+    return path;
+}
+
 static void write_file(const char *path, const char *text)
 {
     FILE *f = fopen(path, "w");
@@ -205,6 +224,58 @@ static void test_expand_rejects_truncation(void)
                                           values, 1, out, (int)sizeof(out)));
 }
 
+static void test_append_saved_command_creates_project_workflow(void)
+{
+    char *path = temp_nested_workflow_path();
+    char id[WORKFLOW_ID_MAX];
+
+    EXPECT_TRUE(workflows_append_saved_command(path, "git status --short",
+                                               id, (int)sizeof(id)));
+    EXPECT_STR(id, "git_status_short");
+
+    WorkflowRegistry reg;
+    workflows_init(&reg);
+    EXPECT_TRUE(workflows_load_file(&reg, path));
+    EXPECT_INT(workflows_count(&reg), 1);
+    EXPECT_STR(workflows_get(&reg, 0)->id, "git_status_short");
+    EXPECT_STR(workflows_get(&reg, 0)->label, "git status --short");
+    EXPECT_STR(workflows_get(&reg, 0)->command, "git status --short");
+    EXPECT_STR(workflows_get(&reg, 0)->detail, "Saved from latest command block");
+
+    free(path);
+}
+
+static void test_append_saved_command_makes_duplicate_ids_unique(void)
+{
+    char *path = temp_nested_workflow_path();
+    char id1[WORKFLOW_ID_MAX];
+    char id2[WORKFLOW_ID_MAX];
+
+    EXPECT_TRUE(workflows_append_saved_command(path, "npm test", id1, (int)sizeof(id1)));
+    EXPECT_TRUE(workflows_append_saved_command(path, "npm test", id2, (int)sizeof(id2)));
+    EXPECT_STR(id1, "npm_test");
+    EXPECT_STR(id2, "npm_test_2");
+
+    WorkflowRegistry reg;
+    workflows_init(&reg);
+    EXPECT_TRUE(workflows_load_file(&reg, path));
+    EXPECT_INT(workflows_count(&reg), 2);
+    EXPECT_STR(workflows_get(&reg, 0)->id, "npm_test");
+    EXPECT_STR(workflows_get(&reg, 1)->id, "npm_test_2");
+
+    free(path);
+}
+
+static void test_append_saved_command_rejects_empty_command(void)
+{
+    char *path = temp_nested_workflow_path();
+    char id[WORKFLOW_ID_MAX];
+
+    EXPECT_TRUE(!workflows_append_saved_command(path, "   ", id, (int)sizeof(id)));
+
+    free(path);
+}
+
 int main(void)
 {
     test_missing_file_is_empty_success();
@@ -215,6 +286,9 @@ int main(void)
     test_expands_variables_with_values_and_defaults();
     test_expand_rejects_missing_required_value();
     test_expand_rejects_truncation();
+    test_append_saved_command_creates_project_workflow();
+    test_append_saved_command_makes_duplicate_ids_unique();
+    test_append_saved_command_rejects_empty_command();
 
     if (failures != 0) {
         fprintf(stderr, "%d workflow test failure(s)\n", failures);

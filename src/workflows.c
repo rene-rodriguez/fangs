@@ -3,7 +3,9 @@
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <string.h>
+#include <unistd.h>
 
 static void copy_string(char *dst, int dst_size, const char *src)
 {
@@ -131,6 +133,72 @@ static bool append_text(char *out, int out_size, int *pos,
     *pos += len;
     out[*pos] = '\0';
     return true;
+}
+
+static bool workflow_id_exists(const WorkflowRegistry *reg, const char *id)
+{
+    if (!reg || !id)
+        return false;
+    for (int i = 0; i < reg->count; i++) {
+        if (strcmp(reg->items[i].id, id) == 0)
+            return true;
+    }
+    return false;
+}
+
+static void workflow_id_from_command(const char *command, char *out, int out_size)
+{
+    int n = 0;
+    bool last_sep = true;
+    for (int i = 0; command && command[i] && n < out_size - 1; i++) {
+        unsigned char c = (unsigned char)command[i];
+        if (isalnum(c)) {
+            out[n++] = (char)tolower(c);
+            last_sep = false;
+        } else if (!last_sep && n < out_size - 1) {
+            out[n++] = '_';
+            last_sep = true;
+        }
+    }
+    while (n > 0 && out[n - 1] == '_')
+        n--;
+    out[n] = '\0';
+    if (out[0] == '\0')
+        copy_string(out, out_size, "workflow");
+}
+
+static bool mkdir_p(const char *dir)
+{
+    if (!dir || !dir[0])
+        return false;
+
+    char path[4096];
+    copy_string(path, sizeof(path), dir);
+    for (char *p = path + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (mkdir(path, 0700) != 0 && errno != EEXIST)
+                return false;
+            *p = '/';
+        }
+    }
+    if (mkdir(path, 0700) != 0 && errno != EEXIST)
+        return false;
+    return true;
+}
+
+static bool ensure_parent_dir(const char *path)
+{
+    char dir[4096];
+    copy_string(dir, sizeof(dir), path);
+    char *slash = strrchr(dir, '/');
+    if (!slash)
+        return true;
+    if (slash == dir)
+        slash[1] = '\0';
+    else
+        *slash = '\0';
+    return mkdir_p(dir);
 }
 
 void workflows_init(WorkflowRegistry *reg)
@@ -345,4 +413,55 @@ bool workflows_expand_command(const char *command,
     }
 
     return true;
+}
+
+bool workflows_append_saved_command(const char *path, const char *command,
+                                    char *out_id, int out_id_size)
+{
+    if (out_id && out_id_size > 0)
+        out_id[0] = '\0';
+    if (!path || !path[0] || !command)
+        return false;
+
+    char command_copy[WORKFLOW_COMMAND_MAX];
+    copy_string(command_copy, sizeof(command_copy), command);
+    char *clean_command = trim(command_copy);
+    if (!clean_command[0] || strchr(clean_command, '\n') || strchr(clean_command, '\r'))
+        return false;
+
+    if (!ensure_parent_dir(path))
+        return false;
+
+    WorkflowRegistry existing;
+    workflows_init(&existing);
+    if (!workflows_load_file(&existing, path))
+        return false;
+
+    char base[WORKFLOW_ID_MAX];
+    workflow_id_from_command(clean_command, base, sizeof(base));
+
+    char id[WORKFLOW_ID_MAX];
+    copy_string(id, sizeof(id), base);
+    for (int i = 2; workflow_id_exists(&existing, id); i++)
+        snprintf(id, sizeof(id), "%s_%d", base, i);
+
+    struct stat st;
+    bool needs_leading_newline = stat(path, &st) == 0 && st.st_size > 0;
+    FILE *f = fopen(path, "a");
+    if (!f)
+        return false;
+
+    int written = fprintf(f,
+                          "%s[workflow.%s]\n"
+                          "label = %s\n"
+                          "command = %s\n"
+                          "detail = Saved from latest command block\n",
+                          needs_leading_newline ? "\n" : "",
+                          id,
+                          clean_command,
+                          clean_command);
+    bool ok = written >= 0 && fclose(f) == 0;
+    if (ok && out_id && out_id_size > 0)
+        copy_string(out_id, out_id_size, id);
+    return ok;
 }

@@ -2146,6 +2146,46 @@ static bool find_project_workflow_path(const char *cwd, char *out, int out_size)
     return false;
 }
 
+static bool find_project_root_for_save(const char *cwd, char *out, int out_size)
+{
+    if (!cwd || !cwd[0] || !out || out_size <= 0)
+        return false;
+
+    char cur[4096];
+    snprintf(cur, sizeof(cur), "%s", cwd);
+
+    for (;;) {
+        char marker[4096];
+        snprintf(marker, sizeof(marker), "%s/.fangs", cur);
+        if (access(marker, F_OK) == 0) {
+            snprintf(out, (size_t)out_size, "%s", cur);
+            return true;
+        }
+        snprintf(marker, sizeof(marker), "%s/.git", cur);
+        if (access(marker, F_OK) == 0) {
+            snprintf(out, (size_t)out_size, "%s", cur);
+            return true;
+        }
+
+        char *slash = strrchr(cur, '/');
+        if (!slash || slash == cur)
+            break;
+        *slash = '\0';
+    }
+
+    snprintf(out, (size_t)out_size, "%s", cwd);
+    return true;
+}
+
+static bool project_workflow_save_path(const char *cwd, char *out, int out_size)
+{
+    char root[4096];
+    if (!find_project_root_for_save(cwd, root, (int)sizeof(root)))
+        return false;
+    snprintf(out, (size_t)out_size, "%s/.fangs/workflows", root);
+    return true;
+}
+
 static void refresh_palette_workflows(WorkflowRegistry *workflows,
                                       const char *config_path,
                                       const char *cwd)
@@ -2213,6 +2253,46 @@ static void handle_workflow_selection(const WorkflowRegistry *workflows,
     }
 
     stage_workflow_command(workflows, selection, pty_fd);
+}
+
+static void save_latest_command_block_as_workflow(TermEngine *te,
+                                                  uint16_t term_rows,
+                                                  const char *cwd,
+                                                  const char *config_path,
+                                                  WorkflowRegistry *workflows)
+{
+    CmdBlockAction latest_action = {0};
+    if (!cmdblocks_latest_action(g_cmdblocks, te, (int)term_rows, &latest_action)) {
+        toast_push(TOAST_INFO, "No command block to save.");
+        return;
+    }
+
+    if (latest_action.command[0] == '\0') {
+        cmdblock_action_free(&latest_action);
+        toast_push(TOAST_WARN, "Latest command block has no command.");
+        return;
+    }
+
+    char path[4096];
+    if (!project_workflow_save_path(cwd, path, (int)sizeof(path))) {
+        cmdblock_action_free(&latest_action);
+        toast_push(TOAST_WARN, "Could not resolve project workflow path.");
+        return;
+    }
+
+    char id[WORKFLOW_ID_MAX];
+    if (!workflows_append_saved_command(path, latest_action.command,
+                                        id, (int)sizeof(id))) {
+        cmdblock_action_free(&latest_action);
+        toast_push(TOAST_WARN, "Failed to save workflow.");
+        return;
+    }
+
+    refresh_palette_workflows(workflows, config_path, cwd);
+    char msg[160];
+    snprintf(msg, sizeof(msg), "Saved runbook: %s", id);
+    toast_push(TOAST_INFO, msg);
+    cmdblock_action_free(&latest_action);
 }
 
 static void open_inline_at_cursor(GhosttyRenderState render_state,
@@ -2284,6 +2364,7 @@ static void execute_host_action(FangsActionId action,
                                 GhosttyMouseEncoder *mouse_encoder,
                                 GhosttyMouseEvent *mouse_event,
                                 AppConfig *cfg, const char *config_path,
+                                WorkflowRegistry *palette_workflows,
                                 int cell_width, int cell_height, int pad,
                                 uint16_t term_cols, uint16_t term_rows,
                                 int term_area_w,
@@ -2309,6 +2390,16 @@ static void execute_host_action(FangsActionId action,
     case FANGS_ACTION_ASK_LATEST_BLOCK:
         ask_ai_about_latest_block(*te, term_rows);
         break;
+    case FANGS_ACTION_SAVE_LATEST_BLOCK_WORKFLOW: {
+        Session *cur = sync_runtime_for_action(te, pty_fd, child, child_exited,
+                                               terminal, render_state, row_iter,
+                                               row_cells, placement_iter,
+                                               key_encoder, key_event,
+                                               mouse_encoder, mouse_event);
+        save_latest_command_block_as_workflow(*te, term_rows, session_cwd(cur),
+                                              config_path, palette_workflows);
+        break;
+    }
     case FANGS_ACTION_FIND:
         g_search_active = true;
         break;
@@ -2650,7 +2741,7 @@ int main(void)
                                 &terminal, &render_state, &row_iter, &row_cells,
                                 &placement_iter, &key_encoder, &key_event,
                                 &mouse_encoder, &mouse_event,
-                                &cfg, config_path,
+                                &cfg, config_path, &palette_workflows,
                                 cell_width, cell_height, pad,
                                 term_cols, term_rows, term_area_w,
                                 &apply_saved_config,

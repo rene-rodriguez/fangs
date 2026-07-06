@@ -39,6 +39,13 @@ static const FangsAction ACTIONS[] = {
         "Cmd+Shift+/ / Ctrl+Shift+/",
     },
     {
+        FANGS_ACTION_SAVE_LATEST_BLOCK_WORKFLOW,
+        "blocks.save_latest_workflow",
+        "Save Latest Command as Runbook",
+        "Append the latest command block to the project runbook file",
+        "",
+    },
+    {
         FANGS_ACTION_FIND,
         "terminal.find",
         "Find In Terminal",
