@@ -59,7 +59,7 @@ void workspace_status_note_command(WorkspaceStatus *st, uint64_t pane_id,
 
     if (focused) return; /* Active pane commands don't create unread */
 
-    if (exit_code != 0) {
+    if (exit_code != 0 && st->levels[idx] < WORKSPACE_ATTENTION_WARN) {
         st->levels[idx] = WORKSPACE_ATTENTION_WARN;
         snprintf(st->texts[idx], sizeof(st->texts[idx]), "exit %d", exit_code);
     }

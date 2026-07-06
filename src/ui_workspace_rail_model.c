@@ -18,8 +18,8 @@ void workspace_rail_build(WorkspaceRailView *view,
         tab_count = WORKSPACE_RAIL_MAX_TABS;
     view->tab_count = tab_count;
 
-    uint64_t tab_pane_ids[WORKSPACE_RAIL_MAX_PANES];
-    int tab_pane_count = 0;
+    uint64_t notification_ids[WORKSPACE_RAIL_MAX_TABS + WORKSPACE_RAIL_MAX_PANES];
+    int notification_id_count = 0;
 
     for (int i = 0; i < tab_count; i++) {
         WorkspaceRailRow *row = &view->tabs[i];
@@ -28,8 +28,8 @@ void workspace_rail_build(WorkspaceRailView *view,
         row->index = i;
         row->active = in->active;
 
-        // Store tab pane ID for highest-level aggregation.
-        tab_pane_ids[tab_pane_count++] = in->id;
+        if (in->id != 0 && notification_id_count < (int)(sizeof(notification_ids) / sizeof(notification_ids[0])))
+            notification_ids[notification_id_count++] = in->id;
 
         if (compact) {
             // Compact: numeric label only, no branch.
@@ -55,9 +55,6 @@ void workspace_rail_build(WorkspaceRailView *view,
         pane_count = WORKSPACE_RAIL_MAX_PANES;
     view->pane_count = pane_count;
 
-    uint64_t pane_ids[WORKSPACE_RAIL_MAX_PANES];
-    int pane_id_count = 0;
-
     for (int i = 0; i < pane_count; i++) {
         WorkspaceRailRow *row = &view->panes[i];
         const WorkspaceRailInput *in = &pane_inputs[i];
@@ -65,7 +62,8 @@ void workspace_rail_build(WorkspaceRailView *view,
         row->index = i;
         row->active = in->active;
 
-        pane_ids[pane_id_count++] = in->id;
+        if (in->id != 0 && notification_id_count < (int)(sizeof(notification_ids) / sizeof(notification_ids[0])))
+            notification_ids[notification_id_count++] = in->id;
 
         if (compact) {
             snprintf(row->label, sizeof(row->label), "%d", i + 1);
@@ -84,7 +82,7 @@ void workspace_rail_build(WorkspaceRailView *view,
         }
     }
 
-    // Build notification string from all visible pane IDs.
-    workspace_status_notification(status, pane_ids, pane_id_count,
+    // Build notification string from tab representatives and visible pane IDs.
+    workspace_status_notification(status, notification_ids, notification_id_count,
                                   view->notification, sizeof(view->notification));
 }

@@ -116,6 +116,55 @@ static unsigned long pane_update_completion_seq(const Session *s, unsigned long 
     return 0;
 }
 
+static bool pane_id_list_contains(const uint64_t *ids, int count, uint64_t id)
+{
+    for (int i = 0; i < count; i++) {
+        if (ids[i] == id) return true;
+    }
+    return false;
+}
+
+static void pane_prune_completion_seen(const uint64_t *live_ids, int live_count)
+{
+    int write_idx = 0;
+    for (int i = 0; i < g_pane_seen_count; i++) {
+        if (!pane_id_list_contains(live_ids, live_count, g_pane_seen_ids[i]))
+            continue;
+        if (write_idx != i) {
+            g_pane_seen_ids[write_idx] = g_pane_seen_ids[i];
+            g_pane_seen_completion[write_idx] = g_pane_seen_completion[i];
+        }
+        write_idx++;
+    }
+    g_pane_seen_count = write_idx;
+}
+
+static uint64_t tab_attention_id(Tab *tab)
+{
+    if (!tab || !tab->root)
+        return 0;
+
+    PaneNode *leaves[WORKSPACE_RAIL_MAX_PANES];
+    int n_leaves = 0;
+    pane_collect_leaves(tab->root, leaves, WORKSPACE_RAIL_MAX_PANES, &n_leaves);
+
+    uint64_t best_id = 0;
+    WorkspaceAttention best_level = WORKSPACE_ATTENTION_NONE;
+    for (int i = 0; i < n_leaves; i++) {
+        if (leaves[i]->kind != PANE_LEAF)
+            continue;
+        uint64_t id = pane_id_for_session(leaves[i]->leaf.session);
+        if (best_id == 0)
+            best_id = id;
+        WorkspaceAttention level = workspace_status_level(&g_workspace_status, id);
+        if (level > best_level) {
+            best_level = level;
+            best_id = id;
+        }
+    }
+    return best_id;
+}
+
 // ---------------------------------------------------------------------------
 // Pane-rect collector for multi-pane rendering (§16.4)
 // ---------------------------------------------------------------------------
@@ -768,9 +817,13 @@ static void mouse_encode_and_write(int pty_fd, GhosttyMouseEncoder encoder,
 static void handle_mouse(int pty_fd, GhosttyMouseEncoder encoder,
                          GhosttyMouseEvent event, GhosttyTerminal terminal,
                          int cell_width, int cell_height, int pad,
-                         int term_area_w)
+                         int term_origin_x, int term_origin_y,
+                         int term_area_w, int term_area_h)
 {
-    if (GetMouseX() >= term_area_w)
+    int local_x = GetMouseX() - term_origin_x;
+    int local_y = GetMouseY() - term_origin_y;
+    if (local_x < 0 || local_x >= term_area_w
+        || local_y < 0 || local_y >= term_area_h)
         return;
 
     // Sync encoder tracking mode and format from terminal state so
@@ -780,11 +833,10 @@ static void handle_mouse(int pty_fd, GhosttyMouseEncoder encoder,
 
     // Provide the encoder with the current terminal geometry so it
     // can convert pixel positions to cell coordinates.
-    int scr_h = GetScreenHeight();
     GhosttyMouseEncoderSize enc_size = {
         .size          = sizeof(GhosttyMouseEncoderSize),
         .screen_width  = (uint32_t)term_area_w,
-        .screen_height = (uint32_t)scr_h,
+        .screen_height = (uint32_t)term_area_h,
         .cell_width    = (uint32_t)cell_width,
         .cell_height   = (uint32_t)cell_height,
         .padding_top   = (uint32_t)pad,
@@ -810,10 +862,9 @@ static void handle_mouse(int pty_fd, GhosttyMouseEncoder encoder,
         GHOSTTY_MOUSE_ENCODER_OPT_TRACK_LAST_CELL, &track_cell);
 
     GhosttyMods mods = get_ghostty_mods();
-    Vector2 pos = GetMousePosition();
     ghostty_mouse_event_set_mods(event, mods);
     ghostty_mouse_event_set_position(event,
-        (GhosttyMousePosition){ .x = pos.x, .y = pos.y });
+        (GhosttyMousePosition){ .x = (float)local_x, .y = (float)local_y });
 
     // Check each mouse button for press/release events.
     static const int buttons[] = {
@@ -1020,7 +1071,8 @@ static void handle_input(int pty_fd, GhosttyKeyEncoder encoder,
 static bool handle_scrollbar(GhosttyTerminal terminal,
                              GhosttyRenderState render_state,
                              bool *dragging,
-                             int term_area_w)
+                             int term_origin_x, int term_origin_y,
+                             int term_area_w, int term_area_h)
 {
     // Query scrollbar geometry from the terminal.
     GhosttyTerminalScrollbar scrollbar = {0};
@@ -1034,17 +1086,17 @@ static bool handle_scrollbar(GhosttyTerminal terminal,
         return false;
     }
 
-    int scr_h = GetScreenHeight();
     const int bar_width = 6;
     const int bar_margin = 2;
-    int bar_left = term_area_w - bar_width - bar_margin;
+    int bar_left = term_origin_x + term_area_w - bar_width - bar_margin;
     // Use a wider hit region for easier grabbing.
     int hit_left = bar_left - 8;
     Vector2 mpos = GetMousePosition();
 
     // Start a drag when the user clicks inside the hit region.
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
-        && mpos.x >= hit_left && mpos.x <= term_area_w) {
+        && mpos.x >= hit_left && mpos.x <= term_origin_x + term_area_w
+        && mpos.y >= term_origin_y && mpos.y <= term_origin_y + term_area_h) {
         *dragging = true;
     }
 
@@ -1053,7 +1105,7 @@ static bool handle_scrollbar(GhosttyTerminal terminal,
         // Y=0 → top of scrollback (offset 0), Y=scr_h → bottom
         // (offset = total - len).
         uint64_t scrollable = scrollbar.total - scrollbar.len;
-        double frac = (double)mpos.y / (double)scr_h;
+        double frac = (double)(mpos.y - term_origin_y) / (double)term_area_h;
         if (frac < 0.0) frac = 0.0;
         if (frac > 1.0) frac = 1.0;
         int64_t target = (int64_t)(frac * (double)scrollable);
@@ -1301,7 +1353,8 @@ static int col_of_byte(int row, int off)
 }
 
 // Highlight every visible occurrence of the query; returns the match count.
-static int draw_search_highlights(int pad, int cell_width, int cell_height)
+static int draw_search_highlights(int origin_x, int origin_y,
+                                  int pad, int cell_width, int cell_height)
 {
     int qlen = (int)strlen(g_search_query);
     if (qlen == 0) return 0;
@@ -1314,7 +1367,8 @@ static int draw_search_highlights(int pad, int cell_width, int cell_height)
             int c0 = col_of_byte(r, m);
             int c1 = col_of_byte(r, m + qlen - 1);
             for (int c = c0; c <= c1; c++)
-                DrawRectangle(pad + c * cell_width, pad + r * cell_height,
+                DrawRectangle(origin_x + pad + c * cell_width,
+                              origin_y + pad + r * cell_height,
                               cell_width, cell_height, UI2RAY(g_ui_theme.search_hit));
             total++;
             from = m + qlen;
@@ -1339,11 +1393,11 @@ static void search_input(void)
     }
 }
 
-static void draw_search_box(Font font, int term_area_w, int matches)
+static void draw_search_box(Font font, int term_origin_x, int term_area_w, int matches)
 {
     int w = 300, h = 34;
-    int x = term_area_w - w - 16;
-    if (x < 8) x = 8;
+    int x = term_origin_x + term_area_w - w - 16;
+    if (x < term_origin_x + 8) x = term_origin_x + 8;
     int y = 12;
     DrawRectangle(x, y, w, h, UI2RAY(g_ui_theme.search_bg));
     DrawRectangleLines(x, y, w, h, UI2RAY(g_ui_theme.search_border));
@@ -2039,13 +2093,13 @@ static AiStream *start_inline_request(TermEngine *te, const AppConfig *cfg,
 
 // Pixel position just below the terminal cursor, for anchoring the inline prompt.
 static void cursor_pixel(GhosttyRenderState rs, int cell_width, int cell_height,
-                         int pad, int *px, int *py)
+                         int origin_x, int origin_y, int pad, int *px, int *py)
 {
     uint16_t cx = 0, cy = 0;
     ghostty_render_state_get(rs, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &cx);
     ghostty_render_state_get(rs, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &cy);
-    *px = pad + (int)cx * cell_width;
-    *py = pad + ((int)cy + 1) * cell_height;
+    *px = origin_x + pad + (int)cx * cell_width;
+    *py = origin_y + pad + ((int)cy + 1) * cell_height;
 }
 
 // Mix two colors (t in 0..1), for deriving widget shades from a theme.
@@ -2342,10 +2396,12 @@ static void save_latest_command_block_as_workflow(TermEngine *te,
 
 static void open_inline_at_cursor(GhosttyRenderState render_state,
                                   int cell_width, int cell_height,
+                                  int term_origin_x, int term_origin_y,
                                   int pad)
 {
     int icx = 0, icy = 0;
-    cursor_pixel(render_state, cell_width, cell_height, pad, &icx, &icy);
+    cursor_pixel(render_state, cell_width, cell_height,
+                 term_origin_x, term_origin_y, pad, &icx, &icy);
     ui_inline_open(icx, icy);
 }
 
@@ -2412,6 +2468,7 @@ static void execute_host_action(FangsActionId action,
                                 WorkflowRegistry *palette_workflows,
                                 int cell_width, int cell_height, int pad,
                                 uint16_t term_cols, uint16_t term_rows,
+                                int term_origin_x, int term_origin_y,
                                 int term_area_w,
                                 bool *apply_saved_config,
                                 int *prev_term_area_w)
@@ -2436,7 +2493,8 @@ static void execute_host_action(FangsActionId action,
         break;
     case FANGS_ACTION_INLINE_COMMAND:
         if (!ui_inline_active())
-            open_inline_at_cursor(*render_state, cell_width, cell_height, pad);
+            open_inline_at_cursor(*render_state, cell_width, cell_height,
+                                  term_origin_x, term_origin_y, pad);
         break;
     case FANGS_ACTION_ASK_LATEST_BLOCK:
         ask_ai_about_latest_block(*te, term_rows);
@@ -2801,7 +2859,8 @@ int main(void)
                                 &mouse_encoder, &mouse_event,
                                 &cfg, config_path, &palette_workflows,
                                 cell_width, cell_height, pad,
-                                term_cols, term_rows, term_area_w,
+                                term_cols, term_rows,
+                                lo.terminal.x, lo.terminal.y, term_area_w,
                                 &apply_saved_config,
                                 &prev_term_area_w);
             pending_palette_selection = palette_selection_none();
@@ -2857,7 +2916,8 @@ int main(void)
             && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL));
         if (inline_chord && !ui_settings_open() && !ui_inline_active()
             && !ui_palette_is_open() && !ui_workflow_prompt_active()) {
-            open_inline_at_cursor(render_state, cell_width, cell_height, pad);
+            open_inline_at_cursor(render_state, cell_width, cell_height,
+                                  lo.terminal.x, lo.terminal.y, pad);
             drain_char_queue();
         }
 
@@ -3143,42 +3203,65 @@ int main(void)
 
         if (!blocks_smoke) {
             if (app.n_tabs > 0 && app.active >= 0) {
-                Tab *tab = &app.tabs[app.active];
+                Tab *active_tab = &app.tabs[app.active];
 
                 // Clear workspace attention when focus changes to a pane.
-                if (tab->focused && tab->focused->kind == PANE_LEAF) {
-                    uint64_t focused_id = pane_id_for_session(tab->focused->leaf.session);
+                if (active_tab->focused && active_tab->focused->kind == PANE_LEAF) {
+                    uint64_t focused_id = pane_id_for_session(active_tab->focused->leaf.session);
                     if (focused_id != g_last_focused_pane_id) {
                         workspace_status_clear(&g_workspace_status, focused_id);
                         g_last_focused_pane_id = focused_id;
                     }
                 }
 
-                PaneNode *leaves[64];
-                int n_leaves = 0;
-                pane_collect_leaves(tab->root, leaves, 64, &n_leaves);
-                for (int i = 0; i < n_leaves; i++) {
-                    Session *ss = leaves[i]->leaf.session;
-                    bool focused = (leaves[i] == tab->focused);
-                    uint64_t pane_id = pane_id_for_session(ss);
+                uint64_t live_ids[WORKSPACE_STATUS_MAX_PANES];
+                int live_count = 0;
 
-                    // Feed PTY and detect background output activity.
-                    SessionFeedStats stats = session_feed_pty_stats(ss);
-                    if (stats.bytes_read > 0 && !focused) {
-                        workspace_status_note_output(&g_workspace_status, pane_id, false, stats.bytes_read);
-                    }
+                for (int ti = 0; ti < app.n_tabs; ti++) {
+                    Tab *tab = &app.tabs[ti];
+                    if (!tab->root)
+                        continue;
 
-                    // Detect new command completions in background panes.
-                    CmdBlocks *cb = (CmdBlocks *)session_cmdblocks(ss);
-                    unsigned long seq = cmdblocks_completion_seq(cb);
-                    if (seq > 0) {
-                        unsigned long prev = pane_update_completion_seq(ss, seq);
-                        if (prev != seq && !focused) {
-                            int code = cmdblocks_latest_exit_code(cb);
-                            workspace_status_note_command(&g_workspace_status, pane_id, false, code);
+                    PaneNode *leaves[WORKSPACE_RAIL_MAX_PANES];
+                    int n_leaves = 0;
+                    pane_collect_leaves(tab->root, leaves, WORKSPACE_RAIL_MAX_PANES, &n_leaves);
+                    for (int i = 0; i < n_leaves; i++) {
+                        if (leaves[i]->kind != PANE_LEAF)
+                            continue;
+
+                        Session *ss = leaves[i]->leaf.session;
+                        bool focused = (ti == app.active && leaves[i] == active_tab->focused);
+                        uint64_t pane_id = pane_id_for_session(ss);
+                        if (live_count < WORKSPACE_STATUS_MAX_PANES)
+                            live_ids[live_count++] = pane_id;
+
+                        // Feed PTY and detect background output activity.
+                        SessionFeedStats stats = session_feed_pty_stats(ss);
+                        workspace_status_note_output(&g_workspace_status, pane_id,
+                                                     focused, stats.bytes_read);
+
+                        if ((stats.eof || stats.error) && !focused) {
+                            session_reap(ss);
+                            workspace_status_note_child_exit(&g_workspace_status, pane_id,
+                                                             focused, session_exit_status(ss));
+                        }
+
+                        // Detect new command completions in background panes.
+                        CmdBlocks *cb = (CmdBlocks *)session_cmdblocks(ss);
+                        unsigned long seq = cmdblocks_completion_seq(cb);
+                        if (seq > 0) {
+                            unsigned long prev = pane_update_completion_seq(ss, seq);
+                            if (prev != seq) {
+                                int code = cmdblocks_latest_exit_code(cb);
+                                workspace_status_note_command(&g_workspace_status, pane_id,
+                                                              focused, code);
+                            }
                         }
                     }
                 }
+
+                workspace_status_prune(&g_workspace_status, live_ids, live_count);
+                pane_prune_completion_seen(live_ids, live_count);
             }
         }
 
@@ -3219,8 +3302,14 @@ int main(void)
         if (!session_child_alive(active_session) && child_exit_status == 0)
             break;
 
+        bool mouse_in_terminal =
+            GetMouseX() >= lo.terminal.x
+            && GetMouseX() < lo.terminal.x + term_area_w
+            && GetMouseY() >= lo.terminal.y
+            && GetMouseY() < lo.terminal.y + lo.terminal.h;
+
         if (ui_sidebar_visible() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
-            && GetMouseX() < term_area_w) {
+            && mouse_in_terminal) {
             ui_sidebar_focus(false);
         }
 
@@ -3232,7 +3321,8 @@ int main(void)
             && !ui_workflow_prompt_active()) {
             scrollbar_consumed = handle_scrollbar(terminal, render_state,
                                                    &scrollbar_dragging,
-                                                   term_area_w);
+                                                   lo.terminal.x, lo.terminal.y,
+                                                   term_area_w, lo.terminal.h);
         }
 
         // Host text selection (click-drag) when the app isn't grabbing the mouse
@@ -3246,19 +3336,19 @@ int main(void)
         bool selection_consumed = false;
         // Ctrl/Cmd+click on a URL opens it (handled before starting a selection).
         if ((ctrl_down || cmd_down) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
-            && GetMouseX() < term_area_w && !ui_palette_is_open()
+            && mouse_in_terminal && !ui_palette_is_open()
             && !ui_workflow_prompt_active()) {
-            int ucc = (GetMouseX() - pad) / cell_width;
-            int ucr = (GetMouseY() - pad) / cell_height;
+            int ucc = (GetMouseX() - lo.terminal.x - pad) / cell_width;
+            int ucr = (GetMouseY() - lo.terminal.y - pad) / cell_height;
             char url[2048];
             if (url_at(ucr, ucc, url, (int)sizeof(url))) {
                 open_url(url);
                 selection_consumed = true;
             }
         }
-        if (!selection_consumed && can_select && !scrollbar_consumed && GetMouseX() < term_area_w) {
-            int cc = (GetMouseX() - pad) / cell_width;
-            int cr = (GetMouseY() - pad) / cell_height;
+        if (!selection_consumed && can_select && !scrollbar_consumed && mouse_in_terminal) {
+            int cc = (GetMouseX() - lo.terminal.x - pad) / cell_width;
+            int cr = (GetMouseY() - lo.terminal.y - pad) / cell_height;
             if (cc < 0) cc = 0;
             if (cr < 0) cr = 0;
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -3289,10 +3379,11 @@ int main(void)
                 lo.sidebar_visible, ui_sidebar_focused(),
                 settings_shortcut_consumed, sidebar_chord_consumed)) {
             handle_input(pty_fd, key_encoder, key_event, terminal);
-            if (!scrollbar_consumed && !selection_consumed && !rail_consumed_click
-                && GetMouseX() < term_area_w)
+            if (!scrollbar_consumed && !selection_consumed && mouse_in_terminal)
                 handle_mouse(pty_fd, mouse_encoder, mouse_event, terminal,
-                             cell_width, cell_height, pad, term_area_w);
+                             cell_width, cell_height, pad,
+                             lo.terminal.x, lo.terminal.y,
+                             term_area_w, lo.terminal.h);
         }
 
         // Apply the color theme when it changes (e.g. on Save). Setting the
@@ -3402,7 +3493,7 @@ int main(void)
             // Collect tab inputs.
             for (int ti = 0; ti < app.n_tabs && ti < WORKSPACE_RAIL_MAX_TABS; ti++) {
                 Tab *tt = &app.tabs[ti];
-                uint64_t tid = 0;
+                uint64_t tid = tab_attention_id(tt);
                 const char *tlabel = "";
                 if (tt->root) {
                     PaneNode *tleaves[64];
@@ -3531,7 +3622,7 @@ int main(void)
             int tab_input_count = 0;
             for (int ti = 0; ti < app.n_tabs && ti < WORKSPACE_RAIL_MAX_TABS; ti++) {
                 Tab *tt = &app.tabs[ti];
-                uint64_t tid = 0;
+                uint64_t tid = tab_attention_id(tt);
                 const char *tlabel = "";
                 if (tt->root) {
                     PaneNode *tleaves[64];
@@ -3690,8 +3781,9 @@ int main(void)
         }
 
         if (g_search_active) {
-            int matches = draw_search_highlights(pad, cell_width, cell_height);
-            draw_search_box(mono_font, term_area_w, matches);
+            int matches = draw_search_highlights(lo.terminal.x, lo.terminal.y,
+                                                 pad, cell_width, cell_height);
+            draw_search_box(mono_font, lo.terminal.x, term_area_w, matches);
         }
 
         if (ui_sidebar_visible() && lo.sidebar_visible) {

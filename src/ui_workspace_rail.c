@@ -4,6 +4,7 @@
 #include "ui_theme.h"
 #include "workspace_status.h"
 
+#include <stdio.h>
 #include <string.h>
 
 // Row heights in logical px.
@@ -110,10 +111,10 @@ WorkspaceRailAction ui_workspace_rail_draw(Font font, Rect bounds,
             if (sz.x > max_w) {
                 // Truncate from end.
                 char truncated[128];
+                snprintf(truncated, sizeof(truncated), "%s", full);
                 int len = (int)strlen(full);
                 while (len > 0) {
                     truncated[len] = '\0';
-                    truncated[len - 1] = full[len - 1];
                     Vector2 ts = MeasureTextEx(font, truncated, 13, 0);
                     if (ts.x <= max_w - 6) break;
                     len--;
@@ -183,10 +184,10 @@ WorkspaceRailAction ui_workspace_rail_draw(Font font, Rect bounds,
             float max_w = (float)(bounds.w - TEXT_PAD_X - 4);
             if (sz.x > max_w) {
                 char truncated[128];
+                snprintf(truncated, sizeof(truncated), "%s", full);
                 int len = (int)strlen(full);
                 while (len > 0) {
                     truncated[len] = '\0';
-                    truncated[len - 1] = full[len - 1];
                     Vector2 ts = MeasureTextEx(font, truncated, 13, 0);
                     if (ts.x <= max_w - 6) break;
                     len--;

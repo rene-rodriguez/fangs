@@ -137,6 +137,22 @@ static void test_attention_from_status(void)
     EXPECT_INT(view.panes[0].attention, WORKSPACE_ATTENTION_INFO);
 }
 
+static void test_tab_attention_contributes_to_notification(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 42, .label = "hidden", .branch = "main", .active = 0 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+    workspace_status_note_command(&st, 42, false, 5);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+
+    EXPECT_INT(view.tabs[0].attention, WORKSPACE_ATTENTION_WARN);
+    EXPECT_TRUE(strstr(view.notification, "exit 5") != NULL);
+}
+
 int main(void)
 {
     test_row_ordering();
@@ -144,5 +160,6 @@ int main(void)
     test_compact_mode();
     test_notification_text();
     test_attention_from_status();
+    test_tab_attention_contributes_to_notification();
     return failures ? 1 : 0;
 }

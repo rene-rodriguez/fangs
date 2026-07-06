@@ -34,6 +34,16 @@ static void test_failed_background_command_marks_warn(void)
     EXPECT_TRUE(strstr(text, "exit 2") != NULL);
 }
 
+static void test_command_warning_does_not_downgrade_exit_error(void)
+{
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+    workspace_status_note_child_exit(&st, 10, false, 9);
+    workspace_status_note_command(&st, 10, false, 2);
+    EXPECT_INT(workspace_status_level(&st, 10), WORKSPACE_ATTENTION_ERROR);
+    EXPECT_TRUE(strstr(workspace_status_text(&st, 10), "process exited") != NULL);
+}
+
 static void test_focus_clears_one_pane(void)
 {
     WorkspaceStatus st;
@@ -88,6 +98,7 @@ int main(void)
     test_background_output_marks_info();
     test_active_output_does_not_mark_unread();
     test_failed_background_command_marks_warn();
+    test_command_warning_does_not_downgrade_exit_error();
     test_focus_clears_one_pane();
     test_tab_aggregate_and_notification();
     test_prune_removes_missing();
