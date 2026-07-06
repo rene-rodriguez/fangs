@@ -101,6 +101,8 @@ add_executable(fangs
   src/pane.c
   src/ui_toast.c
   src/ui_effects.c
+  src/workspace_info.c
+  src/workspace_status.c
   "${FONT_HEADER}"
   "${FONT_BOLD_HEADER}")
 target_compile_features(fangs PRIVATE c_std_11)
@@ -134,6 +136,13 @@ add_executable(workspace_info_tests
 target_compile_features(workspace_info_tests PRIVATE c_std_11)
 target_include_directories(workspace_info_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 add_test(NAME workspace_info_tests COMMAND workspace_info_tests)
+
+add_executable(workspace_status_tests
+  tests/workspace_status_tests.c
+  src/workspace_status.c)
+target_compile_features(workspace_status_tests PRIVATE c_std_11)
+target_include_directories(workspace_status_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+add_test(NAME workspace_status_tests COMMAND workspace_status_tests)
 
 add_executable(layout_tests
   tests/layout_tests.c
