@@ -103,6 +103,7 @@ add_executable(fangs
   src/ui_effects.c
   src/workspace_info.c
   src/workspace_status.c
+  src/ui_workspace_rail_model.c
   "${FONT_HEADER}"
   "${FONT_BOLD_HEADER}")
 target_compile_features(fangs PRIVATE c_std_11)
@@ -143,6 +144,14 @@ add_executable(workspace_status_tests
 target_compile_features(workspace_status_tests PRIVATE c_std_11)
 target_include_directories(workspace_status_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 add_test(NAME workspace_status_tests COMMAND workspace_status_tests)
+
+add_executable(ui_workspace_rail_model_tests
+  tests/ui_workspace_rail_model_tests.c
+  src/ui_workspace_rail_model.c
+  src/workspace_status.c)
+target_compile_features(ui_workspace_rail_model_tests PRIVATE c_std_11)
+target_include_directories(ui_workspace_rail_model_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+add_test(NAME ui_workspace_rail_model_tests COMMAND ui_workspace_rail_model_tests)
 
 add_executable(layout_tests
   tests/layout_tests.c
