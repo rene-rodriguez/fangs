@@ -17,10 +17,18 @@ typedef struct {
     Rect terminal;
     Rect sidebar;
     bool sidebar_visible;
+    Rect rail;
+    bool rail_visible;
+    bool rail_compact;
 } Layout;
 
 Layout layout_compute(int window_w, int window_h, bool sidebar_visible,
                       int sidebar_width, int pad, int min_terminal_w);
+
+Layout layout_compute_with_rail(int window_w, int window_h,
+                                bool rail_enabled, int rail_width, int rail_compact_width,
+                                bool sidebar_visible, int sidebar_width,
+                                int pad, int min_terminal_w);
 
 // Callback invoked for each leaf pane with its assigned pixel rect.
 typedef void (*PaneRectFn)(const PaneNode *, int x, int y, int w, int h, void *user);

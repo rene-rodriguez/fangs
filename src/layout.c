@@ -9,10 +9,22 @@ static int clamp_nonnegative(int value)
 Layout layout_compute(int window_w, int window_h, bool sidebar_visible,
                       int sidebar_width, int pad, int min_terminal_w)
 {
+    return layout_compute_with_rail(window_w, window_h, false, 260, 56,
+                                    sidebar_visible, sidebar_width,
+                                    pad, min_terminal_w);
+}
+
+Layout layout_compute_with_rail(int window_w, int window_h,
+                                bool rail_enabled, int rail_width, int rail_compact_width,
+                                bool sidebar_visible, int sidebar_width,
+                                int pad, int min_terminal_w)
+{
     (void)pad;
 
     window_w = clamp_nonnegative(window_w);
     window_h = clamp_nonnegative(window_h);
+    rail_width = clamp_nonnegative(rail_width);
+    rail_compact_width = clamp_nonnegative(rail_compact_width);
     sidebar_width = clamp_nonnegative(sidebar_width);
     min_terminal_w = clamp_nonnegative(min_terminal_w);
 
@@ -20,22 +32,67 @@ Layout layout_compute(int window_w, int window_h, bool sidebar_visible,
         .terminal = {0, 0, window_w, window_h},
         .sidebar = {window_w, 0, 0, window_h},
         .sidebar_visible = false,
+        .rail = {0, 0, 0, window_h},
+        .rail_visible = false,
+        .rail_compact = false,
     };
 
-    if (!sidebar_visible || window_w <= min_terminal_w || sidebar_width == 0)
-        return lo;
+    /* Determine rail visibility and width */
+    int rail_actual_w = 0;
+    if (rail_enabled && window_w > min_terminal_w) {
+        /* Check if full rail fits:
+         * Full rail needs: rail_width + min_terminal_w + (sidebar if visible) */
+        int needed_for_full = rail_width + min_terminal_w;
+        if (needed_for_full <= window_w) {
+            rail_actual_w = rail_width;
+            lo.rail_compact = false;
+        } else {
+            /* Try compact rail */
+            int needed_for_compact = rail_compact_width + min_terminal_w;
+            if (needed_for_compact <= window_w) {
+                rail_actual_w = rail_compact_width;
+                lo.rail_compact = true;
+            }
+        }
+    }
 
-    int available_sidebar_w = window_w - min_terminal_w;
+    if (rail_actual_w > 0) {
+        lo.rail_visible = true;
+        lo.rail.x = 0;
+        lo.rail.y = 0;
+        lo.rail.w = rail_actual_w;
+        lo.rail.h = window_h;
+    }
+
+    /* Remaining width for terminal + sidebar */
+    int remaining_w = window_w - rail_actual_w;
+
+    /* Sidebar logic (same as before, using remaining_w) */
+    if (!sidebar_visible || remaining_w <= min_terminal_w || sidebar_width == 0) {
+        lo.terminal.x = rail_actual_w;
+        lo.terminal.w = remaining_w;
+        lo.sidebar.x = window_w;
+        lo.sidebar.w = 0;
+        return lo;
+    }
+
+    int available_sidebar_w = remaining_w - min_terminal_w;
     int actual_sidebar_w = sidebar_width < available_sidebar_w
         ? sidebar_width
         : available_sidebar_w;
 
-    if (actual_sidebar_w <= 0)
+    if (actual_sidebar_w <= 0) {
+        lo.terminal.x = rail_actual_w;
+        lo.terminal.w = remaining_w;
+        lo.sidebar.x = window_w;
+        lo.sidebar.w = 0;
         return lo;
+    }
 
     lo.sidebar_visible = true;
-    lo.terminal.w = window_w - actual_sidebar_w;
-    lo.sidebar.x = lo.terminal.w;
+    lo.terminal.x = rail_actual_w;
+    lo.terminal.w = remaining_w - actual_sidebar_w;
+    lo.sidebar.x = lo.terminal.x + lo.terminal.w;
     lo.sidebar.w = actual_sidebar_w;
     return lo;
 }

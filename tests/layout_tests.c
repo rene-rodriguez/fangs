@@ -76,6 +76,70 @@ static void test_grid_columns_are_derived_from_terminal_width(void)
     EXPECT_INT(cols, 101);
 }
 
+/* --- Rail tests --- */
+
+static void test_rail_disabled_uses_full_window(void)
+{
+    Layout lo = layout_compute_with_rail(1200, 800, false, 260, 56, false, 380, 4, 320);
+    EXPECT_TRUE(!lo.rail_visible);
+    EXPECT_INT(lo.terminal.x, 0);
+    EXPECT_INT(lo.terminal.w, 1200);
+}
+
+static void test_rail_full_width(void)
+{
+    Layout lo = layout_compute_with_rail(1200, 800, true, 260, 56, false, 380, 4, 320);
+    EXPECT_TRUE(lo.rail_visible);
+    EXPECT_TRUE(!lo.rail_compact);
+    EXPECT_INT(lo.rail.w, 260);
+    EXPECT_INT(lo.terminal.x, 260);
+    EXPECT_INT(lo.terminal.w, 940);
+}
+
+static void test_rail_compact_on_narrow_window(void)
+{
+    /* 500 wide: full 260 rail + 320 min terminal = 580 > 500, won't fit.
+     * Compact 56 rail + 320 min terminal = 376 <= 500, so compact fits. */
+    Layout lo = layout_compute_with_rail(500, 480, true, 260, 56, false, 380, 4, 320);
+    EXPECT_TRUE(lo.rail_visible);
+    EXPECT_TRUE(lo.rail_compact);
+    EXPECT_INT(lo.rail.w, 56);
+    EXPECT_INT(lo.terminal.x, 56);
+    EXPECT_INT(lo.terminal.w, 444);
+}
+
+static void test_rail_hidden_on_too_narrow_window(void)
+{
+    Layout lo = layout_compute_with_rail(300, 480, true, 260, 56, false, 380, 4, 320);
+    EXPECT_TRUE(!lo.rail_visible);
+    EXPECT_INT(lo.terminal.x, 0);
+    EXPECT_INT(lo.terminal.w, 300);
+}
+
+static void test_rail_and_sidebar_together(void)
+{
+    Layout lo = layout_compute_with_rail(1200, 800, true, 260, 56, true, 380, 4, 320);
+    EXPECT_TRUE(lo.rail_visible);
+    EXPECT_TRUE(lo.sidebar_visible);
+    EXPECT_INT(lo.rail.w, 260);
+    EXPECT_INT(lo.terminal.x, 260);
+    /* Remaining: 1200 - 260 = 940, sidebar 380 fits within min_terminal constraint */
+    EXPECT_INT(lo.terminal.w, 1200 - 260 - 380);
+    EXPECT_INT(lo.sidebar.x, 1200 - 380);
+    EXPECT_INT(lo.sidebar.w, 380);
+}
+
+static void test_rail_and_sidebar_preserve_min_terminal(void)
+{
+    /* 640 wide: full 260 rail + 320 min terminal = 580, 60 left for sidebar */
+    Layout lo = layout_compute_with_rail(640, 480, true, 260, 56, true, 380, 4, 320);
+    EXPECT_TRUE(lo.rail_visible);
+    EXPECT_TRUE(lo.sidebar_visible);
+    EXPECT_INT(lo.rail.w, 260);
+    EXPECT_INT(lo.terminal.w, 320);
+    EXPECT_INT(lo.sidebar.w, 60);
+}
+
 int main(void)
 {
     test_hidden_sidebar_uses_full_window();
@@ -83,6 +147,13 @@ int main(void)
     test_sidebar_clamps_to_preserve_min_terminal_width();
     test_too_narrow_window_hides_sidebar();
     test_grid_columns_are_derived_from_terminal_width();
+
+    test_rail_disabled_uses_full_window();
+    test_rail_full_width();
+    test_rail_compact_on_narrow_window();
+    test_rail_hidden_on_too_narrow_window();
+    test_rail_and_sidebar_together();
+    test_rail_and_sidebar_preserve_min_terminal();
 
     if (failures != 0) {
         fprintf(stderr, "%d layout test failure(s)\n", failures);
