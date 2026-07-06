@@ -247,7 +247,8 @@ bool workspace_worktree_create(const char *cwd, WorkspaceWorktreeResult *out)
     // Generate unique candidate name.
     char candidate[WORKTREE_NAME_MAX];
     bool found = false;
-    for (int suffix = 0; suffix < 1000; suffix++) {
+    for (int attempt = 0; attempt < 1000; attempt++) {
+        int suffix = attempt == 0 ? 0 : attempt + 1;
         if (!workspace_worktree_candidate(branch, suffix, candidate,
                                           (int)sizeof(candidate))) {
             snprintf(out->error, sizeof(out->error),

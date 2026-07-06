@@ -82,11 +82,35 @@ static void test_create_local_worktree(void)
     EXPECT_TRUE(stat(dotgit, &st) == 0);
 }
 
+static void test_create_uses_spec_suffix_for_second_worktree(void)
+{
+    if (run_git(NULL, "--version", NULL, NULL, NULL) != 0)
+        return;
+
+    char root[512];
+    snprintf(root, sizeof(root), "/tmp/fangs-worktree-suffix-test-%ld", (long)getpid());
+    mkdir(root, 0700);
+
+    EXPECT_TRUE(run_git(root, "init", "-b", "main", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "config", "user.email", "fangs@example.test", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "config", "user.name", "Fangs Test", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "commit", "--allow-empty", "-m", "init") == 0);
+
+    WorkspaceWorktreeResult first;
+    WorkspaceWorktreeResult second;
+    EXPECT_TRUE(workspace_worktree_create(root, &first));
+    EXPECT_TRUE(workspace_worktree_create(root, &second));
+    EXPECT_STR(first.branch, "main-agent");
+    EXPECT_STR(second.branch, "main-agent-2");
+    EXPECT_TRUE(strstr(second.path, "/.worktrees/main-agent-2") != NULL);
+}
+
 int main(void)
 {
     test_sanitize_name();
     test_candidate_generation();
     test_create_rejects_non_repo();
     test_create_local_worktree();
+    test_create_uses_spec_suffix_for_second_worktree();
     return failures ? 1 : 0;
 }
