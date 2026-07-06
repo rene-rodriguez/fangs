@@ -25,12 +25,14 @@
 #include "term_engine.h"
 #include "theme.h"
 #include "ui_inline.h"
+#include "ui_palette.h"
 #include "ui_sidebar.h"
 #include "ui_sidebar_model.h"
 #include "ui_settings.h"
 #include "ui_theme.h"
 #include "ui_toast.h"
 #include "ui_effects.h"
+#include "ui_workflow_prompt.h"
 
 // Font embedded into the binary at compile time (CMake bin2header from
 // assets/JetBrainsMono-Regular.ttf and JetBrainsMono-Bold.ttf).
@@ -138,6 +140,36 @@ static Session *sync_active_session(TermEngine **te_out,
     return s;
 }
 
+static Session *sync_active_runtime(TermEngine **te_out,
+                                    int *pty_fd_out, pid_t *child_out,
+                                    bool *child_exited_out,
+                                    GhosttyTerminal *terminal_out,
+                                    GhosttyRenderState *render_state_out,
+                                    GhosttyRenderStateRowIterator *row_iter_out,
+                                    GhosttyRenderStateRowCells *row_cells_out,
+                                    GhosttyKittyGraphicsPlacementIterator *placement_iter_out,
+                                    GhosttyKeyEncoder *key_encoder_out,
+                                    GhosttyKeyEvent *key_event_out,
+                                    GhosttyMouseEncoder *mouse_encoder_out,
+                                    GhosttyMouseEvent *mouse_event_out)
+{
+    Session *s = sync_active_session(te_out, pty_fd_out, child_out, child_exited_out);
+    TermEngine *te = te_out ? *te_out : NULL;
+    if (!s || !te)
+        return s;
+
+    if (terminal_out)       *terminal_out       = term_engine_terminal(te);
+    if (render_state_out)   *render_state_out   = term_engine_render_state(te);
+    if (row_iter_out)       *row_iter_out       = term_engine_row_iter(te);
+    if (row_cells_out)      *row_cells_out      = term_engine_row_cells(te);
+    if (placement_iter_out) *placement_iter_out = term_engine_placement_iter(te);
+    if (key_encoder_out)    *key_encoder_out    = term_engine_key_encoder(te);
+    if (key_event_out)      *key_event_out      = term_engine_key_event(te);
+    if (mouse_encoder_out)  *mouse_encoder_out  = term_engine_mouse_encoder(te);
+    if (mouse_event_out)    *mouse_event_out    = term_engine_mouse_event(te);
+    return s;
+}
+
 // Initialize the App with a single tab containing one leaf Session.
 // Returns the Session pointer for handle extraction, or NULL on failure.
 static Session *app_init_first_tab(uint16_t cols, uint16_t rows,
@@ -183,6 +215,8 @@ static Session *app_add_tab(uint16_t cols, uint16_t rows,
     Session *s = session_create(cols, rows, cell_w, cell_h, max_scrollback, cwd,
                                 kitty_images, kitty_image_storage_mb);
     if (!s) return NULL;
+    register_session_effects(s);
+    update_session_effects(s, cols, rows, cell_w, cell_h);
 
     Tab *tab = &app.tabs[app.n_tabs];
     tab->root    = pane_leaf(s);
@@ -249,6 +283,8 @@ static Session *app_split_focused(PaneKind dir, uint16_t cols, uint16_t rows,
     Session *new_s = session_create(cols, rows, cell_w, cell_h, max_scrollback, cwd,
                                     kitty_images, kitty_image_storage_mb);
     if (!new_s) return NULL;
+    register_session_effects(new_s);
+    update_session_effects(new_s, cols, rows, cell_w, cell_h);
 
     PaneNode *new_root = pane_split(tab->root, tab->focused, dir, new_s, 0.5f);
     tab->root = new_root;
@@ -2038,6 +2074,335 @@ static bool apply_config_all_sessions(const AppConfig *cfg,
     return ok;
 }
 
+static void drain_char_queue(void)
+{
+    while (GetCharPressed() != 0) { }
+}
+
+static UiPaletteSelection palette_selection_none(void)
+{
+    return (UiPaletteSelection){
+        .type = UI_PALETTE_SELECTION_NONE,
+        .action_id = FANGS_ACTION_NONE,
+        .workflow_index = -1,
+    };
+}
+
+static void workflow_path_from_config_path(const char *config_path,
+                                           char *out, int out_size)
+{
+    if (!out || out_size <= 0)
+        return;
+    out[0] = '\0';
+    if (!config_path || config_path[0] == '\0') {
+        snprintf(out, (size_t)out_size, "workflows");
+        return;
+    }
+
+    const char *slash = strrchr(config_path, '/');
+    if (!slash) {
+        snprintf(out, (size_t)out_size, "workflows");
+        return;
+    }
+
+    int dir_len = (int)(slash - config_path);
+    if (dir_len < 1)
+        dir_len = 1;
+    if (dir_len >= out_size)
+        dir_len = out_size - 1;
+    memcpy(out, config_path, (size_t)dir_len);
+    out[dir_len] = '\0';
+    snprintf(out + strlen(out), (size_t)(out_size - (int)strlen(out)),
+             "%sworkflows", out[dir_len - 1] == '/' ? "" : "/");
+}
+
+static bool find_project_workflow_path(const char *cwd, char *out, int out_size)
+{
+    if (!cwd || !cwd[0] || !out || out_size <= 0)
+        return false;
+
+    char cur[4096];
+    snprintf(cur, sizeof(cur), "%s", cwd);
+
+    for (;;) {
+        char candidate[4096];
+        snprintf(candidate, sizeof(candidate), "%s/.fangs/workflows", cur);
+        if (access(candidate, R_OK) == 0) {
+            snprintf(out, (size_t)out_size, "%s", candidate);
+            return true;
+        }
+        snprintf(candidate, sizeof(candidate), "%s/.fangs/workflows.ini", cur);
+        if (access(candidate, R_OK) == 0) {
+            snprintf(out, (size_t)out_size, "%s", candidate);
+            return true;
+        }
+
+        char *slash = strrchr(cur, '/');
+        if (!slash || slash == cur)
+            break;
+        *slash = '\0';
+    }
+
+    return false;
+}
+
+static void refresh_palette_workflows(WorkflowRegistry *workflows,
+                                      const char *config_path,
+                                      const char *cwd)
+{
+    if (!workflows)
+        return;
+
+    workflows_init(workflows);
+
+    char global_path[4096];
+    workflow_path_from_config_path(config_path, global_path, (int)sizeof(global_path));
+    if (!workflows_load_file(workflows, global_path)) {
+        fprintf(stderr, "warning: failed to load workflows at %s\n", global_path);
+        toast_push(TOAST_WARN, "Failed to load global workflows.");
+    }
+
+    char project_path[4096];
+    if (find_project_workflow_path(cwd, project_path, (int)sizeof(project_path))) {
+        if (!workflows_load_file(workflows, project_path)) {
+            fprintf(stderr, "warning: failed to load workflows at %s\n", project_path);
+            toast_push(TOAST_WARN, "Failed to load project workflows.");
+        }
+    }
+
+    ui_palette_set_workflows(workflows);
+}
+
+static void stage_workflow_command(const WorkflowRegistry *workflows,
+                                   UiPaletteSelection selection,
+                                   int pty_fd)
+{
+    const Workflow *workflow = workflows_get(workflows, selection.workflow_index);
+    if (!workflow || workflow->command[0] == '\0') {
+        toast_push(TOAST_WARN, "Workflow command is unavailable.");
+        return;
+    }
+    pty_write(pty_fd, workflow->command, strlen(workflow->command));
+    toast_push(TOAST_INFO, "Workflow command staged.");
+}
+
+static void stage_command_text(const char *command, int pty_fd)
+{
+    if (!command || !command[0])
+        return;
+    pty_write(pty_fd, command, strlen(command));
+    toast_push(TOAST_INFO, "Workflow command staged.");
+}
+
+static void handle_workflow_selection(const WorkflowRegistry *workflows,
+                                      UiPaletteSelection selection,
+                                      int pty_fd)
+{
+    const Workflow *workflow = workflows_get(workflows, selection.workflow_index);
+    if (!workflow) {
+        toast_push(TOAST_WARN, "Workflow command is unavailable.");
+        return;
+    }
+
+    WorkflowVar vars[WORKFLOW_VAR_MAX];
+    int var_count = workflows_collect_vars(workflow->command, vars, WORKFLOW_VAR_MAX);
+    if (var_count > 0) {
+        if (!ui_workflow_prompt_open(workflow))
+            toast_push(TOAST_WARN, "Could not open workflow prompt.");
+        return;
+    }
+
+    stage_workflow_command(workflows, selection, pty_fd);
+}
+
+static void open_inline_at_cursor(GhosttyRenderState render_state,
+                                  int cell_width, int cell_height,
+                                  int pad)
+{
+    int icx = 0, icy = 0;
+    cursor_pixel(render_state, cell_width, cell_height, pad, &icx, &icy);
+    ui_inline_open(icx, icy);
+}
+
+static void ask_ai_about_latest_block(TermEngine *te, uint16_t term_rows)
+{
+    CmdBlockAction latest_action = {0};
+    if (cmdblocks_latest_action(g_cmdblocks, te, (int)term_rows, &latest_action)) {
+        open_sidebar_for_cmdblock_action(&latest_action);
+        cmdblock_action_free(&latest_action);
+    } else {
+        toast_push(TOAST_INFO, "No command block to ask about.");
+    }
+}
+
+static bool save_font_size_action(AppConfig *cfg, const char *config_path,
+                                  int new_size, bool *apply_saved_config)
+{
+    if (new_size < FANGS_MIN_FONT_SIZE) new_size = FANGS_MIN_FONT_SIZE;
+    if (new_size > FANGS_MAX_FONT_SIZE) new_size = FANGS_MAX_FONT_SIZE;
+    if (new_size == cfg->font_size)
+        return false;
+
+    cfg->font_size = new_size;
+    if (!config_save(cfg, config_path)) {
+        fprintf(stderr, "warning: failed to save config at %s\n", config_path);
+        toast_push(TOAST_WARN, "Failed to save config (font zoom).");
+    }
+    if (apply_saved_config)
+        *apply_saved_config = true;
+    return true;
+}
+
+static Session *sync_runtime_for_action(TermEngine **te, int *pty_fd,
+                                        pid_t *child, bool *child_exited,
+                                        GhosttyTerminal *terminal,
+                                        GhosttyRenderState *render_state,
+                                        GhosttyRenderStateRowIterator *row_iter,
+                                        GhosttyRenderStateRowCells *row_cells,
+                                        GhosttyKittyGraphicsPlacementIterator *placement_iter,
+                                        GhosttyKeyEncoder *key_encoder,
+                                        GhosttyKeyEvent *key_event,
+                                        GhosttyMouseEncoder *mouse_encoder,
+                                        GhosttyMouseEvent *mouse_event)
+{
+    return sync_active_runtime(te, pty_fd, child, child_exited,
+                               terminal, render_state, row_iter, row_cells,
+                               placement_iter, key_encoder, key_event,
+                               mouse_encoder, mouse_event);
+}
+
+static void execute_host_action(FangsActionId action,
+                                TermEngine **te, int *pty_fd,
+                                pid_t *child, bool *child_exited,
+                                GhosttyTerminal *terminal,
+                                GhosttyRenderState *render_state,
+                                GhosttyRenderStateRowIterator *row_iter,
+                                GhosttyRenderStateRowCells *row_cells,
+                                GhosttyKittyGraphicsPlacementIterator *placement_iter,
+                                GhosttyKeyEncoder *key_encoder,
+                                GhosttyKeyEvent *key_event,
+                                GhosttyMouseEncoder *mouse_encoder,
+                                GhosttyMouseEvent *mouse_event,
+                                AppConfig *cfg, const char *config_path,
+                                int cell_width, int cell_height, int pad,
+                                uint16_t term_cols, uint16_t term_rows,
+                                int term_area_w,
+                                bool *apply_saved_config,
+                                int *prev_term_area_w)
+{
+    switch (action) {
+    case FANGS_ACTION_OPEN_COMMAND_PALETTE:
+        ui_palette_open();
+        break;
+    case FANGS_ACTION_OPEN_SETTINGS:
+        if (!ui_settings_open())
+            ui_settings_toggle();
+        break;
+    case FANGS_ACTION_TOGGLE_SIDEBAR:
+        ui_sidebar_toggle();
+        ui_sidebar_focus(ui_sidebar_visible());
+        break;
+    case FANGS_ACTION_INLINE_COMMAND:
+        if (!ui_inline_active())
+            open_inline_at_cursor(*render_state, cell_width, cell_height, pad);
+        break;
+    case FANGS_ACTION_ASK_LATEST_BLOCK:
+        ask_ai_about_latest_block(*te, term_rows);
+        break;
+    case FANGS_ACTION_FIND:
+        g_search_active = true;
+        break;
+    case FANGS_ACTION_COPY_SELECTION:
+        sel_copy_to_clipboard();
+        break;
+    case FANGS_ACTION_PASTE:
+        do_paste(*pty_fd, *terminal);
+        break;
+    case FANGS_ACTION_NEW_TAB: {
+        Session *cur = sync_runtime_for_action(te, pty_fd, child, child_exited,
+                                               terminal, render_state, row_iter,
+                                               row_cells, placement_iter,
+                                               key_encoder, key_event,
+                                               mouse_encoder, mouse_event);
+        app_add_tab(term_cols, term_rows, cell_width, cell_height,
+                    cfg->scrollback, session_cwd(cur),
+                    cfg->kitty_images, cfg->kitty_image_storage_mb,
+                    te, pty_fd, child, child_exited);
+        sync_runtime_for_action(te, pty_fd, child, child_exited,
+                                terminal, render_state, row_iter, row_cells,
+                                placement_iter, key_encoder, key_event,
+                                mouse_encoder, mouse_event);
+        if (prev_term_area_w)
+            *prev_term_area_w = -1;
+        break;
+    }
+    case FANGS_ACTION_CLOSE_PANE:
+        app_close_active();
+        sync_runtime_for_action(te, pty_fd, child, child_exited,
+                                terminal, render_state, row_iter, row_cells,
+                                placement_iter, key_encoder, key_event,
+                                mouse_encoder, mouse_event);
+        if (prev_term_area_w)
+            *prev_term_area_w = -1;
+        break;
+    case FANGS_ACTION_SPLIT_RIGHT:
+    case FANGS_ACTION_SPLIT_DOWN: {
+        Session *cur = sync_runtime_for_action(te, pty_fd, child, child_exited,
+                                               terminal, render_state, row_iter,
+                                               row_cells, placement_iter,
+                                               key_encoder, key_event,
+                                               mouse_encoder, mouse_event);
+        app_split_focused(action == FANGS_ACTION_SPLIT_DOWN ? PANE_VSPLIT : PANE_HSPLIT,
+                          term_cols, term_rows, cell_width, cell_height,
+                          cfg->scrollback, session_cwd(cur),
+                          cfg->kitty_images, cfg->kitty_image_storage_mb,
+                          te, pty_fd, child, child_exited);
+        sync_runtime_for_action(te, pty_fd, child, child_exited,
+                                terminal, render_state, row_iter, row_cells,
+                                placement_iter, key_encoder, key_event,
+                                mouse_encoder, mouse_event);
+        if (prev_term_area_w)
+            *prev_term_area_w = -1;
+        break;
+    }
+    case FANGS_ACTION_FOCUS_LEFT:
+    case FANGS_ACTION_FOCUS_RIGHT:
+    case FANGS_ACTION_FOCUS_UP:
+    case FANGS_ACTION_FOCUS_DOWN:
+        if (app.n_tabs > 0) {
+            int dx = 0, dy = 0;
+            if (action == FANGS_ACTION_FOCUS_LEFT) dx = -1;
+            if (action == FANGS_ACTION_FOCUS_RIGHT) dx = 1;
+            if (action == FANGS_ACTION_FOCUS_UP) dy = -1;
+            if (action == FANGS_ACTION_FOCUS_DOWN) dy = 1;
+            Tab *t = &app.tabs[app.active];
+            PaneNode *nf = pane_focus_move(t->root, t->focused, dx, dy);
+            if (nf) {
+                t->focused = nf;
+                sync_runtime_for_action(te, pty_fd, child, child_exited,
+                                        terminal, render_state, row_iter, row_cells,
+                                        placement_iter, key_encoder, key_event,
+                                        mouse_encoder, mouse_event);
+            }
+        }
+        break;
+    case FANGS_ACTION_FONT_INCREASE:
+        save_font_size_action(cfg, config_path, cfg->font_size + 1, apply_saved_config);
+        break;
+    case FANGS_ACTION_FONT_DECREASE:
+        save_font_size_action(cfg, config_path, cfg->font_size - 1, apply_saved_config);
+        break;
+    case FANGS_ACTION_FONT_RESET:
+        save_font_size_action(cfg, config_path, FANGS_DEFAULT_FONT_SIZE, apply_saved_config);
+        break;
+    case FANGS_ACTION_NONE:
+    default:
+        break;
+    }
+
+    (void)term_area_w;
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -2220,10 +2585,18 @@ int main(void)
     bool kitty_smoke_started = false;
     int  kitty_smoke_frames = 0;
     int frame_count = 0;
+    WorkflowRegistry palette_workflows;
+    workflows_init(&palette_workflows);
+    ui_palette_set_workflows(&palette_workflows);
+    UiPaletteSelection pending_palette_selection = palette_selection_none();
 
     // Each frame: handle resize → read pty → process input → render.
     while (!WindowShouldClose()) {
         frame_count++;
+        sync_active_runtime(&te, &pty_fd, &child, &child_exited,
+                            &terminal, &render_state, &row_iter, &row_cells,
+                            &placement_iter, &key_encoder, &key_event,
+                            &mouse_encoder, &mouse_event);
         if (phase3_smoke && !phase3_smoke_started) {
             if (!ui_sidebar_visible())
                 ui_sidebar_toggle();
@@ -2266,17 +2639,55 @@ int main(void)
         // so the zoom chord (below, before handle_input) can request it.
         bool apply_saved_config = false;
 
+        bool ctrl_down  = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+        bool shift_down = IsKeyDown(KEY_LEFT_SHIFT)   || IsKeyDown(KEY_RIGHT_SHIFT);
+        bool cmd_down   = IsKeyDown(KEY_LEFT_SUPER)   || IsKeyDown(KEY_RIGHT_SUPER);
+        bool alt_down   = IsKeyDown(KEY_LEFT_ALT)     || IsKeyDown(KEY_RIGHT_ALT);
+
+        if (pending_palette_selection.type == UI_PALETTE_SELECTION_ACTION) {
+            execute_host_action(pending_palette_selection.action_id,
+                                &te, &pty_fd, &child, &child_exited,
+                                &terminal, &render_state, &row_iter, &row_cells,
+                                &placement_iter, &key_encoder, &key_event,
+                                &mouse_encoder, &mouse_event,
+                                &cfg, config_path,
+                                cell_width, cell_height, pad,
+                                term_cols, term_rows, term_area_w,
+                                &apply_saved_config,
+                                &prev_term_area_w);
+            pending_palette_selection = palette_selection_none();
+        } else if (pending_palette_selection.type == UI_PALETTE_SELECTION_WORKFLOW) {
+            handle_workflow_selection(&palette_workflows, pending_palette_selection, pty_fd);
+            pending_palette_selection = palette_selection_none();
+        }
+
+        bool palette_chord_consumed = false;
+        if (IsKeyPressed(KEY_P) && (cmd_down || (ctrl_down && shift_down))
+            && !ui_settings_open() && !ui_inline_active()
+            && !ui_workflow_prompt_active()) {
+            Session *cur = sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                                   &terminal, &render_state, &row_iter,
+                                                   &row_cells, &placement_iter,
+                                                   &key_encoder, &key_event,
+                                                   &mouse_encoder, &mouse_event);
+            refresh_palette_workflows(&palette_workflows, config_path, session_cwd(cur));
+            ui_palette_open();
+            ui_sidebar_focus(false);
+            g_search_active = false;
+            palette_chord_consumed = true;
+            drain_char_queue();
+        }
+
         // Intercept settings shortcut before handle_input() can forward the
         // comma key to the PTY. Accept Super+, on macOS and Ctrl+, elsewhere.
         bool settings_shortcut_consumed = false;
         if (IsKeyPressed(KEY_COMMA)
             && (IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER)
-                || IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))) {
+                || IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))
+            && !ui_palette_is_open() && !ui_workflow_prompt_active()) {
             ui_settings_toggle();
             settings_shortcut_consumed = true;
-            while (GetCharPressed() != 0) {
-                // Drain any printable comma event from the shortcut frame.
-            }
+            drain_char_queue();
         }
 
         bool sidebar_chord_consumed = false;
@@ -2284,34 +2695,26 @@ int main(void)
             && ((IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER))
                 || ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))
                     && (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT))));
-        if (sidebar_chord && !ui_settings_open()) {
+        if (sidebar_chord && !ui_settings_open() && !ui_palette_is_open()
+            && !ui_workflow_prompt_active()) {
             ui_sidebar_toggle();
             ui_sidebar_focus(ui_sidebar_visible());
             sidebar_chord_consumed = true;
-            while (GetCharPressed() != 0) {
-                // Drain any printable event from the shortcut frame.
-            }
+            drain_char_queue();
         }
 
         // Inline AI: Ctrl+Space opens a floating prompt anchored at the cursor.
         bool inline_chord = IsKeyPressed(KEY_SPACE)
             && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL));
-        if (inline_chord && !ui_settings_open() && !ui_inline_active()) {
-            int icx = 0, icy = 0;
-            cursor_pixel(render_state, cell_width, cell_height, pad, &icx, &icy);
-            ui_inline_open(icx, icy);
-            while (GetCharPressed() != 0) {
-                // Drain the triggering keystroke so it doesn't seed the input.
-            }
+        if (inline_chord && !ui_settings_open() && !ui_inline_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active()) {
+            open_inline_at_cursor(render_state, cell_width, cell_height, pad);
+            drain_char_queue();
         }
 
-        bool ctrl_down  = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
-        bool shift_down = IsKeyDown(KEY_LEFT_SHIFT)   || IsKeyDown(KEY_RIGHT_SHIFT);
-        bool cmd_down   = IsKeyDown(KEY_LEFT_SUPER)   || IsKeyDown(KEY_RIGHT_SUPER);
-        bool alt_down   = IsKeyDown(KEY_LEFT_ALT)     || IsKeyDown(KEY_RIGHT_ALT);
-
         int mouse_cursor = MOUSE_CURSOR_DEFAULT;
-        if (!ui_settings_open() && !ui_inline_active()
+        if (!ui_settings_open() && !ui_inline_active() && !ui_palette_is_open()
+            && !ui_workflow_prompt_active()
             && GetMouseX() >= lo.terminal.x && GetMouseX() < lo.terminal.x + term_area_w
             && GetMouseY() >= lo.terminal.y && GetMouseY() < lo.terminal.y + lo.terminal.h) {
             int ucc = (GetMouseX() - lo.terminal.x - pad) / cell_width;
@@ -2334,6 +2737,7 @@ int main(void)
         // keys aren't also forwarded to the child shell.
         bool block_nav_consumed = false;
         if ((cmd_down || ctrl_down) && !ui_settings_open() && !ui_inline_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active()
             && !g_search_active && !ui_sidebar_focused()) {
             if (IsKeyPressed(KEY_UP))   block_nav_consumed = cmdblocks_navigate(g_cmdblocks, te, -1);
             if (IsKeyPressed(KEY_DOWN)) block_nav_consumed = cmdblocks_navigate(g_cmdblocks, te, +1);
@@ -2346,16 +2750,12 @@ int main(void)
         // Linux would be swallowed by the window manager.)
         bool ask_last_command_consumed = false;
         if (tab_chord && shift_down && IsKeyPressed(KEY_SLASH)
-            && !ui_settings_open() && !ui_inline_active() && !g_search_active) {
-            CmdBlockAction latest_action = {0};
-            if (cmdblocks_latest_action(g_cmdblocks, te, term_rows, &latest_action)) {
-                open_sidebar_for_cmdblock_action(&latest_action);
-                cmdblock_action_free(&latest_action);
-            } else {
-                toast_push(TOAST_INFO, "No command block to ask about.");
-            }
+            && !ui_settings_open() && !ui_inline_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active()
+            && !g_search_active) {
+            ask_ai_about_latest_block(te, term_rows);
             ask_last_command_consumed = true;
-            while (GetCharPressed() != 0) { }
+            drain_char_queue();
         }
 
         // Clipboard: Ctrl+Shift+C/V (Linux) or Cmd+C/V (macOS); Shift+Insert pastes.
@@ -2370,23 +2770,25 @@ int main(void)
         // prompt (all raygui GuiTextBox, which now handles paste itself) would
         // be bypassed and the paste would land in the terminal behind them.
         bool text_field_capturing = ui_settings_open() || ui_inline_active()
+            || ui_palette_is_open() || ui_workflow_prompt_active()
             || ui_sidebar_focused() || g_search_active;
         if ((((ctrl_down && shift_down) || cmd_down) && IsKeyPressed(KEY_V))
             || (shift_down && IsKeyPressed(KEY_INSERT))) {
             if (!text_field_capturing) {
                 do_paste(pty_fd, terminal);
                 clipboard_consumed = true;
-                while (GetCharPressed() != 0) { }
+                drain_char_queue();
             }
         }
 
         // Find overlay: Ctrl+F / Cmd+F toggles; while open it captures typing.
         bool search_consumed = false;
-        if ((ctrl_down || cmd_down) && IsKeyPressed(KEY_F)) {
+        if ((ctrl_down || cmd_down) && IsKeyPressed(KEY_F)
+            && !ui_palette_is_open() && !ui_workflow_prompt_active()) {
             g_search_active = !g_search_active;
             if (!g_search_active) g_search_query[0] = '\0';
             search_consumed = true;
-            while (GetCharPressed() != 0) { }
+            drain_char_queue();
         }
         if (g_search_active) {
             if (IsKeyPressed(KEY_ESCAPE)) { g_search_active = false; g_search_query[0] = '\0'; }
@@ -2399,6 +2801,7 @@ int main(void)
         // end-of-frame apply_config() reload the font + reflow the grid + pty.
         bool zoom_consumed = false;
         if ((ctrl_down || cmd_down) && !ui_settings_open() && !ui_inline_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active()
             && !g_search_active && !ui_sidebar_focused()) {
             int new_size = cfg.font_size;
             if (IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD))
@@ -2409,15 +2812,9 @@ int main(void)
                 new_size = FANGS_DEFAULT_FONT_SIZE;
             if (new_size < FANGS_MIN_FONT_SIZE) new_size = FANGS_MIN_FONT_SIZE;
             if (new_size > FANGS_MAX_FONT_SIZE) new_size = FANGS_MAX_FONT_SIZE;
-            if (new_size != cfg.font_size) {
-                cfg.font_size = new_size;
-                if (!config_save(&cfg, config_path)) {
-                    fprintf(stderr, "warning: failed to save config at %s\n", config_path);
-                    toast_push(TOAST_WARN, "Failed to save config (font zoom).");
-                }
-                apply_saved_config = true;
+            if (save_font_size_action(&cfg, config_path, new_size, &apply_saved_config)) {
                 zoom_consumed = true;
-                while (GetCharPressed() != 0) { }  // drain '='/'-'/'+' text events
+                drain_char_queue();  // drain '='/'-'/'+' text events
             }
         }
 
@@ -2425,25 +2822,39 @@ int main(void)
         // Intercepted before handle_input so these key events never reach the
         // shell — and gated on tab_chord so bare Ctrl+<key> still does.
         if (tab_chord && !ui_settings_open() && !ui_inline_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active()
             && !g_search_active && !ui_sidebar_focused()) {
 
             // --- New tab: Cmd/Ctrl+T ---
             if (IsKeyPressed(KEY_T)) {
-                Session *cur = sync_active_session(&te, &pty_fd, &child, &child_exited);
+                Session *cur = sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                                       &terminal, &render_state, &row_iter,
+                                                       &row_cells, &placement_iter,
+                                                       &key_encoder, &key_event,
+                                                       &mouse_encoder, &mouse_event);
                 app_add_tab(term_cols, term_rows, cell_width, cell_height,
                             cfg.scrollback, session_cwd(cur),
                             cfg.kitty_images, cfg.kitty_image_storage_mb,
                             &te, &pty_fd, &child, &child_exited);
+                sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                        &terminal, &render_state, &row_iter,
+                                        &row_cells, &placement_iter,
+                                        &key_encoder, &key_event,
+                                        &mouse_encoder, &mouse_event);
                 prev_term_area_w = -1;
-                while (GetCharPressed() != 0) { }
+                drain_char_queue();
             }
 
             // --- Close focused pane / active tab: Cmd/Ctrl+W ---
             if (IsKeyPressed(KEY_W)) {
                 app_close_active();
-                sync_active_session(&te, &pty_fd, &child, &child_exited);
+                sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                        &terminal, &render_state, &row_iter,
+                                        &row_cells, &placement_iter,
+                                        &key_encoder, &key_event,
+                                        &mouse_encoder, &mouse_event);
                 prev_term_area_w = -1;
-                while (GetCharPressed() != 0) { }
+                drain_char_queue();
             }
 
             // --- Tab switch: Cmd/Ctrl+1..9 ---
@@ -2459,8 +2870,13 @@ int main(void)
             else if (IsKeyPressed(KEY_NINE))  tab_idx = 8;
             if (tab_idx >= 0) {
                 app_switch_tab(tab_idx, &te, &pty_fd, &child, &child_exited);
+                sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                        &terminal, &render_state, &row_iter,
+                                        &row_cells, &placement_iter,
+                                        &key_encoder, &key_event,
+                                        &mouse_encoder, &mouse_event);
                 prev_term_area_w = -1;
-                while (GetCharPressed() != 0) { }
+                drain_char_queue();
             }
 
             // --- Split D. Direction picker: on macOS Shift = vertical
@@ -2469,14 +2885,23 @@ int main(void)
             // (Ctrl+Shift+D horizontal, Ctrl+Shift+Alt+D vertical). ---
             if (IsKeyPressed(KEY_D)) {
                 bool vertical = cmd_down ? shift_down : alt_down;
-                Session *cur = sync_active_session(&te, &pty_fd, &child, &child_exited);
+                Session *cur = sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                                       &terminal, &render_state, &row_iter,
+                                                       &row_cells, &placement_iter,
+                                                       &key_encoder, &key_event,
+                                                       &mouse_encoder, &mouse_event);
                 app_split_focused(vertical ? PANE_VSPLIT : PANE_HSPLIT,
                                   term_cols, term_rows, cell_width, cell_height,
                                   cfg.scrollback, session_cwd(cur),
                                   cfg.kitty_images, cfg.kitty_image_storage_mb,
                                   &te, &pty_fd, &child, &child_exited);
+                sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                        &terminal, &render_state, &row_iter,
+                                        &row_cells, &placement_iter,
+                                        &key_encoder, &key_event,
+                                        &mouse_encoder, &mouse_event);
                 prev_term_area_w = -1;
-                while (GetCharPressed() != 0) { }
+                drain_char_queue();
             }
         }
 
@@ -2487,6 +2912,7 @@ int main(void)
         if (focus_chord && app.n_tabs > 0
             && pane_count_leaves(app.tabs[app.active].root) > 1
             && !ui_settings_open() && !ui_inline_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active()
             && !g_search_active && !ui_sidebar_focused()) {
             int dx = 0, dy = 0;
             if (IsKeyPressed(KEY_LEFT))       dx = -1;
@@ -2498,9 +2924,13 @@ int main(void)
                 PaneNode *nf = pane_focus_move(t->root, t->focused, dx, dy);
                 if (nf) {
                     t->focused = nf;
-                    sync_active_session(&te, &pty_fd, &child, &child_exited);
+                    sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                            &terminal, &render_state, &row_iter,
+                                            &row_cells, &placement_iter,
+                                            &key_encoder, &key_event,
+                                            &mouse_encoder, &mouse_event);
                 }
-                while (GetCharPressed() != 0) { }
+                drain_char_queue();
             }
         }
 
@@ -2554,7 +2984,11 @@ int main(void)
         // Drain PTY output from ALL sessions in the active tab and feed their
         // VT engines. In blocks-smoke mode we ignore the real shell so the
         // canned content renders without interleaving.
-        Session *active_session = sync_active_session(&te, &pty_fd, &child, &child_exited);
+        Session *active_session = sync_active_runtime(&te, &pty_fd, &child, &child_exited,
+                                                      &terminal, &render_state, &row_iter,
+                                                      &row_cells, &placement_iter,
+                                                      &key_encoder, &key_event,
+                                                      &mouse_encoder, &mouse_event);
         if (!active_session)
             break;   // no sessions left — exit the app
 
@@ -2617,7 +3051,8 @@ int main(void)
         // clicks on the scrollbar region don't leak into terminal apps
         // (e.g. vim, tmux) as spurious mouse events.
         bool scrollbar_consumed = false;
-        if (!ui_settings_open()) {
+        if (!ui_settings_open() && !ui_palette_is_open()
+            && !ui_workflow_prompt_active()) {
             scrollbar_consumed = handle_scrollbar(terminal, render_state,
                                                    &scrollbar_dragging,
                                                    term_area_w);
@@ -2629,11 +3064,13 @@ int main(void)
         bool mouse_tracking = false;
         ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &mouse_tracking);
         bool can_select = (!mouse_tracking || shift_down)
-                          && !ui_settings_open() && !ui_inline_active();
+                          && !ui_settings_open() && !ui_inline_active()
+                          && !ui_palette_is_open() && !ui_workflow_prompt_active();
         bool selection_consumed = false;
         // Ctrl/Cmd+click on a URL opens it (handled before starting a selection).
         if ((ctrl_down || cmd_down) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
-            && GetMouseX() < term_area_w) {
+            && GetMouseX() < term_area_w && !ui_palette_is_open()
+            && !ui_workflow_prompt_active()) {
             int ucc = (GetMouseX() - pad) / cell_width;
             int ucr = (GetMouseY() - pad) / cell_height;
             char url[2048];
@@ -2665,7 +3102,9 @@ int main(void)
 
         // Forward keyboard/mouse input only while the child is alive and no UI
         // element is capturing keys. Sidebar visibility alone does not block.
-        if (!ui_inline_active() && !inline_chord && !clipboard_consumed
+        if (!ui_inline_active() && !ui_palette_is_open()
+            && !ui_workflow_prompt_active()
+            && !inline_chord && !palette_chord_consumed && !clipboard_consumed
             && !g_search_active && !search_consumed && !block_nav_consumed
             && !zoom_consumed
             && !ask_last_command_consumed
@@ -2845,7 +3284,9 @@ int main(void)
                 bool block_click = IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
                     && GetMouseX() >= px && GetMouseX() < px + pw
                     && GetMouseY() >= py && GetMouseY() < py + ph
-                    && !ui_settings_open() && !ui_inline_active() && !ui_sidebar_focused();
+                    && !ui_settings_open() && !ui_inline_active()
+                    && !ui_palette_is_open() && !ui_workflow_prompt_active()
+                    && !ui_sidebar_focused();
                 if (cmdblocks_draw(g_cmdblocks, te, mono_font, &theme,
                                    cell_width, cell_height, font_size,
                                    pad, lpane_term_area_w, lterm_rows,
@@ -2981,6 +3422,17 @@ int main(void)
                 }
             }
         }
+
+        {
+            UiPaletteSelection palette_selection = palette_selection_none();
+            if (ui_palette_draw(mono_font, 1.0f, &palette_selection))
+                pending_palette_selection = palette_selection;
+        }
+
+        ui_workflow_prompt_draw(mono_font, 1.0f);
+        const char *workflow_command = ui_workflow_prompt_take_command();
+        if (workflow_command)
+            stage_command_text(workflow_command, pty_fd);
 
         // Draw toast notifications (fading pills, bottom-right).
         {

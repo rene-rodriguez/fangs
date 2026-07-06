@@ -4,6 +4,12 @@
 ;; The API key is read from $FANGS_API_KEY by default (recommended).
 ;; Only put it in this file as a fallback — the file is chmod 0600
 ;; on write, but env vars are still harder to accidentally commit.
+;;
+;; Command-palette runbooks live next to this file at:
+;;   ~/.config/fangs/workflows
+;; Project-local runbooks can also live at:
+;;   .fangs/workflows
+;; Runbook variables use {{name}} or {{name=default}}.
 
 [terminal]
 font_family = JetBrainsMono Nerd Font

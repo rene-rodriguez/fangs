@@ -52,6 +52,9 @@ drops the rest:
 - **Kitty image graphics** — static Kitty protocol images render in the grid, including PNG,
   RGBA, RGB, grayscale, and grayscale+alpha payloads. Useful for file previews, editor plugins,
   and CLI image tools; Sixel and animations are intentionally out of scope for now.
+- **Command palette** &nbsp;`Cmd+P` / `Ctrl+Shift+P` — search and run built-in Fangs actions
+  without memorizing every shortcut: panes, tabs, AI entry points, find, clipboard, settings, and
+  font controls. It also picks up local runbooks from your global config and the current project.
 - **Live configuration** — an INI dotfile is the source of truth, with an in-app settings modal
   (`Ctrl+,`) that round-trips to it and hot-reloads instantly. No restarts.
 - **First-class theming** — One Dark, Dark Modern, GitHub Dark, Gruvbox, Monokai, and light
@@ -123,6 +126,7 @@ vendored Zig and the FetchContent deps are cached).
 
 | Keys | Action |
 |---|---|
+| `Cmd+P` / `Ctrl+Shift+P` | Command palette |
 | `Ctrl+,` / `Cmd+,` | Settings modal (font, theme, AI provider / model / key) |
 | `Cmd+B` / `Ctrl+Shift+B` | Toggle the AI chat sidebar |
 | `Ctrl+Space` | Inline command generation — describe a command, get it staged |
@@ -163,6 +167,39 @@ is run through a redaction pass first, terminal context is attached only to the 
 and both the sidebar's Run buttons and inline generation stage commands without a newline — so you
 always press Enter yourself.
 
+### Runbooks
+
+The command palette also loads local runbooks from:
+
+- `~/.config/fangs/workflows`
+- `.fangs/workflows` or `.fangs/workflows.ini` in the active session's project tree
+
+Runbooks are refreshed whenever the palette opens. Selecting one stages its command at the prompt;
+it does not press Enter for you.
+
+```ini
+[workflow.test]
+label = Run Tests
+command = cmake --build build && ctest --test-dir build --output-on-failure
+detail = Build and run the full test suite
+
+[workflow.status]
+command = git status --short
+
+[workflow.test_one]
+label = Test File
+command = ctest --test-dir build -R {{name}}
+detail = Run one CTest by name
+
+[workflow.grep]
+label = Search Source
+command = rg "{{query}}" {{path=src}}
+detail = Search a path, defaulting to src
+```
+
+Use `{{name}}` for required variables and `{{name=default}}` for defaults. Fangs prompts for each
+variable and then stages the expanded command at the prompt.
+
 ## Project layout
 
 ```
@@ -170,8 +207,10 @@ src/            main.c · pty · term_engine (libghostty-vt seam) · config (INI
                 ui_settings (Ctrl+, modal) · layout · ui_sidebar (chat panel)
                 ai_provider + ai_http (AI seam) · sse · context + redact
                 cmdextract (Run buttons) · ui_inline (Ctrl+Space)
+                action_registry + workflows + ui_palette + ui_workflow_prompt (Cmd+P)
                 cmdblocks + cmdblocks_osc (OSC 133) · theme · raygui.h / cJSON.c (vendored)
-tests/          config · layout · ui_sidebar_model · sse · redact · cmdextract · inline_cmd · theme · cmdblocks_osc  (ctest)
+tests/          config · layout · ui_sidebar_model · action_registry · workflows
+                ui_palette_model · sse · redact · cmdextract · inline_cmd · theme · cmdblocks_osc  (ctest)
 assets/         embedded font (JetBrains Mono, OFL)
 scripts/        build, bundle, and release packaging
 packaging/      aur/ (Arch · CachyOS) · macos/ (Homebrew cask)

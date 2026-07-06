@@ -76,6 +76,11 @@ add_executable(fangs
   src/layout.c
   src/ui_sidebar.c
   src/ui_sidebar_model.c
+  src/action_registry.c
+  src/workflows.c
+  src/ui_palette_model.c
+  src/ui_palette.c
+  src/ui_workflow_prompt.c
   src/ui_settings.c
   src/term_engine.c
   src/ai_http.c
@@ -220,6 +225,29 @@ add_executable(toast_tests
 target_compile_features(toast_tests PRIVATE c_std_11)
 target_include_directories(toast_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 add_test(NAME toast_tests COMMAND toast_tests)
+
+add_executable(action_registry_tests
+  tests/action_registry_tests.c
+  src/action_registry.c)
+target_compile_features(action_registry_tests PRIVATE c_std_11)
+target_include_directories(action_registry_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+add_test(NAME action_registry_tests COMMAND action_registry_tests)
+
+add_executable(ui_palette_model_tests
+  tests/ui_palette_model_tests.c
+  src/ui_palette_model.c
+  src/action_registry.c
+  src/workflows.c)
+target_compile_features(ui_palette_model_tests PRIVATE c_std_11)
+target_include_directories(ui_palette_model_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+add_test(NAME ui_palette_model_tests COMMAND ui_palette_model_tests)
+
+add_executable(workflows_tests
+  tests/workflows_tests.c
+  src/workflows.c)
+target_compile_features(workflows_tests PRIVATE c_std_11)
+target_include_directories(workflows_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+add_test(NAME workflows_tests COMMAND workflows_tests)
 
 # --- E3 (§17): UI theme derive -----------------------------------------------
 add_executable(ui_theme_tests
