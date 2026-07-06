@@ -42,6 +42,16 @@ bool session_reap(Session *s);
 bool session_respawn(Session *s, const char *cwd);
 int  session_exit_status(const Session *s);        // -1 if alive / unknown
 
+// Feed statistics: exposed so main.c can detect background activity.
+typedef struct {
+    size_t bytes_read;
+    bool   eof;
+    bool   error;
+} SessionFeedStats;
+
+// Wrapper that reads from PTY and returns stats.
+SessionFeedStats session_feed_pty_stats(Session *s);
+
 // Opaque userdata slot for the host (main.c stores EffectsContext here).
 void  session_set_userdata(Session *s, void *userdata);
 void *session_userdata(const Session *s);

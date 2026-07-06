@@ -26,6 +26,7 @@ struct Session {
     char cwd[1024];
     int  max_scrollback;
     void *userdata;              // opaque slot for host (EffectsContext)
+    size_t last_bytes_read;      // reported by session_feed_pty_stats
 };
 
 Session *session_create(uint16_t cols, uint16_t rows, int cell_w, int cell_h,
@@ -104,18 +105,29 @@ void session_destroy(Session *s)
 
 void session_feed_pty(Session *s)
 {
+    (void)session_feed_pty_stats(s);
+}
+
+SessionFeedStats session_feed_pty_stats(Session *s)
+{
+    SessionFeedStats stats = { 0, false, false };
     if (!s || s->pty_fd < 0 || !s->child_alive)
-        return;
+        return stats;
 
     uint8_t buf[65536];
     ssize_t n = read(s->pty_fd, buf, sizeof(buf));
-    if (n > 0)
+    if (n > 0) {
         cmdblocks_feed(s->cmdblocks, s->te, buf, (size_t)n);
-    else if (n == 0)
+        stats.bytes_read = (size_t)n;
+        s->last_bytes_read = stats.bytes_read;
+    } else if (n == 0) {
         s->child_alive = false;
-    // n < 0: EAGAIN is fine; other errors mark child dead.
-    else if (errno != EAGAIN && errno != EINTR)
+        stats.eof = true;
+    } else if (errno != EAGAIN && errno != EINTR) {
         s->child_alive = false;
+        stats.error = true;
+    }
+    return stats;
 }
 
 void session_resize(Session *s, uint16_t cols, uint16_t rows,

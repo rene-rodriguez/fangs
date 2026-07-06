@@ -29,6 +29,9 @@ struct CmdBlocks {
     bool cur_has;
     int  cur_code;
     bool cur_done;
+
+    unsigned long  completion_seq;     // incremented each time OSC 133 D arrives
+    int            latest_exit_code;   // exit code from the most recent OSC 133 D
 };
 
 CmdBlocks *cmdblocks_create(void)
@@ -109,6 +112,8 @@ void cmdblocks_feed(CmdBlocks *cb, TermEngine *te, const uint8_t *data, size_t l
             ghostty_render_state_get(rs, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &cy);
             on_prompt(cb, term, cy);
         } else if (hit.mark == CB_MARK_DONE) {
+            cb->completion_seq++;
+            cb->latest_exit_code = hit.code;
             if (cb->cur_has) {
                 cb->cur_code = hit.code;
                 cb->cur_done = true;
@@ -493,4 +498,16 @@ bool cmdblocks_navigate(CmdBlocks *cb, TermEngine *te, int dir)
     };
     ghostty_terminal_scroll_viewport(term, sv);
     return true;
+}
+
+// --- workspace-lightweight API -----------------------------------------------
+
+unsigned long cmdblocks_completion_seq(const CmdBlocks *cb)
+{
+    return cb ? cb->completion_seq : 0;
+}
+
+int cmdblocks_latest_exit_code(const CmdBlocks *cb)
+{
+    return cb ? cb->latest_exit_code : -1;
 }

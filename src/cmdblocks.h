@@ -79,4 +79,10 @@ bool cmdblocks_latest_action(CmdBlocks *cb, TermEngine *te, int rows,
 // the key fall through to the child (e.g. a TUI) when there's nothing to do.
 bool cmdblocks_navigate(CmdBlocks *cb, TermEngine *te, int dir);
 
+// Lightweight completion-detection API for workspace status.
+// Returns a monotonically-increasing sequence number incremented each time
+// OSC 133 D is received, and the exit code of the latest completion.
+unsigned long cmdblocks_completion_seq(const CmdBlocks *cb);
+int           cmdblocks_latest_exit_code(const CmdBlocks *cb);
+
 #endif // FANGS_CMDBLOCKS_H
