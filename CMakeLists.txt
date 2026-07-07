@@ -108,6 +108,7 @@ add_executable(fangs
   src/desktop_notify.c
   src/ui_workspace_rail_model.c
   src/ui_workspace_rail.c
+  src/workspace_ports.c
   "${FONT_HEADER}"
   "${FONT_BOLD_HEADER}")
 target_compile_features(fangs PRIVATE c_std_11)
@@ -244,6 +245,13 @@ add_executable(cmdblocks_osc_tests
 target_compile_features(cmdblocks_osc_tests PRIVATE c_std_11)
 target_include_directories(cmdblocks_osc_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 add_test(NAME cmdblocks_osc_tests COMMAND cmdblocks_osc_tests)
+
+add_executable(workspace_ports_tests
+  tests/workspace_ports_tests.c
+  src/workspace_ports.c)
+target_compile_features(workspace_ports_tests PRIVATE c_std_11)
+target_include_directories(workspace_ports_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+add_test(NAME workspace_ports_tests COMMAND workspace_ports_tests)
 
 # --- E1 (§15): ai_block ------------------------------------------------------
 add_executable(ai_block_tests
