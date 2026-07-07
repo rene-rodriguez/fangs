@@ -30,6 +30,7 @@ typedef enum {
     WORKSPACE_RAIL_ACTION_FOCUS_PANE,
     WORKSPACE_RAIL_ACTION_NEW_TAB,        // "+" button
     WORKSPACE_RAIL_ACTION_JUMP_ATTENTION, // notification strip click
+    WORKSPACE_RAIL_ACTION_OPEN_PORT,      // click a port chip
 } WorkspaceRailActionType;
 
 // Click result — pure data shared by main.c and the raylib layer.
@@ -37,6 +38,7 @@ typedef struct {
     WorkspaceRailActionType type;
     int      index;    // 0-based tab/pane index for SWITCH_TAB / FOCUS_PANE
     uint64_t pane_id;  // target pane for FOCUS_PANE / JUMP_ATTENTION
+    int      port;     // port for OPEN_PORT
 } WorkspaceRailAction;
 
 typedef struct {
@@ -49,6 +51,11 @@ typedef struct {
     char     branch[64];       // secondary line: git branch (empty if none)
     char     text[128];        // attention text — replaces the branch line when set
     int      y, h;             // row rect (set by workspace_rail_layout)
+    int      ports[3];         // port numbers, ascending (0 = unused)
+    int      port_count;
+    int      port_x[3];        // chip rect x-positions (set by layout)
+    int      port_w[3];        // chip rect widths (set by layout)
+    int      port_y, port_h;   // chip rect common y/h (set by layout)
 } WorkspaceRailRow;
 
 typedef struct {
@@ -81,6 +88,8 @@ typedef struct {
     const char  *name;         // user-set workspace name, may be NULL or empty
     int          active;       // 1 if focused
     int          working;      // 1 if recent output detected
+    int          ports[3];     // dev-server port numbers, ascending (0 = unused)
+    int          port_count;
 } WorkspaceRailInput;
 
 // Build the view model from input arrays and workspace status.

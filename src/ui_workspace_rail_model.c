@@ -71,6 +71,11 @@ void workspace_rail_build(WorkspaceRailView *view,
         row->attention = workspace_status_level(status, in->id);
         copy_display(row->text, sizeof(row->text),
                      workspace_status_text(status, in->id));
+
+        // Copy dev-server ports.
+        row->port_count = in->port_count;
+        for (int p = 0; p < in->port_count && p < 3; p++)
+            row->ports[p] = in->ports[p];
     }
 
     // Build pane rows for active tab.
@@ -105,6 +110,11 @@ void workspace_rail_build(WorkspaceRailView *view,
         row->attention = workspace_status_level(status, in->id);
         copy_display(row->text, sizeof(row->text),
                      workspace_status_text(status, in->id));
+
+        // Copy dev-server ports.
+        row->port_count = in->port_count;
+        for (int p = 0; p < in->port_count && p < 3; p++)
+            row->ports[p] = in->ports[p];
     }
 
     // Build notification string from tab representatives and visible pane IDs.
@@ -116,6 +126,38 @@ void workspace_rail_build(WorkspaceRailView *view,
                                                         notification_id_count);
     view->notification_level = workspace_status_highest(status, notification_ids,
                                                         notification_id_count);
+}
+
+static bool hit_rect(int mx, int my, int rx, int ry, int rw, int rh)
+{
+    return mx >= rx && mx < rx + rw && my >= ry && my < ry + rh;
+}
+
+// Compute port chip rects for a single row. Chips are right-aligned inside the
+// row (just left of the right-padding), using estimated font metrics: 8px per
+// char + 6px internal padding, 14px tall, bottom-aligned in the row.
+static void row_layout_port_chips(WorkspaceRailRow *row, int row_w)
+{
+    const int gap = 4;
+    const int chip_h = 14;
+    int cx = row_w - 8; // right padding
+
+    row->port_y = row->y + row->h - chip_h - 4; // bottom of secondary line area
+    row->port_h = chip_h;
+
+    for (int i = row->port_count - 1; i >= 0; i--) {
+        int p = row->ports[i];
+        if (p <= 0) { row->port_w[i] = 0; continue; }
+        int digits = 1;
+        if (p >= 10000) digits = 5; else if (p >= 1000) digits = 4;
+        else if (p >= 100) digits = 3; else if (p >= 10) digits = 2;
+        // width = ":" prefix + digits, 8px per char, + 6px padding
+        int cw = (digits + 1) * 8 + 6;
+        cx -= cw;
+        row->port_x[i] = cx;
+        row->port_w[i] = cw;
+        cx -= gap;
+    }
 }
 
 void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h)
@@ -182,11 +224,32 @@ void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h)
         view->footer_y = y + h;
         view->footer_h = 0;
     }
+
+    // Layout port chips for all visible rows.
+    if (!view->compact) {
+        for (int i = 0; i < view->tab_count; i++)
+            row_layout_port_chips(&view->tabs[i], w);
+        for (int i = 0; i < view->pane_count; i++)
+            if (view->panes[i].h > 0)
+                row_layout_port_chips(&view->panes[i], w);
+    }
 }
 
-static bool hit_rect(int mx, int my, int rx, int ry, int rw, int rh)
+// Check port chips inside a row; returns true and sets \`a\` if hit.
+static bool hit_row_port_chips(const WorkspaceRailRow *row, int row_x, int mx, int my,
+                               WorkspaceRailAction *a)
 {
-    return mx >= rx && mx < rx + rw && my >= ry && my < ry + rh;
+    if (row->port_h <= 0 || row->port_count <= 0)
+        return false;
+    for (int i = 0; i < row->port_count; i++) {
+        if (row->port_w[i] > 0 && hit_rect(mx, my, row_x + row->port_x[i],
+                                           row->port_y, row->port_w[i], row->port_h)) {
+            a->type = WORKSPACE_RAIL_ACTION_OPEN_PORT;
+            a->port = row->ports[i];
+            return true;
+        }
+    }
+    return false;
 }
 
 WorkspaceRailAction workspace_rail_hit(const WorkspaceRailView *view,
@@ -210,21 +273,26 @@ WorkspaceRailAction workspace_rail_hit(const WorkspaceRailView *view,
     }
 
     for (int i = 0; i < view->tab_count; i++) {
-        if (hit_rect(mx, my, view->x, view->tabs[i].y, view->w, view->tabs[i].h)) {
-            a.type = WORKSPACE_RAIL_ACTION_SWITCH_TAB;
-            a.index = i;
+        if (!hit_rect(mx, my, view->x, view->tabs[i].y, view->w, view->tabs[i].h))
+            continue;
+        // Port chips take priority over tab switch.
+        if (hit_row_port_chips(&view->tabs[i], view->x, mx, my, &a))
             return a;
-        }
+        a.type = WORKSPACE_RAIL_ACTION_SWITCH_TAB;
+        a.index = i;
+        return a;
     }
 
     if (view->show_panes) {
         for (int i = 0; i < view->pane_count; i++) {
-            if (hit_rect(mx, my, view->x, view->panes[i].y, view->w, view->panes[i].h)) {
-                a.type = WORKSPACE_RAIL_ACTION_FOCUS_PANE;
-                a.index = i;
-                a.pane_id = view->panes[i].id;
+            if (!hit_rect(mx, my, view->x, view->panes[i].y, view->w, view->panes[i].h))
+                continue;
+            if (hit_row_port_chips(&view->panes[i], view->x, mx, my, &a))
                 return a;
-            }
+            a.type = WORKSPACE_RAIL_ACTION_FOCUS_PANE;
+            a.index = i;
+            a.pane_id = view->panes[i].id;
+            return a;
         }
     }
 

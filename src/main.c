@@ -205,6 +205,10 @@ typedef struct {
     char tab_branches[WORKSPACE_RAIL_MAX_TABS][64];
     char pane_labels[WORKSPACE_RAIL_MAX_PANES][64];
     char pane_branches[WORKSPACE_RAIL_MAX_PANES][64];
+    int  tab_ports[WORKSPACE_RAIL_MAX_TABS][3];
+    int  tab_port_counts[WORKSPACE_RAIL_MAX_TABS];
+    int  pane_ports[WORKSPACE_RAIL_MAX_PANES][3];
+    int  pane_port_counts[WORKSPACE_RAIL_MAX_PANES];
 } RailInputs;
 
 static RailInputs g_rail_inputs;
@@ -277,6 +281,21 @@ static void collect_rail_inputs(uint64_t now_ms)
                 working = 1;
         }
         ri->tabs[i].working = working;
+
+        // Collect dev-server ports from the representative session.
+        ri->tab_port_counts[i] = 0;
+        if (rep) {
+            int ports[3] = {0};
+            int pn = session_ports(rep, ports, 3);
+            for (int pi = 0; pi < pn && pi < 3; pi++) {
+                ri->tab_ports[i][pi] = ports[pi];
+                ri->tab_port_counts[i]++;
+            }
+        }
+        ri->tabs[i].ports[0] = ri->tab_ports[i][0];
+        ri->tabs[i].ports[1] = ri->tab_ports[i][1];
+        ri->tabs[i].ports[2] = ri->tab_ports[i][2];
+        ri->tabs[i].port_count = ri->tab_port_counts[i];
         ri->tab_count++;
     }
 
@@ -307,6 +326,21 @@ static void collect_rail_inputs(uint64_t now_ms)
             ri->panes[i].name = NULL;   // panes are never renamed
             ri->panes[i].active = (aleaves[pi] == atab->focused) ? 1 : 0;
             ri->panes[i].working = workspace_status_is_working_at(&g_workspace_status, pid, now_ms) ? 1 : 0;
+
+            // Collect dev-server ports from this pane session.
+            ri->pane_port_counts[i] = 0;
+            if (ps) {
+                int ports[3] = {0};
+                int pn = session_ports(ps, ports, 3);
+                for (int pi2 = 0; pi2 < pn && pi2 < 3; pi2++) {
+                    ri->pane_ports[i][pi2] = ports[pi2];
+                    ri->pane_port_counts[i]++;
+                }
+            }
+            ri->panes[i].ports[0] = ri->pane_ports[i][0];
+            ri->panes[i].ports[1] = ri->pane_ports[i][1];
+            ri->panes[i].ports[2] = ri->pane_ports[i][2];
+            ri->panes[i].port_count = ri->pane_port_counts[i];
             ri->pane_count++;
         }
     }
@@ -3890,6 +3924,12 @@ int main(void)
                                         &mouse_encoder, &mouse_event);
                 prev_term_area_w = -1;
                 drain_char_queue();
+                break;
+            }
+            case WORKSPACE_RAIL_ACTION_OPEN_PORT: {
+                char url[64];
+                snprintf(url, sizeof(url), "http://localhost:%d", act.port);
+                open_url(url);
                 break;
             }
             case WORKSPACE_RAIL_ACTION_JUMP_ATTENTION:

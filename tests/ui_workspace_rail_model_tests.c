@@ -319,6 +319,95 @@ static void test_hit_skips_hidden_pane_section(void)
     EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_NONE);
 }
 
+static void test_ports_copy_from_inputs(void)
+{
+    // Port data should flow from inputs to rows without modification.
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "dev", .branch = NULL, .active = 1,
+          .ports = {3000, 5173, 0}, .port_count = 2 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+
+    EXPECT_INT(view.tabs[0].port_count, 2);
+    EXPECT_INT(view.tabs[0].ports[0], 3000);
+    EXPECT_INT(view.tabs[0].ports[1], 5173);
+    EXPECT_INT(view.tabs[0].ports[2], 0);
+}
+
+static void test_port_chip_layout_computed(void)
+{
+    // After layout, port chips should have non-zero rects within the row.
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "dev", .branch = NULL, .active = 1,
+          .ports = {3000, 5173, 0}, .port_count = 2 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    // Port chips should be positioned inside the row with non-zero size.
+    EXPECT_TRUE(view.tabs[0].port_w[0] > 0);
+    EXPECT_TRUE(view.tabs[0].port_w[1] > 0);
+    EXPECT_INT(view.tabs[0].port_w[2], 0);   // no third chip
+    EXPECT_TRUE(view.tabs[0].port_h > 0);
+    // Chips should be right-aligned: port_x[0] > port_x[1] (rendered right-to-left but
+    // the array is in original order; rightmost = first chip from right = last index)
+    // Actually: row_layout_port_chips iterates right to left, so port_x[1] (5173) is placed
+    // first (rightmost), then port_x[0] (3000) is placed to its left.
+    EXPECT_TRUE(view.tabs[0].port_x[1] > view.tabs[0].port_x[0]);
+}
+
+static void test_port_chip_hit(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "dev", .branch = NULL, .active = 1,
+          .ports = {3000, 5173, 0}, .port_count = 2 },
+    };
+    WorkspaceRailInput panes[1] = {
+        { .id = 2, .label = "p1", .branch = NULL, .active = 1,
+          .ports = {0, 0, 0}, .port_count = 0 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, panes, 1, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    // Click on the first port chip (3000).
+    int cx = view.tabs[0].port_x[0] + 2;
+    int cy = view.tabs[0].port_y + 2;
+    WorkspaceRailAction act = workspace_rail_hit(&view, cx, cy);
+    EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_OPEN_PORT);
+    EXPECT_INT(act.port, 3000);
+}
+
+static void test_row_hit_still_switches_tab_when_ports_present(void)
+{
+    // Clicking on the row label area (left side) should switch tab, not open port.
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "dev", .branch = NULL, .active = 1,
+          .ports = {3000, 5173, 0}, .port_count = 2 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    // Click far left of the row (label area) — should switch tab, not open port.
+    WorkspaceRailAction act = workspace_rail_hit(&view, 5, view.tabs[0].y + 2);
+    EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_SWITCH_TAB);
+}
+
 static void test_working_flag_propagates_to_rows(void)
 {
     WorkspaceRailInput tabs[1] = {
@@ -352,5 +441,9 @@ int main(void)
     test_hit_targets();
     test_hit_skips_hidden_pane_section();
     test_working_flag_propagates_to_rows();
+    test_ports_copy_from_inputs();
+    test_port_chip_layout_computed();
+    test_port_chip_hit();
+    test_row_hit_still_switches_tab_when_ports_present();
     return failures ? 1 : 0;
 }
