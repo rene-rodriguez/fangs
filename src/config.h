@@ -30,11 +30,16 @@ typedef struct {
 
     // Workspace rail (left-side vertical tabs and panes).
     bool workspace_rail;
+
+    // Remote control API (Unix socket JSON protocol).
+    bool remote_api;       // enables the socket + read-only/benign commands
+    bool remote_api_send;  // additionally enables send and new --run
 } AppConfig;
 
 void config_defaults(AppConfig *c);
 bool config_load(AppConfig *c, const char *path);
 bool config_save(const AppConfig *c, const char *path);
 const char *config_default_path(void);
+const char *config_default_app_dir(void);
 
 #endif // FANGS_CONFIG_H

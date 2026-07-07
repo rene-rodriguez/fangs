@@ -3,6 +3,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 
@@ -40,6 +42,9 @@
 #include "workspace_worktree.h"
 #include "ui_workspace_rail.h"
 #include "ui_workspace_rail_model.h"
+#include "remote_api.h"
+#include "remote_proto.h"
+#include "cJSON.h"
 
 // Font embedded into the binary at compile time (CMake bin2header from
 // assets/JetBrainsMono-Regular.ttf and JetBrainsMono-Bold.ttf).
@@ -95,6 +100,9 @@ static uint64_t g_last_focused_pane_id = 0;
 // Pending "jump to unread" target (set by Cmd+Shift+U or a click on the
 // rail's notification strip; consumed before drawing).
 static uint64_t g_jump_request = 0;
+
+// Remote API server (NULL when disabled).
+static RemoteApi *g_remote_api = NULL;
 
 // Produce a stable numeric pane ID from a session pointer.
 static uint64_t pane_id_for_session(const Session *s)
@@ -2849,12 +2857,212 @@ static void execute_host_action(FangsActionId action,
 }
 
 // ---------------------------------------------------------------------------
+// Remote control — execute one parsed request and return a response JSON
+// string (caller must free).  Called from the frame loop after
+// sync_active_runtime so te / pty_fd reflect the active session.
+// ---------------------------------------------------------------------------
+static char *remote_execute(const RemoteRequest *req,
+                            TermEngine *te, int pty_fd,
+                            const AppConfig *cfg, const char *config_path,
+                            uint16_t term_cols, uint16_t term_rows,
+                            int cell_width, int cell_height)
+{
+    switch (req->cmd) {
+    case REMOTE_CMD_LIST: {
+        cJSON *tabs = cJSON_CreateArray();
+        for (int ti = 0; ti < app.n_tabs; ti++) {
+            cJSON *t = cJSON_CreateObject();
+            cJSON_AddNumberToObject(t, "index", ti);
+            cJSON_AddBoolToObject(t, "active", ti == app.active);
+            cJSON_AddStringToObject(t, "name", app.tabs[ti].name);
+
+            // Collect leaf sessions
+            PaneNode *ll[WORKSPACE_RAIL_MAX_PANES];
+            int ln = 0;
+            pane_collect_leaves(app.tabs[ti].root, ll,
+                                WORKSPACE_RAIL_MAX_PANES, &ln);
+            cJSON *panes_arr = cJSON_CreateArray();
+            int port_buf[64];
+            for (int pi = 0; pi < ln; pi++) {
+                if (ll[pi]->kind != PANE_LEAF) continue;
+                Session *ss = ll[pi]->leaf.session;
+                cJSON *p = cJSON_CreateObject();
+                cJSON_AddNumberToObject(p, "id",
+                    (double)(uint64_t)(uintptr_t)ss);
+                cJSON_AddStringToObject(p, "cwd",
+                    session_cwd(ss) ? session_cwd(ss) : "");
+                int np = session_ports(ss, port_buf, 64);
+                if (np > 0) {
+                    cJSON *prts = cJSON_CreateArray();
+                    for (int pi2 = 0; pi2 < np; pi2++)
+                        cJSON_AddItemToArray(prts, cJSON_CreateNumber(port_buf[pi2]));
+                    cJSON_AddItemToObject(p, "ports", prts);
+                }
+                cJSON_AddItemToArray(panes_arr, p);
+            }
+            cJSON_AddItemToObject(t, "panes", panes_arr);
+            cJSON_AddItemToArray(tabs, t);
+        }
+        return remote_proto_ok_obj(req->id, tabs);
+    }
+
+    case REMOTE_CMD_NEW: {
+        if (app.n_tabs >= FANGS_MAX_TABS)
+            return remote_proto_error(req->id, "max workspaces reached");
+        const char *cwd = req->cwd[0] ? req->cwd : NULL;
+        Session *ns = NULL;
+        if (req->worktree) {
+            WorkspaceWorktreeResult wtr;
+            memset(&wtr, 0, sizeof(wtr));
+            if (!workspace_worktree_create(cwd, &wtr))
+                return remote_proto_error(req->id, wtr.error);
+            ns = app_add_tab_named(term_cols, term_rows,
+                                   cell_width, cell_height,
+                                   cfg->scrollback, wtr.path, wtr.branch,
+                                   cfg->kitty_images,
+                                   cfg->kitty_image_storage_mb,
+                                   NULL, NULL, NULL, NULL);
+            if (!ns) {
+                workspace_worktree_remove_created(&wtr);
+                return remote_proto_error(req->id,
+                    "failed to open workspace for worktree");
+            }
+        } else {
+            ns = app_add_tab(term_cols, term_rows,
+                             cell_width, cell_height,
+                             cfg->scrollback, cwd,
+                             cfg->kitty_images,
+                             cfg->kitty_image_storage_mb,
+                             NULL, NULL, NULL, NULL);
+        }
+        if (!ns)
+            return remote_proto_error(req->id, "failed to create session");
+
+        // If run text is provided, inject it after the shell starts.
+        if (req->run[0] && ns) {
+            int pfd = session_pty_fd(ns);
+            if (pfd >= 0) {
+                pty_write(pfd, req->run, strlen(req->run));
+                pty_write(pfd, "\n", 1);
+            }
+        }
+        // Apply name if provided.
+        if (req->name[0] && app.n_tabs > 0) {
+            Tab *last = &app.tabs[app.n_tabs - 1];
+            snprintf(last->name, sizeof(last->name), "%s", req->name);
+        }
+        (void)config_path;
+        return remote_proto_ok(req->id);
+    }
+
+    case REMOTE_CMD_FOCUS: {
+        int idx = req->index;
+        if (idx < 0 || idx >= app.n_tabs)
+            return remote_proto_error(req->id, "invalid tab index");
+        if (idx != app.active)
+            (void)app_switch_tab(idx, NULL, NULL, NULL, NULL);
+        // Focus specific pane if given.
+        if (req->pane >= 0 && app.n_tabs > 0) {
+            Tab *ft = &app.tabs[app.active];
+            PaneNode *fl[WORKSPACE_RAIL_MAX_PANES];
+            int fn = 0;
+            pane_collect_leaves(ft->root, fl, WORKSPACE_RAIL_MAX_PANES, &fn);
+            for (int pi = 0; pi < fn; pi++) {
+                if (fl[pi]->kind != PANE_LEAF) continue;
+                uint64_t pid = (uint64_t)(uintptr_t)fl[pi]->leaf.session;
+                if ((int64_t)pid == req->pane) {
+                    ft->focused = fl[pi];
+                    break;
+                }
+            }
+        }
+        return remote_proto_ok(req->id);
+    }
+
+    case REMOTE_CMD_RENAME: {
+        if (app.n_tabs <= 0 || app.active < 0)
+            return remote_proto_error(req->id, "no active workspace");
+        int rename_idx = (req->index >= 0 && req->index < app.n_tabs) ? req->index : app.active;
+        snprintf(app.tabs[rename_idx].name, sizeof(app.tabs[rename_idx].name),
+                 "%s", req->name);
+        return remote_proto_ok(req->id);
+    }
+
+    case REMOTE_CMD_SEND: {
+        if (!cfg->remote_api_send)
+            return remote_proto_error(req->id, "send disabled by config");
+        if (pty_fd < 0)
+            return remote_proto_error(req->id, "no active pty");
+        pty_write(pty_fd, req->text, strlen(req->text));
+        return remote_proto_ok(req->id);
+    }
+
+    case REMOTE_CMD_READ: {
+        if (!te)
+            return remote_proto_error(req->id, "no active terminal");
+        char *dump = term_engine_dump_text(te);
+        if (!dump)
+            return remote_proto_error(req->id, "dump failed");
+        cJSON *fields = cJSON_CreateObject();
+        cJSON_AddStringToObject(fields, "text", dump);
+        free(dump);
+        return remote_proto_ok_obj(req->id, fields);
+    }
+
+    case REMOTE_CMD_RING: {
+        if (app.n_tabs <= 0 || app.active < 0)
+            return remote_proto_error(req->id, "no active workspace");
+        Tab *rt = &app.tabs[app.active];
+        PaneNode *rl[WORKSPACE_RAIL_MAX_PANES];
+        int rn = 0;
+        pane_collect_leaves(rt->root, rl, WORKSPACE_RAIL_MAX_PANES, &rn);
+        for (int pi = 0; pi < rn; pi++) {
+            if (rl[pi]->kind != PANE_LEAF) continue;
+            uint64_t pid = (uint64_t)(uintptr_t)rl[pi]->leaf.session;
+            workspace_status_note_notify(&g_workspace_status, pid,
+                                         rl[pi] == rt->focused,
+                                         req->message[0] ? req->message : "ring");
+        }
+        return remote_proto_ok(req->id);
+    }
+
+    case REMOTE_CMD_NONE:
+    default:
+        return remote_proto_error(req->id, "unknown command");
+    }
+}
+
+// Send a response to a remote request parsed from a line.
+static void dispatch_remote_line(const char *line,
+                                 TermEngine *te, int pty_fd,
+                                 const AppConfig *cfg, const char *config_path,
+                                 uint16_t term_cols, uint16_t term_rows,
+                                 int cell_width, int cell_height)
+{
+    RemoteRequest req;
+    char err[256];
+    if (!remote_proto_parse(line, &req, err, (int)sizeof(err))) {
+        char *resp = remote_proto_error(0, err);
+        remote_api_respond(g_remote_api, resp);
+        free(resp);
+        return;
+    }
+    char *resp = remote_execute(&req, te, pty_fd, cfg, config_path,
+                                term_cols, term_rows,
+                                cell_width, cell_height);
+    if (resp) {
+        remote_api_respond(g_remote_api, resp);
+        free(resp);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 // (declared in ui_effects.h; no forward declaration needed.)
 
-int main(void)
+int main(int argc, char **argv)
 {
     log_build_info();
 
@@ -2863,6 +3071,140 @@ int main(void)
     if (!config_load(&cfg, config_path)) {
         fprintf(stderr, "warning: failed to load config at %s; using defaults\n", config_path);
         toast_push(TOAST_WARN, "Failed to load config; using defaults.");
+    }
+
+    // ---- CLI mode: "fangs ctl <subcommand> [args]" --------------------------
+    if (argc >= 3 && strcmp(argv[1], "ctl") == 0) {
+        const char *sock_dir = config_default_app_dir();
+        char sock_path[1024];
+        snprintf(sock_path, sizeof(sock_path), "%s/remote.sock", sock_dir);
+
+        // Build JSON request from structured args.
+        cJSON *req = cJSON_CreateObject();
+        const char *sub = argv[2];
+
+        if (strcmp(sub, "list") == 0) {
+            cJSON_AddStringToObject(req, "cmd", "list");
+
+        } else if (strcmp(sub, "new") == 0) {
+            cJSON_AddStringToObject(req, "cmd", "new");
+            for (int ai = 3; ai + 1 < argc; ai++) {
+                if (strcmp(argv[ai], "--worktree") == 0)
+                    cJSON_AddStringToObject(req, "worktree", argv[++ai]);
+                else if (strcmp(argv[ai], "--name") == 0)
+                    cJSON_AddStringToObject(req, "name", argv[++ai]);
+                else if (strcmp(argv[ai], "--cwd") == 0)
+                    cJSON_AddStringToObject(req, "cwd", argv[++ai]);
+                else if (strcmp(argv[ai], "--run") == 0)
+                    cJSON_AddStringToObject(req, "run", argv[++ai]);
+            }
+
+        } else if (strcmp(sub, "focus") == 0) {
+            cJSON_AddStringToObject(req, "cmd", "focus");
+            if (argc > 3)
+                cJSON_AddNumberToObject(req, "index", atoi(argv[3]));
+            for (int ai = 4; ai + 1 < argc; ai++) {
+                if (strcmp(argv[ai], "--pane") == 0)
+                    cJSON_AddNumberToObject(req, "pane", atoll(argv[++ai]));
+            }
+
+        } else if (strcmp(sub, "rename") == 0) {
+            cJSON_AddStringToObject(req, "cmd", "rename");
+            if (argc > 3)
+                cJSON_AddStringToObject(req, "name", argv[3]);
+            for (int ai = 4; ai + 1 < argc; ai++) {
+                if (strcmp(argv[ai], "--index") == 0)
+                    cJSON_AddNumberToObject(req, "index", atoi(argv[++ai]));
+            }
+
+        } else if (strcmp(sub, "send") == 0) {
+            cJSON_AddStringToObject(req, "cmd", "send");
+            if (argc > 3)
+                cJSON_AddStringToObject(req, "text", argv[3]);
+            for (int ai = 4; ai + 1 < argc; ai++) {
+                if (strcmp(argv[ai], "--lines") == 0)
+                    cJSON_AddNumberToObject(req, "lines", atoi(argv[++ai]));
+            }
+
+        } else if (strcmp(sub, "read") == 0) {
+            cJSON_AddStringToObject(req, "cmd", "read");
+            for (int ai = 3; ai + 1 < argc; ai++) {
+                if (strcmp(argv[ai], "--lines") == 0)
+                    cJSON_AddNumberToObject(req, "lines", atoi(argv[++ai]));
+            }
+
+        } else if (strcmp(sub, "ring") == 0) {
+            cJSON_AddStringToObject(req, "cmd", "ring");
+            if (argc > 3)
+                cJSON_AddStringToObject(req, "message", argv[3]);
+
+        } else {
+            fprintf(stderr, "usage: fangs ctl <command> [args]\n\n");
+            fprintf(stderr, "commands:\n");
+            fprintf(stderr, "  list                        list workspaces\n");
+            fprintf(stderr, "  new [--worktree P] [--name N] [--cwd D] [--run C]\n");
+            fprintf(stderr, "  focus INDEX [--pane ID]\n");
+            fprintf(stderr, "  rename NAME [--index INDEX]\n");
+            fprintf(stderr, "  send TEXT [--lines N]\n");
+            fprintf(stderr, "  read [--lines N]\n");
+            fprintf(stderr, "  ring [MESSAGE]\n");
+            fprintf(stderr, "  help                        show this message\n");
+            cJSON_Delete(req);
+            return 1;
+        }
+
+        // Serialize to JSON string for sending.
+        char *json = cJSON_PrintUnformatted(req);
+        cJSON_Delete(req);
+        if (!json) {
+            fprintf(stderr, "error: failed to build JSON request\n");
+            return 1;
+        }
+
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) {
+            fprintf(stderr, "error: cannot create socket\n");
+            free(json);
+            return 1;
+        }
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", sock_path);
+
+        struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+        if (connect(fd, (struct sockaddr *)&addr,
+                    (socklen_t)sizeof(addr)) < 0) {
+            fprintf(stderr, "error: cannot connect to Fangs socket at %s "
+                    "(is Fangs running with remote_api enabled?)\n", sock_path);
+            close(fd);
+            free(json);
+            return 1;
+        }
+        // Send JSON + newline.
+        size_t jlen = strlen(json);
+        ssize_t sent = write(fd, json, jlen);
+        if (sent > 0) write(fd, "\n", 1);
+        free(json);
+        // Read response line.
+        char resp[8192];
+        ssize_t n = read(fd, resp, sizeof(resp) - 1);
+        if (n > 0) {
+            resp[n] = '\0';
+            // Strip trailing newline for clean output.
+            while (n > 0 && (resp[n-1] == '\n' || resp[n-1] == '\r'))
+                resp[--n] = '\0';
+            printf("%s\n", resp);
+        } else {
+            fprintf(stderr, "error: no response from Fangs\n");
+            close(fd);
+            return 1;
+        }
+        close(fd);
+        return 0;
     }
 
     int font_size = cfg.font_size;
@@ -2884,6 +3226,15 @@ int main(void)
     SetExitKey(KEY_NULL);
     SetWindowState(FLAG_WINDOW_RESIZABLE);
     SetTargetFPS(60);
+
+    // Start the remote API server if enabled in config.
+    if (cfg.remote_api) {
+        char err[256];
+        const char *sd = config_default_app_dir();
+        g_remote_api = remote_api_start(sd, getpid(), err, (int)sizeof(err));
+        if (!g_remote_api)
+            fprintf(stderr, "warning: remote_api start failed: %s\n", err);
+    }
 
     // Process-global curl init (paired with ai_global_cleanup at exit). Done
     // here, before any worker thread exists, since it isn't thread-safe.
@@ -3802,6 +4153,19 @@ int main(void)
             }
         }
 
+        // Drain remote API requests (if any). Each line is a JSON-RPC-style
+        // request; dispatch against the active runtime handles.
+        if (g_remote_api) {
+            char *lines[16];
+            int nlines = remote_api_poll(g_remote_api, lines, 16);
+            for (int ri = 0; ri < nlines; ri++) {
+                dispatch_remote_line(lines[ri], te, pty_fd,
+                                     &cfg, config_path,
+                                     (uint16_t)term_cols, (uint16_t)term_rows,
+                                     cell_width, cell_height);
+            }
+        }
+
         Theme theme = theme_resolve(cfg.theme);
         Color win_bg = { theme.bg.r, theme.bg.g, theme.bg.b, 255 };
 
@@ -4356,6 +4720,10 @@ cleanup:
         UnloadFont(mono_font);
     if (bold_font.texture.id != 0)
         UnloadFont(bold_font);
+    if (g_remote_api) {
+        remote_api_stop(g_remote_api);
+        g_remote_api = NULL;
+    }
     kitty_image_renderer_destroy(kitty_renderer);
     if (!save_window_geometry(&cfg, config_path))
         fprintf(stderr, "warning: failed to save window geometry at %s\n", config_path);

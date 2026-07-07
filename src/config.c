@@ -135,6 +135,16 @@ static void apply_key_value(AppConfig *c, const char *section,
             if (parse_bool_value(value, &parsed))
                 c->workspace_rail = parsed;
         }
+    } else if (strcmp(section, "remote") == 0) {
+        if (strcmp(key, "remote_api") == 0) {
+            bool parsed = false;
+            if (parse_bool_value(value, &parsed))
+                c->remote_api = parsed;
+        } else if (strcmp(key, "remote_api_send") == 0) {
+            bool parsed = false;
+            if (parse_bool_value(value, &parsed))
+                c->remote_api_send = parsed;
+        }
     } else if (strcmp(section, "ai") == 0) {
         if (strcmp(key, "provider") == 0) {
             copy_string(c->provider, sizeof(c->provider), value);
@@ -185,6 +195,8 @@ void config_defaults(AppConfig *c)
     c->cursor_blink  = true;
 
     c->workspace_rail = true;
+    c->remote_api = false;
+    c->remote_api_send = false;
 
     c->window_width = 800;
     c->window_height = 600;
@@ -207,6 +219,21 @@ const char *config_default_path(void)
     mkdir_if_missing(app_dir);
     snprintf(path, sizeof(path), "%s/config", app_dir);
     return path;
+}
+
+const char *config_default_app_dir(void)
+{
+    static char dir[4096];
+    const char *home = getenv("HOME");
+    if (!home || home[0] == '\0')
+        home = ".";
+
+    char config_dir[4096];
+    snprintf(config_dir, sizeof(config_dir), "%s/.config", home);
+    snprintf(dir, sizeof(dir), "%s/fangs", config_dir);
+    mkdir_if_missing(config_dir);
+    mkdir_if_missing(dir);
+    return dir;
 }
 
 bool config_load(AppConfig *c, const char *path)
@@ -291,6 +318,10 @@ bool config_save(const AppConfig *c, const char *path)
         "[ui]\n"
         "workspace_rail = %s\n"
         "\n"
+        "[remote]\n"
+        "remote_api = %s\n"
+        "remote_api_send = %s\n"
+        "\n"
         "[ai]\n"
         "provider = %s\n"
         "endpoint = %s\n"
@@ -311,6 +342,8 @@ bool config_save(const AppConfig *c, const char *path)
         c->window_x,
         c->window_y,
         c->workspace_rail ? "true" : "false",
+        c->remote_api ? "true" : "false",
+        c->remote_api_send ? "true" : "false",
         c->provider,
         c->endpoint,
         c->model,

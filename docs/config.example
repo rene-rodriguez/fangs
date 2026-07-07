@@ -30,6 +30,12 @@ height = 600
 x = -1                ;; -1 means let macOS/Linux place the window
 y = -1
 
+[remote]
+;; WARNING: remote_api_send enables arbitrary command execution via
+;; 'send' and 'new --run' — same trust model as tmux send-keys.
+remote_api = false       ;; enable Unix-socket JSON API (read-only)
+remote_api_send = false  ;; additionally enable send and new --run
+
 [ai]
 provider = openai     ;; "openai" (OpenAI-compatible) or "anthropic"
 endpoint = https://api.openai.com/v1/chat/completions

@@ -108,6 +108,8 @@ add_executable(fangs
   src/desktop_notify.c
   src/ui_workspace_rail_model.c
   src/ui_workspace_rail.c
+  src/remote_api.c
+  src/remote_proto.c
   src/workspace_ports.c
   "${FONT_HEADER}"
   "${FONT_BOLD_HEADER}")
@@ -252,6 +254,16 @@ add_executable(workspace_ports_tests
 target_compile_features(workspace_ports_tests PRIVATE c_std_11)
 target_include_directories(workspace_ports_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 add_test(NAME workspace_ports_tests COMMAND workspace_ports_tests)
+
+# --- Remote protocol (pure) --------------------------------------------------
+add_executable(remote_proto_tests
+  tests/remote_proto_tests.c
+  src/remote_proto.c
+  src/cJSON.c)
+target_compile_features(remote_proto_tests PRIVATE c_std_11)
+target_include_directories(remote_proto_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(remote_proto_tests m)
+add_test(NAME remote_proto_tests COMMAND remote_proto_tests)
 
 # --- E1 (§15): ai_block ------------------------------------------------------
 add_executable(ai_block_tests

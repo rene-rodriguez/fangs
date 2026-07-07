@@ -231,6 +231,41 @@ static void test_save_round_trips_app_config(void)
     free(path);
 }
 
+static void test_remote_api_defaults_false(void)
+{
+    AppConfig cfg;
+    config_defaults(&cfg);
+    EXPECT_TRUE(!cfg.remote_api);
+    EXPECT_TRUE(!cfg.remote_api_send);
+}
+
+static void test_remote_api_parse_and_round_trip(void)
+{
+    char *path = temp_config_path();
+    write_file(path,
+        "[remote]\n"
+        "remote_api = true\n"
+        "remote_api_send = true\n");
+
+    AppConfig cfg;
+    EXPECT_TRUE(config_load(&cfg, path));
+    EXPECT_TRUE(cfg.remote_api);
+    EXPECT_TRUE(cfg.remote_api_send);
+
+    // Modify and save
+    cfg.remote_api = false;
+    cfg.remote_api_send = true;
+    EXPECT_TRUE(config_save(&cfg, path));
+
+    // Re-load and verify
+    AppConfig loaded;
+    EXPECT_TRUE(config_load(&loaded, path));
+    EXPECT_TRUE(!loaded.remote_api);
+    EXPECT_TRUE(loaded.remote_api_send);
+
+    free(path);
+}
+
 int main(void)
 {
     test_defaults();
@@ -238,6 +273,8 @@ int main(void)
     test_load_parses_ini_sections();
     test_load_clamps_kitty_image_storage();
     test_save_round_trips_app_config();
+    test_remote_api_defaults_false();
+    test_remote_api_parse_and_round_trip();
 
     if (failures != 0) {
         fprintf(stderr, "%d config test failure(s)\n", failures);

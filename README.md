@@ -242,11 +242,64 @@ Two narrow seams keep the project honest: `term_engine.h` wraps the VT engine
 (`spawn / write / resize / render / dump_text`), and `ai_provider.h` wraps the AI transport
 (`send(messages, on_token)`). Swapping the engine or a provider touches a single file.
 
+## Remote control
+
+Fangs exposes a local JSON-over-Unix-socket API to control workspaces and
+sessions programmatically, plus a `fangs ctl` CLI front-end.
+
+### Security
+
+The socket lives at `~/.config/fangs/remote.sock` with mode `0600`. It is
+**never** a TCP listener. Both config gates default to **false**:
+
+```ini
+[remote]
+remote_api = false        # enables the socket + benign commands (list, focus,
+                          # rename, read, ring)
+remote_api_send = false   # additionally enables send and new --run (arbitrary
+                          # command execution by design, same trust model as
+                          # tmux send-keys or kitty remote control)
+```
+
+### Usage (CLI)
+
+```sh
+fangs ctl list                      # list workspaces
+fangs ctl new --worktree --name fix-auth --run "claude"   # spawn agent
+fangs ctl send 2 "run the tests\n"  # type into a workspace
+fangs ctl read 2 --lines 80         # read screen text
+fangs ctl ring 2 "review me"        # mark attention
+fangs ctl rename fix-auth --index 2 # rename a workspace
+fangs ctl focus 1                   # switch to workspace 1
+```
+
+### Orchestrator recipe
+
+Enable both gates, run a Claude Code orchestrator in workspace 1, and give it
+`fangs ctl` — it can spawn worktree workspaces for sub-agents, poll `list` for
+`working` / `attention`, `read` their screens, and `send` follow-ups. This is
+the cmux orchestration story on fangs' own socket:
+
+```sh
+# Orchestrator spawns sub-agents via:
+fangs ctl new --worktree --name agent-bot --run "claude --model claude-sonnet-4-20250514 --allowedTools"
+# Check if they need attention:
+fangs ctl list
+# Read a sub-agent's screen:
+fangs ctl read 2 --lines 80
+# Send follow-up instructions:
+fangs ctl send 2 "run the tests now\n"
+```
+
+See [`docs/workspace-ops-spec.md`](docs/workspace-ops-spec.md) for the full
+protocol reference.
+
 ## Documentation
 
 - [`docs/plan.md`](docs/plan.md) — roadmap and architecture decisions.
 - [`docs/spec.md`](docs/spec.md) — technical spec (modules, build, config, AI provider).
 - [`docs/shell-integration.md`](docs/shell-integration.md) — OSC 133 shell snippets (zsh / bash) for command blocks.
+- [`docs/workspace-ops-spec.md`](docs/workspace-ops-spec.md) — remote control protocol, port detection, rail ergonomics.
 
 ## License
 
