@@ -11,6 +11,7 @@
 #include "cmdblocks.h"
 #include "pty.h"
 #include "term_engine.h"
+#include "workspace_ports.h"
 
 struct Session {
     TermEngine *te;
@@ -27,6 +28,7 @@ struct Session {
     int  max_scrollback;
     void *userdata;              // opaque slot for host (EffectsContext)
     size_t last_bytes_read;      // reported by session_feed_pty_stats
+    WorkspacePortScanner port_scanner; // dev-server port scanner
 };
 
 Session *session_create(uint16_t cols, uint16_t rows, int cell_w, int cell_h,
@@ -118,6 +120,7 @@ SessionFeedStats session_feed_pty_stats(Session *s)
     ssize_t n = read(s->pty_fd, buf, sizeof(buf));
     if (n > 0) {
         cmdblocks_feed(s->cmdblocks, s->te, buf, (size_t)n);
+        workspace_ports_feed(&s->port_scanner, buf, (size_t)n);
         stats.bytes_read = (size_t)n;
         s->last_bytes_read = stats.bytes_read;
     } else if (n == 0) {
@@ -163,6 +166,16 @@ void *session_engine(Session *s)
 void *session_cmdblocks(Session *s)
 {
     return s ? (void *)s->cmdblocks : NULL;
+}
+
+int session_ports(const Session *s, int *out, int max)
+{
+    return s ? workspace_ports_get(&((Session *)s)->port_scanner, out, max) : 0;
+}
+
+void session_ports_clear(Session *s)
+{
+    if (s) workspace_ports_clear(&s->port_scanner);
 }
 
 bool session_child_alive(const Session *s)
@@ -277,6 +290,7 @@ bool session_respawn(Session *s, const char *cwd)
         return false;
 
     s->child_alive = true;
+    workspace_ports_reset(&s->port_scanner);
     if (dir && dir[0])
         snprintf(s->cwd, sizeof(s->cwd), "%s", dir);
     return true;

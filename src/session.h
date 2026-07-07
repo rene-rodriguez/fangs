@@ -33,6 +33,8 @@ int         session_pty_fd(const Session *s);
 pid_t       session_child_pid(const Session *s);    // child PID for signal/cleanup
 void       *session_engine(Session *s);             // returns TermEngine* (opaque here)
 void       *session_cmdblocks(Session *s);          // returns CmdBlocks* (opaque here)
+int         session_ports(const Session *s, int *out, int max);  // dev-server port scanner
+void        session_ports_clear(Session *s);
 bool        session_child_alive(const Session *s);
 const char *session_cwd(const Session *s);          // last OSC-7 cwd, or $HOME
 

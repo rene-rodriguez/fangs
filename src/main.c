@@ -3517,6 +3517,7 @@ int main(void)
                                 int code = cmdblocks_latest_exit_code(cb);
                                 workspace_status_note_command(&g_workspace_status, pane_id,
                                                               focused, code);
+                                session_ports_clear(ss);
                             }
                         }
 
