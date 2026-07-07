@@ -152,6 +152,15 @@ target_compile_features(workspace_status_tests PRIVATE c_std_11)
 target_include_directories(workspace_status_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 add_test(NAME workspace_status_tests COMMAND workspace_status_tests)
 
+add_executable(ui_menu_tests
+  tests/ui_menu_tests.c
+  src/ui_menu.c
+  src/ui_theme.c)
+target_compile_features(ui_menu_tests PRIVATE c_std_11)
+target_include_directories(ui_menu_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(ui_menu_tests PRIVATE raylib)
+add_test(NAME ui_menu_tests COMMAND ui_menu_tests)
+
 add_executable(workspace_worktree_tests
   tests/workspace_worktree_tests.c
   src/workspace_worktree.c)
