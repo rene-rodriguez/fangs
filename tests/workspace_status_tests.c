@@ -153,6 +153,112 @@ static void test_working_expires_after_silence(void)
     EXPECT_TRUE(!workspace_status_is_working_at(&st, 10, 3001));
 }
 
+/* --- Event ring buffer tests --- */
+
+static void test_event_appended_on_notify(void)
+{
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+    workspace_status_note_notify(&st, 10, false, "help");
+    WorkspaceStatusEvent evs[4];
+    int n = workspace_status_events(&st, evs, 4);
+    EXPECT_INT(n, 1);
+    EXPECT_INT((int)evs[0].pane_id, 10);
+    EXPECT_INT((int)evs[0].level, WORKSPACE_ATTENTION_WARN);
+    EXPECT_STR(evs[0].text, "help");
+}
+
+static void test_event_appended_on_command_fail(void)
+{
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+    workspace_status_note_command(&st, 20, false, 3);
+    WorkspaceStatusEvent evs[4];
+    int n = workspace_status_events(&st, evs, 4);
+    EXPECT_INT(n, 1);
+    EXPECT_INT((int)evs[0].pane_id, 20);
+    EXPECT_INT((int)evs[0].level, WORKSPACE_ATTENTION_WARN);
+    EXPECT_TRUE(strstr(evs[0].text, "exit 3") != NULL);
+}
+
+static void test_event_appended_on_child_exit(void)
+{
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+    workspace_status_note_child_exit(&st, 30, false, 9);
+    WorkspaceStatusEvent evs[4];
+    int n = workspace_status_events(&st, evs, 4);
+    EXPECT_INT(n, 1);
+    EXPECT_INT((int)evs[0].pane_id, 30);
+    EXPECT_INT((int)evs[0].level, WORKSPACE_ATTENTION_ERROR);
+    EXPECT_TRUE(strstr(evs[0].text, "process exited") != NULL);
+}
+
+static void test_output_does_not_push_event(void)
+{
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+    workspace_status_note_output(&st, 10, false, 1);
+    WorkspaceStatusEvent evs[4];
+    int n = workspace_status_events(&st, evs, 4);
+    EXPECT_INT(n, 0);
+}
+
+static void test_event_newest_first(void)
+{
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+    workspace_status_note_notify(&st, 1, false, "first");
+    workspace_status_note_notify(&st, 2, false, "second");
+    WorkspaceStatusEvent evs[4];
+    int n = workspace_status_events(&st, evs, 4);
+    EXPECT_INT(n, 2);
+    EXPECT_STR(evs[0].text, "second");
+    EXPECT_STR(evs[1].text, "first");
+}
+
+static void test_event_ring_wraps(void)
+{
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+    // Fill past event max
+    for (int i = 0; i < WORKSPACE_STATUS_EVENT_MAX + 5; i++) {
+        char label[8];
+        snprintf(label, sizeof(label), "e%d", i);
+        workspace_status_note_notify(&st, 100 + i, false, label);
+    }
+    WorkspaceStatusEvent evs[4];
+    int n = workspace_status_events(&st, evs, 4);
+    // Newest first, limited by max size
+    EXPECT_INT(n, 4);
+    EXPECT_STR(evs[0].text, "e36");  // 32 + 5 - 1 = index 36
+    EXPECT_INT(workspace_status_unseen(&st, 0), WORKSPACE_STATUS_EVENT_MAX);
+}
+
+static void test_unseen_count(void)
+{
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+    workspace_status_note_notify(&st, 1, false, "a");
+    workspace_status_note_notify(&st, 2, false, "b");
+    EXPECT_INT(workspace_status_unseen(&st, 0), 2);
+    EXPECT_INT(workspace_status_unseen(&st, 2), 0);
+    EXPECT_INT(workspace_status_unseen(&st, 1), 1);
+    workspace_status_note_notify(&st, 3, false, "c");
+    EXPECT_INT(workspace_status_unseen(&st, 2), 1);
+}
+
+static void test_events_clear_resets(void)
+{
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+    workspace_status_note_notify(&st, 1, false, "x");
+    workspace_status_events_clear(&st);
+    WorkspaceStatusEvent evs[4];
+    EXPECT_INT(workspace_status_events(&st, evs, 4), 0);
+    EXPECT_INT(workspace_status_unseen(&st, 0), 0);
+}
+
 int main(void)
 {
     test_background_output_marks_info();
@@ -169,5 +275,13 @@ int main(void)
     test_active_pane_can_be_marked_when_caller_says_not_focused();
     test_output_marks_working_without_unread_when_focused();
     test_working_expires_after_silence();
+    test_event_appended_on_notify();
+    test_event_appended_on_command_fail();
+    test_event_appended_on_child_exit();
+    test_output_does_not_push_event();
+    test_event_newest_first();
+    test_event_ring_wraps();
+    test_unseen_count();
+    test_events_clear_resets();
     return failures ? 1 : 0;
 }

@@ -25,9 +25,25 @@ static int find_or_add(WorkspaceStatus *st, uint64_t pane_id)
     return idx;
 }
 
+// Append an event to the ring buffer.
+static void event_push(WorkspaceStatus *st, uint64_t pane_id,
+                       WorkspaceAttention level, const char *text)
+{
+    int idx = st->event_head;
+    st->events[idx].pane_id = pane_id;
+    st->events[idx].level = level;
+    snprintf(st->events[idx].text, sizeof(st->events[idx].text), "%s",
+             text ? text : "");
+    st->events[idx].at_ms = 0; // caller sets if needed
+    st->event_head = (idx + 1) % WORKSPACE_STATUS_EVENT_MAX;
+    st->event_count++;
+}
+
 void workspace_status_init(WorkspaceStatus *st)
 {
     st->count = 0;
+    st->event_count = 0;
+    st->event_head = 0;
 }
 
 void workspace_status_note_output_at(WorkspaceStatus *st, uint64_t pane_id,
@@ -91,6 +107,7 @@ void workspace_status_note_command(WorkspaceStatus *st, uint64_t pane_id,
     if (exit_code != 0 && st->levels[idx] < WORKSPACE_ATTENTION_WARN) {
         st->levels[idx] = WORKSPACE_ATTENTION_WARN;
         snprintf(st->texts[idx], sizeof(st->texts[idx]), "exit %d", exit_code);
+        event_push(st, pane_id, WORKSPACE_ATTENTION_WARN, st->texts[idx]);
     }
 }
 
@@ -108,6 +125,7 @@ void workspace_status_note_notify(WorkspaceStatus *st, uint64_t pane_id,
      * agent explicitly asked the user to see. */
     snprintf(st->texts[idx], sizeof(st->texts[idx]), "%s",
              (text && text[0]) ? text : "needs attention");
+    event_push(st, pane_id, WORKSPACE_ATTENTION_WARN, st->texts[idx]);
 }
 
 void workspace_status_note_child_exit(WorkspaceStatus *st, uint64_t pane_id,
@@ -121,6 +139,7 @@ void workspace_status_note_child_exit(WorkspaceStatus *st, uint64_t pane_id,
     st->levels[idx] = WORKSPACE_ATTENTION_ERROR;
     snprintf(st->texts[idx], sizeof(st->texts[idx]),
              "process exited: %d", exit_code);
+    event_push(st, pane_id, WORKSPACE_ATTENTION_ERROR, st->texts[idx]);
 }
 
 void workspace_status_clear(WorkspaceStatus *st, uint64_t pane_id)
@@ -238,4 +257,39 @@ void workspace_status_remove(WorkspaceStatus *st, uint64_t pane_id)
         st->last_output_ms[i] = st->last_output_ms[i + 1];
     }
     st->count--;
+}
+
+// Event ring buffer API ----------------------------------------------------
+
+int workspace_status_events(const WorkspaceStatus *st, WorkspaceStatusEvent *out, int max)
+{
+    if (max <= 0) return 0;
+    int n = st->event_count < WORKSPACE_STATUS_EVENT_MAX
+          ? st->event_count : WORKSPACE_STATUS_EVENT_MAX;
+    if (n > max) n = max;
+
+    // Walk backwards from (head - 1) mod ring_size.
+    int ring_size = WORKSPACE_STATUS_EVENT_MAX;
+    for (int i = 0; i < n; i++) {
+        int src = (st->event_head - 1 - i) % ring_size;
+        if (src < 0) src += ring_size;
+        out[i] = st->events[src];
+    }
+    return n;
+}
+
+void workspace_status_events_clear(WorkspaceStatus *st)
+{
+    st->event_count = 0;
+    st->event_head = 0;
+}
+
+int workspace_status_unseen(const WorkspaceStatus *st, int last_seen_count)
+{
+    int diff = st->event_count - last_seen_count;
+    if (diff < 0) diff = 0;
+    int max_visible = st->event_count < WORKSPACE_STATUS_EVENT_MAX
+                     ? st->event_count : WORKSPACE_STATUS_EVENT_MAX;
+    if (diff > max_visible) diff = max_visible;
+    return diff;
 }

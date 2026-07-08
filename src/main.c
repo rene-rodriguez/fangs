@@ -36,6 +36,8 @@
 #include "ui_toast.h"
 #include "ui_effects.h"
 #include "ui_workflow_prompt.h"
+#include "ui_menu.h"
+#include "ui_menu_draw.h"
 #include "ui_rename_prompt.h"
 #include "workspace_info.h"
 #include "workspace_status.h"
@@ -103,6 +105,40 @@ static uint64_t g_jump_request = 0;
 
 // Remote API server (NULL when disabled).
 static RemoteApi *g_remote_api = NULL;
+
+// Context menu / notification-history popover (reused).
+static UiMenu g_rail_menu = {0};
+
+// Armed-close state: pane_id and deadline (monotonic ms). 0 = not armed.
+static uint64_t g_armed_pane_id = 0;
+static uint64_t g_armed_deadline_ms = 0;
+
+// Drag-to-reorder state.
+static int g_drag_from = -1;        // source tab index, -1 = not dragging
+static int g_drag_slot = -1;        // insertion slot
+static int g_drag_candidate = -1;   // tab index of the initial left-press
+static int g_drag_press_y = 0;      // Y position of the initial left-press
+
+// Last-seen event count for the bell badge (set when history popover opens).
+static int g_history_last_seen = 0;
+
+// Rail context menu state: the target when the menu was opened.
+static int  g_rail_context_tab = -1;    // tab index (for tab rows)
+static uint64_t g_rail_context_pane = 0; // pane_id (for pane rows)
+static bool g_rail_context_is_pane = false;
+
+// Menu item tags for the rail context menu.
+#define RAIL_MENU_RENAME      100
+#define RAIL_MENU_WORKTREE    101
+#define RAIL_MENU_CLOSE       102
+#define RAIL_MENU_FOCUS       103
+#define RAIL_MENU_HISTORY_CLEAR 104
+// History event tags start at 200 (tag = 200 + event_index).
+
+// History event cache: snapshot taken when the notification popover opens.
+#define HISTORY_EVENT_CACHE 32
+static WorkspaceStatusEvent g_history_event_cache[HISTORY_EVENT_CACHE];
+static int g_history_event_count = 0;
 
 // Produce a stable numeric pane ID from a session pointer.
 static uint64_t pane_id_for_session(const Session *s)
@@ -273,6 +309,13 @@ static void collect_rail_inputs(uint64_t now_ms)
         ri->tabs[i].name = tt->name;
         ri->tabs[i].active = (ti == app.active) ? 1 : 0;
 
+        // Armed-close state: check if this tab's representative pane id is
+        // the armed target and the deadline hasn't expired.
+        uint64_t tab_attn_id = tab_attention_id(tt);
+        ri->tabs[i].closing = (g_armed_pane_id != 0
+                               && g_armed_pane_id == tab_attn_id
+                               && g_armed_deadline_ms > now_ms) ? 1 : 0;
+
         // Compute working state: aggregate over all leaf panes in this tab.
         int working = 0;
         if (tt->root) {
@@ -334,6 +377,7 @@ static void collect_rail_inputs(uint64_t now_ms)
             ri->panes[i].name = NULL;   // panes are never renamed
             ri->panes[i].active = (aleaves[pi] == atab->focused) ? 1 : 0;
             ri->panes[i].working = workspace_status_is_working_at(&g_workspace_status, pid, now_ms) ? 1 : 0;
+            ri->panes[i].closing = 0;  // pane rows are not armed for close
 
             // Collect dev-server ports from this pane session.
             ri->pane_port_counts[i] = 0;
@@ -569,6 +613,61 @@ static bool app_close_active(void)
     tab->root = new_root;
     tab->focused = new_focus ? new_focus : pane_first_leaf(new_root);
     return true;
+}
+
+// Close a tab by index. Destroys its pane tree and shifts remaining tabs.
+static void app_close_tab(int idx)
+{
+    if (idx < 0 || idx >= app.n_tabs) return;
+    Tab *tab = &app.tabs[idx];
+    if (tab->root) {
+        pane_destroy(tab->root);
+        tab->root = NULL;
+        tab->focused = NULL;
+    }
+    int n = app.n_tabs - idx - 1;
+    if (n > 0)
+        memmove(&app.tabs[idx], &app.tabs[idx + 1], (size_t)n * sizeof(Tab));
+    app.n_tabs--;
+    if (app.active >= app.n_tabs) app.active = app.n_tabs - 1;
+    if (app.active < 0) app.active = 0;
+}
+
+// Close a specific pane by its session's pane_id. If it's the last pane in its
+// tab, the entire tab is removed.  Returns true if anything was closed.
+static bool app_close_pane(uint64_t pane_id)
+{
+    for (int ti = 0; ti < app.n_tabs; ti++) {
+        Tab *tt = &app.tabs[ti];
+        if (!tt->root) continue;
+        PaneNode *leaves[WORKSPACE_RAIL_MAX_PANES];
+        int nl = 0;
+        pane_collect_leaves(tt->root, leaves, WORKSPACE_RAIL_MAX_PANES, &nl);
+        for (int pi = 0; pi < nl; pi++) {
+            if (leaves[pi]->kind != PANE_LEAF) continue;
+            if (pane_id_for_session(leaves[pi]->leaf.session) != pane_id)
+                continue;
+            // Found it.
+            if (nl <= 1) {
+                // Last pane — close the whole tab.
+                app_close_tab(ti);
+            } else {
+                PaneNode *new_focus = NULL;
+                PaneNode *new_root = pane_close(tt->root, leaves[pi], &new_focus);
+                tt->root = new_root;
+                tt->focused = new_focus ? new_focus : pane_first_leaf(new_root);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+// Disarm armed-close state (called on any click outside the rail or timeout).
+static void disarm_armed_close(void)
+{
+    g_armed_pane_id = 0;
+    g_armed_deadline_ms = 0;
 }
 
 // Split the focused pane of the active tab.
@@ -3473,7 +3572,7 @@ int main(int argc, char **argv)
         bool palette_chord_consumed = false;
         if (IsKeyPressed(KEY_P) && (cmd_down || (ctrl_down && shift_down))
             && !ui_settings_open() && !ui_inline_active()
-            && !ui_workflow_prompt_active() && !ui_rename_prompt_active()) {
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             Session *cur = sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
                                                    &terminal, &render_state, &row_iter,
                                                    &row_cells, &placement_iter,
@@ -3493,7 +3592,7 @@ int main(int argc, char **argv)
         if (IsKeyPressed(KEY_COMMA)
             && (IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER)
                 || IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()) {
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             ui_settings_toggle();
             settings_shortcut_consumed = true;
             drain_char_queue();
@@ -3505,7 +3604,7 @@ int main(int argc, char **argv)
                 || ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))
                     && (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT))));
         if (sidebar_chord && !ui_settings_open() && !ui_palette_is_open()
-            && !ui_workflow_prompt_active() && !ui_rename_prompt_active()) {
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             ui_sidebar_toggle();
             ui_sidebar_focus(ui_sidebar_visible());
             sidebar_chord_consumed = true;
@@ -3516,7 +3615,7 @@ int main(int argc, char **argv)
         bool inline_chord = IsKeyPressed(KEY_SPACE)
             && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL));
         if (inline_chord && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()) {
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             open_inline_at_cursor(render_state, cell_width, cell_height,
                                   lo.terminal.x, lo.terminal.y, pad);
             drain_char_queue();
@@ -3524,7 +3623,7 @@ int main(int argc, char **argv)
 
         int mouse_cursor = MOUSE_CURSOR_DEFAULT;
         if (!ui_settings_open() && !ui_inline_active() && !ui_palette_is_open()
-            && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)
             && GetMouseX() >= lo.terminal.x && GetMouseX() < lo.terminal.x + term_area_w
             && GetMouseY() >= lo.terminal.y && GetMouseY() < lo.terminal.y + lo.terminal.h) {
             int ucc = (GetMouseX() - lo.terminal.x - pad) / cell_width;
@@ -3547,7 +3646,7 @@ int main(int argc, char **argv)
         // keys aren't also forwarded to the child shell.
         bool block_nav_consumed = false;
         if ((cmd_down || ctrl_down) && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)
             && !g_search_active && !ui_sidebar_focused()) {
             if (IsKeyPressed(KEY_UP))   block_nav_consumed = cmdblocks_navigate(g_cmdblocks, te, -1);
             if (IsKeyPressed(KEY_DOWN)) block_nav_consumed = cmdblocks_navigate(g_cmdblocks, te, +1);
@@ -3561,7 +3660,7 @@ int main(int argc, char **argv)
         bool ask_last_command_consumed = false;
         if (tab_chord && shift_down && IsKeyPressed(KEY_SLASH)
             && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)
             && !g_search_active) {
             ask_ai_about_latest_block(te, term_rows);
             ask_last_command_consumed = true;
@@ -3580,7 +3679,7 @@ int main(int argc, char **argv)
         // prompt (all raygui GuiTextBox, which now handles paste itself) would
         // be bypassed and the paste would land in the terminal behind them.
         bool text_field_capturing = ui_settings_open() || ui_inline_active()
-            || ui_palette_is_open() || ui_workflow_prompt_active() || ui_rename_prompt_active()
+            || ui_palette_is_open() || ui_workflow_prompt_active() || ui_rename_prompt_active() || ui_menu_active(&g_rail_menu)
             || ui_sidebar_focused() || g_search_active;
         if ((((ctrl_down && shift_down) || cmd_down) && IsKeyPressed(KEY_V))
             || (shift_down && IsKeyPressed(KEY_INSERT))) {
@@ -3594,7 +3693,7 @@ int main(int argc, char **argv)
         // Find overlay: Ctrl+F / Cmd+F toggles; while open it captures typing.
         bool search_consumed = false;
         if ((ctrl_down || cmd_down) && IsKeyPressed(KEY_F)
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()) {
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             g_search_active = !g_search_active;
             if (!g_search_active) g_search_query[0] = '\0';
             search_consumed = true;
@@ -3611,7 +3710,7 @@ int main(int argc, char **argv)
         // end-of-frame apply_config() reload the font + reflow the grid + pty.
         bool zoom_consumed = false;
         if ((ctrl_down || cmd_down) && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)
             && !g_search_active && !ui_sidebar_focused()) {
             int new_size = cfg.font_size;
             if (IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD))
@@ -3632,7 +3731,7 @@ int main(int argc, char **argv)
         // Intercepted before handle_input so these key events never reach the
         // shell — and gated on tab_chord so bare Ctrl+<key> still does.
         if (tab_chord && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)
             && !g_search_active && !ui_sidebar_focused()) {
 
             // --- New tab: Cmd/Ctrl+T ---
@@ -3766,7 +3865,7 @@ int main(int argc, char **argv)
         if (focus_chord && app.n_tabs > 0
             && pane_count_leaves(app.tabs[app.active].root) > 1
             && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)
             && !g_search_active && !ui_sidebar_focused()) {
             int dx = 0, dy = 0;
             if (IsKeyPressed(KEY_LEFT))       dx = -1;
@@ -4007,7 +4106,7 @@ int main(int argc, char **argv)
         // (e.g. vim, tmux) as spurious mouse events.
         bool scrollbar_consumed = false;
         if (!ui_settings_open() && !ui_palette_is_open()
-            && !ui_workflow_prompt_active() && !ui_rename_prompt_active()) {
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             scrollbar_consumed = handle_scrollbar(terminal, render_state,
                                                    &scrollbar_dragging,
                                                    lo.terminal.x, lo.terminal.y,
@@ -4021,12 +4120,12 @@ int main(int argc, char **argv)
         ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &mouse_tracking);
         bool can_select = (!mouse_tracking || shift_down)
                           && !ui_settings_open() && !ui_inline_active()
-                          && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active();
+                          && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu);
         bool selection_consumed = false;
         // Ctrl/Cmd+click on a URL opens it (handled before starting a selection).
         if ((ctrl_down || cmd_down) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
             && mouse_in_terminal && !ui_palette_is_open()
-            && !ui_workflow_prompt_active() && !ui_rename_prompt_active()) {
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             int ucc = (GetMouseX() - lo.terminal.x - pad) / cell_width;
             int ucr = (GetMouseY() - lo.terminal.y - pad) / cell_height;
             char url[2048];
@@ -4059,7 +4158,7 @@ int main(int argc, char **argv)
         // Forward keyboard/mouse input only while the child is alive and no UI
         // element is capturing keys. Sidebar visibility alone does not block.
         if (!ui_inline_active() && !ui_palette_is_open()
-            && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)
             && !inline_chord && !palette_chord_consumed && !clipboard_consumed
             && !g_search_active && !search_consumed && !block_nav_consumed
             && !zoom_consumed
@@ -4177,13 +4276,122 @@ int main(int argc, char **argv)
             scrollbar_ptr = &scrollbar;
 
         // ----------------------------------------------------------------
+        // Drag-to-reorder tracking (runs every frame the rail is visible).
+        // Monitors left-press on tab rows, vertical movement to enter drag
+        // mode, and release to complete the reorder.  The actual drag-state
+        // globals are propagated into the rail view for drawing below.
+        // ----------------------------------------------------------------
+        if (lo.rail_visible) {
+            int rail_mx = GetMouseX();
+            int rail_my = GetMouseY();
+            bool in_rail = (rail_mx >= lo.rail.x && rail_mx < lo.rail.x + lo.rail.w
+                            && rail_my >= lo.rail.y && rail_my < lo.rail.y + lo.rail.h);
+
+            // Left-press inside the rail: check for tab-row press to start
+            // candidate tracking.  We build the model once here to resolve
+            // geometry; if the hit is not a tab switch we clear the candidate.
+            if (in_rail && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && g_drag_from < 0) {
+                collect_rail_inputs(now_ms);
+                workspace_rail_build(&g_rail_view,
+                                     g_rail_inputs.tabs, g_rail_inputs.tab_count,
+                                     g_rail_inputs.panes, g_rail_inputs.pane_count,
+                                     &g_workspace_status,
+                                     lo.rail_compact ? 1 : 0);
+                workspace_rail_layout(&g_rail_view, lo.rail.x, lo.rail.y,
+                                      lo.rail.w, lo.rail.h);
+                WorkspaceRailAction act = workspace_rail_hit(&g_rail_view,
+                                                             rail_mx, rail_my);
+                if (act.type == WORKSPACE_RAIL_ACTION_SWITCH_TAB
+                    && act.index >= 0 && act.index < app.n_tabs) {
+                    g_drag_candidate = act.index;
+                    g_drag_press_y = rail_my;
+                } else {
+                    g_drag_candidate = -1;
+                }
+            }
+
+            // While the left button is held and we have a candidate, check
+            // for vertical movement past the 6 px threshold to enter drag.
+            if (g_drag_candidate >= 0 && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+                if (g_drag_from < 0 && abs(rail_my - g_drag_press_y) >= 6) {
+                    g_drag_from = g_drag_candidate;
+                }
+                if (g_drag_from >= 0) {
+                    // Rebuild layout each frame to keep drop index accurate.
+                    collect_rail_inputs(now_ms);
+                    workspace_rail_build(&g_rail_view,
+                                         g_rail_inputs.tabs, g_rail_inputs.tab_count,
+                                         g_rail_inputs.panes, g_rail_inputs.pane_count,
+                                         &g_workspace_status,
+                                         lo.rail_compact ? 1 : 0);
+                    workspace_rail_layout(&g_rail_view, lo.rail.x, lo.rail.y,
+                                          lo.rail.w, lo.rail.h);
+                    g_drag_slot = workspace_rail_drop_index(&g_rail_view, rail_my);
+                }
+            }
+
+            // Release while dragging: reorder tabs.
+            if (g_drag_from >= 0 && IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+                if (g_drag_slot >= 0 && g_drag_slot != g_drag_from
+                    && g_drag_slot != g_drag_from + 1) {
+                    Tab dragged = app.tabs[g_drag_from];
+                    int dest = g_drag_slot;
+                    // Adjust destination if it shifted due to removal.
+                    if (dest > g_drag_from) dest--;
+                    int src = g_drag_from;
+                    if (dest < src) {
+                        memmove(&app.tabs[dest + 1], &app.tabs[dest],
+                                (size_t)(src - dest) * sizeof(Tab));
+                    } else if (dest > src) {
+                        memmove(&app.tabs[src], &app.tabs[src + 1],
+                                (size_t)(dest - src) * sizeof(Tab));
+                    }
+                    app.tabs[dest] = dragged;
+                    // Update app.active to follow the moved tab.
+                    if (app.active == g_drag_from)
+                        app.active = dest;
+                    else if (app.active > g_drag_from && app.active <= dest)
+                        app.active--;
+                    else if (app.active < g_drag_from && app.active >= dest)
+                        app.active++;
+                    // Sync runtime for the new active tab.
+                    sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                            &terminal, &render_state, &row_iter,
+                                            &row_cells, &placement_iter,
+                                            &key_encoder, &key_event,
+                                            &mouse_encoder, &mouse_event);
+                    prev_term_area_w = -1;
+                    drain_char_queue();
+                }
+                g_drag_from = -1;
+                g_drag_slot = -1;
+                g_drag_candidate = -1;
+            }
+
+            // Cancel drag on any other mouse button press.
+            if (g_drag_from >= 0
+                && (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)
+                    || IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE))) {
+                g_drag_from = -1;
+                g_drag_slot = -1;
+                g_drag_candidate = -1;
+            }
+
+            // Clear candidate if mouse button released before drag activated.
+            if (g_drag_candidate >= 0 && !IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+                g_drag_candidate = -1;
+            }
+        }
+
+        // ----------------------------------------------------------------
         // Workspace rail clicks (before BeginDrawing so state changes like
         // tab switches apply before this frame's draw). Uses the same
         // build/layout/hit model as drawing, so click targets can't drift
         // from what's on screen. Clicks inside the rail never reach the
         // terminal: pane rects start to the right of the rail.
         // ----------------------------------------------------------------
-        if (lo.rail_visible && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
+        if (lo.rail_visible && g_drag_from < 0
+            && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
             && GetMouseX() >= lo.rail.x && GetMouseX() < lo.rail.x + lo.rail.w
             && GetMouseY() >= lo.rail.y && GetMouseY() < lo.rail.y + lo.rail.h) {
             collect_rail_inputs(now_ms);
@@ -4299,9 +4507,344 @@ int main(int argc, char **argv)
             case WORKSPACE_RAIL_ACTION_JUMP_ATTENTION:
                 g_jump_request = act.pane_id;
                 break;
+            case WORKSPACE_RAIL_ACTION_HISTORY: {
+                // Snapshot events for the popover before opening.
+                g_history_event_count = workspace_status_events(
+                    &g_workspace_status, g_history_event_cache,
+                    HISTORY_EVENT_CACHE);
+                g_history_last_seen = g_workspace_status.event_count;
+
+                UiMenuItem hitems[HISTORY_EVENT_CACHE + 2];
+                int hc = 0;
+                for (int hi = 0; hi < g_history_event_count && hc < UI_MENU_MAX_ITEMS; hi++) {
+                    WorkspaceStatusEvent *ev = &g_history_event_cache[hi];
+                    snprintf(hitems[hc].label, sizeof(hitems[hc].label),
+                             "%s", ev->text);
+                    // Label with workspace prefix for context.
+                    for (int j = 0; j < app.n_tabs; j++) {
+                        uint64_t tid = tab_attention_id(&app.tabs[j]);
+                        if (tid == ev->pane_id) {
+                            char prefixed[UI_MENU_LABEL_MAX];
+                            const char *lbl = app.tabs[j].name[0]
+                                ? app.tabs[j].name : "";
+                            if (!lbl[0]) lbl = g_rail_inputs.tab_labels[j];
+                            snprintf(prefixed, sizeof(prefixed), "%s: %s",
+                                     lbl, ev->text);
+                            strncpy(hitems[hc].label, prefixed,
+                                    sizeof(hitems[hc].label) - 1);
+                            break;
+                        }
+                    }
+                    hitems[hc].tag = 200 + hi;   // event index
+                    hitems[hc].tint = (ev->level == WORKSPACE_ATTENTION_ERROR)
+                        ? UI_COLOR_INLINE_ERROR
+                        : (ev->level == WORKSPACE_ATTENTION_WARN)
+                            ? UI_COLOR_TEXT
+                            : UI_COLOR_SUBTITLE;
+                    hitems[hc].separator = false;
+                    hc++;
+                }
+                if (hc > 0) {
+                    hitems[hc].separator = true;
+                    hitems[hc].tag = -1;
+                    hc++;
+                }
+                strncpy(hitems[hc].label, "Clear history",
+                        sizeof(hitems[hc].label) - 1);
+                hitems[hc].tag = RAIL_MENU_HISTORY_CLEAR;
+                hitems[hc].tint = UI_COLOR_INLINE_ERROR;
+                hitems[hc].separator = false;
+                hc++;
+
+                int bell_x = GetMouseX();
+                int bell_y = GetMouseY();
+                ui_menu_open(&g_rail_menu, hitems, hc, bell_x, bell_y);
+                ui_menu_layout(&g_rail_menu, GetScreenWidth(), GetScreenHeight());
+                break;
+            }
             case WORKSPACE_RAIL_ACTION_NONE:
             default:
                 break;
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Right-click context menu on the workspace rail.
+        // Opens a popover with actions for the clicked row.
+        // ----------------------------------------------------------------
+        if (lo.rail_visible && g_drag_from < 0
+            && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)
+            && GetMouseX() >= lo.rail.x && GetMouseX() < lo.rail.x + lo.rail.w
+            && GetMouseY() >= lo.rail.y && GetMouseY() < lo.rail.y + lo.rail.h) {
+            collect_rail_inputs(now_ms);
+            workspace_rail_build(&g_rail_view,
+                                 g_rail_inputs.tabs, g_rail_inputs.tab_count,
+                                 g_rail_inputs.panes, g_rail_inputs.pane_count,
+                                 &g_workspace_status,
+                                 lo.rail_compact ? 1 : 0);
+            workspace_rail_layout(&g_rail_view, lo.rail.x, lo.rail.y,
+                                  lo.rail.w, lo.rail.h);
+
+            // Find which row was clicked.
+            int hit_tab = -1;
+            int hit_pane = -1;
+            int mx = GetMouseX(), my = GetMouseY();
+            for (int i = 0; i < g_rail_view.tab_count; i++) {
+                if (my >= g_rail_view.tabs[i].y
+                    && my < g_rail_view.tabs[i].y + g_rail_view.tabs[i].h)
+                    { hit_tab = i; break; }
+            }
+            if (hit_tab < 0) {
+                for (int i = 0; i < g_rail_view.pane_count; i++) {
+                    if (my >= g_rail_view.panes[i].y
+                        && my < g_rail_view.panes[i].y + g_rail_view.panes[i].h)
+                        { hit_pane = i; break; }
+                }
+            }
+
+            UiMenuItem mitems[8];
+            int mc = 0;
+            if (hit_tab >= 0) {
+                g_rail_context_tab = hit_tab;
+                g_rail_context_is_pane = false;
+                strncpy(mitems[mc].label, "Rename...",
+                        sizeof(mitems[mc].label) - 1);
+                mitems[mc].tag = RAIL_MENU_RENAME;
+                mitems[mc].tint = UI_COLOR_TEXT;
+                mitems[mc].separator = false;
+                mc++;
+                strncpy(mitems[mc].label, "New Worktree Here",
+                        sizeof(mitems[mc].label) - 1);
+                mitems[mc].tag = RAIL_MENU_WORKTREE;
+                mitems[mc].tint = UI_COLOR_TEXT;
+                mitems[mc].separator = false;
+                mc++;
+                strncpy(mitems[mc].label, "Close Workspace",
+                        sizeof(mitems[mc].label) - 1);
+                mitems[mc].tag = RAIL_MENU_CLOSE;
+                mitems[mc].tint = UI_COLOR_INLINE_ERROR;
+                mitems[mc].separator = false;
+                mc++;
+            } else if (hit_pane >= 0) {
+                g_rail_context_pane = g_rail_view.panes[hit_pane].id;
+                g_rail_context_is_pane = true;
+                strncpy(mitems[mc].label, "Focus",
+                        sizeof(mitems[mc].label) - 1);
+                mitems[mc].tag = RAIL_MENU_FOCUS;
+                mitems[mc].tint = UI_COLOR_TEXT;
+                mitems[mc].separator = false;
+                mc++;
+                strncpy(mitems[mc].label, "Close Pane",
+                        sizeof(mitems[mc].label) - 1);
+                mitems[mc].tag = RAIL_MENU_CLOSE;
+                mitems[mc].tint = UI_COLOR_INLINE_ERROR;
+                mitems[mc].separator = false;
+                mc++;
+            }
+            if (mc > 0) {
+                ui_menu_open(&g_rail_menu, mitems, mc, mx, my);
+                ui_menu_layout(&g_rail_menu, GetScreenWidth(), GetScreenHeight());
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Middle-click armed close on the workspace rail.
+        // First middle-click on a tab row arms it for 2 s; a second
+        // middle-click within the window closes the tab.
+        // ----------------------------------------------------------------
+        if (lo.rail_visible && g_drag_from < 0
+            && IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE)
+            && GetMouseX() >= lo.rail.x && GetMouseX() < lo.rail.x + lo.rail.w
+            && GetMouseY() >= lo.rail.y && GetMouseY() < lo.rail.y + lo.rail.h) {
+            collect_rail_inputs(now_ms);
+            workspace_rail_build(&g_rail_view,
+                                 g_rail_inputs.tabs, g_rail_inputs.tab_count,
+                                 g_rail_inputs.panes, g_rail_inputs.pane_count,
+                                 &g_workspace_status,
+                                 lo.rail_compact ? 1 : 0);
+            workspace_rail_layout(&g_rail_view, lo.rail.x, lo.rail.y,
+                                  lo.rail.w, lo.rail.h);
+
+            // Find the clicked tab row.
+            int mmx = GetMouseX(), mmy = GetMouseY();
+            int clicked_tab = -1;
+            for (int i = 0; i < g_rail_view.tab_count; i++) {
+                if (mmy >= g_rail_view.tabs[i].y
+                    && mmy < g_rail_view.tabs[i].y + g_rail_view.tabs[i].h)
+                    { clicked_tab = i; break; }
+            }
+
+            if (clicked_tab >= 0 && clicked_tab < app.n_tabs) {
+                uint64_t tid = tab_attention_id(&app.tabs[clicked_tab]);
+                if (g_armed_pane_id == tid && g_armed_deadline_ms > now_ms) {
+                    // Already armed — close it.
+                    app_close_tab(clicked_tab);
+                    disarm_armed_close();
+                    sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                            &terminal, &render_state, &row_iter,
+                                            &row_cells, &placement_iter,
+                                            &key_encoder, &key_event,
+                                            &mouse_encoder, &mouse_event);
+                    prev_term_area_w = -1;
+                    drain_char_queue();
+                    toast_push(TOAST_INFO, "Workspace closed");
+                } else {
+                    // First middle-click: arm.
+                    g_armed_pane_id = tid;
+                    g_armed_deadline_ms = now_ms + 2000;
+                }
+            }
+        }
+
+        // Disarm armed-close on any click outside the rail.
+        if (g_armed_pane_id != 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
+            && !(GetMouseX() >= lo.rail.x && GetMouseX() < lo.rail.x + lo.rail.w
+                 && GetMouseY() >= lo.rail.y && GetMouseY() < lo.rail.y + lo.rail.h)) {
+            disarm_armed_close();
+        }
+
+        // ----------------------------------------------------------------
+        // Menu action execution: process a click on the context menu or
+        // history popover.  Handles all RAIL_MENU_* and history-event tags.
+        // ----------------------------------------------------------------
+        if (g_rail_menu.open) {
+            // Esc closes the menu (handled here since the menu has no
+            // dedicated draw handler for key events in isolation).
+            if (IsKeyPressed(KEY_ESCAPE)) {
+                ui_menu_close(&g_rail_menu);
+            }
+
+            // Left-click on an item.
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                int hit = ui_menu_hit(&g_rail_menu, GetMouseX(), GetMouseY());
+                if (hit < 0) {
+                    // Click outside the menu closes it.
+                    ui_menu_close(&g_rail_menu);
+                } else {
+                    int tag = g_rail_menu.items[hit].tag;
+                    ui_menu_close(&g_rail_menu);
+
+                    switch (tag) {
+                    case RAIL_MENU_RENAME:
+                        if (g_rail_context_tab >= 0
+                            && g_rail_context_tab < app.n_tabs) {
+                            ui_rename_prompt_open(
+                                g_rail_context_tab,
+                                app.tabs[g_rail_context_tab].name);
+                        }
+                        break;
+                    case RAIL_MENU_WORKTREE:
+                        if (g_rail_context_tab >= 0
+                            && g_rail_context_tab < app.n_tabs
+                            && app.n_tabs < FANGS_MAX_TABS) {
+                            Tab *ct = &app.tabs[g_rail_context_tab];
+                            Session *rep = ct->focused
+                                ? ct->focused->leaf.session
+                                : tab_first_leaf_session(ct);
+                            const char *cwd = rep ? session_cwd(rep) : NULL;
+                            if (cwd && cwd[0]) {
+                                WorkspaceWorktreeResult wtr;
+                                memset(&wtr, 0, sizeof(wtr));
+                                if (workspace_worktree_create(cwd, &wtr)) {
+                                    Session *ns = app_add_tab_named(
+                                        term_cols, term_rows,
+                                        cell_width, cell_height,
+                                        cfg.scrollback, wtr.path,
+                                        wtr.branch,
+                                        cfg.kitty_images,
+                                        cfg.kitty_image_storage_mb,
+                                        &te, &pty_fd, &child, &child_exited);
+                                    if (!ns) {
+                                        workspace_worktree_remove_created(&wtr);
+                                        toast_push(TOAST_WARN,
+                                            "Failed to open workspace for worktree");
+                                    } else {
+                                        toast_push(TOAST_INFO,
+                                            "Created worktree");
+                                    }
+                                } else {
+                                    toast_push(TOAST_WARN, wtr.error);
+                                }
+                                sync_runtime_for_action(
+                                    &te, &pty_fd, &child, &child_exited,
+                                    &terminal, &render_state, &row_iter,
+                                    &row_cells, &placement_iter,
+                                    &key_encoder, &key_event,
+                                    &mouse_encoder, &mouse_event);
+                                prev_term_area_w = -1;
+                                drain_char_queue();
+                            }
+                        }
+                        break;
+                    case RAIL_MENU_CLOSE:
+                        if (!g_rail_context_is_pane) {
+                            if (g_rail_context_tab >= 0
+                                && g_rail_context_tab < app.n_tabs) {
+                                app_close_tab(g_rail_context_tab);
+                                sync_runtime_for_action(
+                                    &te, &pty_fd, &child, &child_exited,
+                                    &terminal, &render_state, &row_iter,
+                                    &row_cells, &placement_iter,
+                                    &key_encoder, &key_event,
+                                    &mouse_encoder, &mouse_event);
+                                prev_term_area_w = -1;
+                                drain_char_queue();
+                            }
+                        } else {
+                            if (g_rail_context_pane != 0) {
+                                app_close_pane(g_rail_context_pane);
+                                sync_runtime_for_action(
+                                    &te, &pty_fd, &child, &child_exited,
+                                    &terminal, &render_state, &row_iter,
+                                    &row_cells, &placement_iter,
+                                    &key_encoder, &key_event,
+                                    &mouse_encoder, &mouse_event);
+                                prev_term_area_w = -1;
+                                drain_char_queue();
+                            }
+                        }
+                        break;
+                    case RAIL_MENU_FOCUS: {
+                        Tab *atab = &app.tabs[app.active];
+                        if (atab->root && g_rail_context_pane != 0) {
+                            PaneNode *aleaves[WORKSPACE_RAIL_MAX_PANES];
+                            int anl = 0;
+                            pane_collect_leaves(atab->root, aleaves,
+                                                WORKSPACE_RAIL_MAX_PANES, &anl);
+                            for (int pj = 0; pj < anl; pj++) {
+                                if (aleaves[pj]->kind != PANE_LEAF) continue;
+                                if (pane_id_for_session(aleaves[pj]->leaf.session)
+                                    != g_rail_context_pane) continue;
+                                atab->focused = aleaves[pj];
+                                sync_runtime_for_action(
+                                    &te, &pty_fd, &child, &child_exited,
+                                    &terminal, &render_state, &row_iter,
+                                    &row_cells, &placement_iter,
+                                    &key_encoder, &key_event,
+                                    &mouse_encoder, &mouse_event);
+                                drain_char_queue();
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                    case RAIL_MENU_HISTORY_CLEAR:
+                        workspace_status_events_clear(&g_workspace_status);
+                        g_history_last_seen = 0;
+                        break;
+                    default:
+                        // History event jump (tag = 200 + event_index).
+                        if (tag >= 200 && tag < 200 + g_history_event_count) {
+                            int ei = tag - 200;
+                            if (ei >= 0 && ei < g_history_event_count) {
+                                uint64_t target = g_history_event_cache[ei].pane_id;
+                                if (target != 0)
+                                    g_jump_request = target;
+                            }
+                        }
+                        break;
+                    }
+                }
             }
         }
 
@@ -4359,6 +4902,8 @@ int main(int argc, char **argv)
                                  lo.rail_compact ? 1 : 0);
             workspace_rail_layout(&g_rail_view, lo.rail.x, lo.rail.y,
                                   lo.rail.w, lo.rail.h);
+            g_rail_view.drag_from = g_drag_from;
+            g_rail_view.drag_slot = g_drag_slot;
             ui_workspace_rail_draw(mono_font, &g_rail_view,
                                    GetMouseX(), GetMouseY());
         }
@@ -4437,7 +4982,7 @@ int main(int argc, char **argv)
                     && GetMouseX() >= px && GetMouseX() < px + pw
                     && GetMouseY() >= py && GetMouseY() < py + ph
                     && !ui_settings_open() && !ui_inline_active()
-                    && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
+                    && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)
                     && !ui_sidebar_focused();
                 if (cmdblocks_draw(g_cmdblocks, te, mono_font, &theme,
                                    cell_width, cell_height, font_size,
@@ -4627,6 +5172,12 @@ int main(int argc, char **argv)
                            (Vector2){ (float)toast_x + 6, (float)toast_y + 4 },
                            font_size, 0, tc);
             }
+        }
+
+        // Draw context menu / history popover on top of everything.
+        if (g_rail_menu.open) {
+            ui_menu_draw(mono_font, &g_rail_menu, GetMouseX(), GetMouseY(),
+                         &g_ui_theme);
         }
 
         EndDrawing();

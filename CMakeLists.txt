@@ -110,6 +110,7 @@ add_executable(fangs
   src/ui_workspace_rail.c
   src/remote_api.c
   src/remote_proto.c
+  src/ui_menu.c
   src/workspace_ports.c
   "${FONT_HEADER}"
   "${FONT_BOLD_HEADER}")

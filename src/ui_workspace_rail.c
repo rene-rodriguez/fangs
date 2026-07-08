@@ -1,11 +1,12 @@
 // ui_workspace_rail — Raylib rendering for the left workspace rail.
 //
-// cmux-style chrome: a WORKSPACES header with a "+" button, two-line rows
-// (title over branch — or over the attention message when one is unread),
-// attention dots on the trailing edge, a SPLITS section that only appears
-// when the active tab is split, a clickable notification strip, and footer
-// shortcut hints. All rectangles come pre-computed from the model; click
-// handling lives in main.c via workspace_rail_hit().
+// cmux-style chrome: a WORKSPACES header with a "+" / bell button, two-line
+// rows (title over branch — or over the attention message when one is unread),
+// attention dots on the trailing edge, dev-server port chips, a SPLITS section
+// that only appears when the active tab is split, a clickable notification
+// strip, footer shortcut hints, and a drag insertion line.
+// All rectangles come pre-computed from the model; click handling lives in
+// main.c via workspace_rail_hit().
 #include "ui_workspace_rail.h"
 
 #include "ui_theme.h"
@@ -24,6 +25,11 @@
 #define FS_HEADER  10
 #define FS_PRIMARY 13
 #define FS_SUB     11
+
+// Port chip constants.
+#define PORT_CHIP_H 14
+#define PORT_CHIP_PAD 6
+#define PORT_CHIP_R 3
 
 static Color attention_color(WorkspaceAttention level)
 {
@@ -87,8 +93,44 @@ static void draw_text_clipped(Font font, const char *text, float x, float y,
     }
 }
 
+// Draw port chips for a row: right-aligned on the secondary line, only in
+// full (non-compact) mode.
+static void draw_port_chips(Font font, const WorkspaceRailRow *row,
+                            int max_w, int mouse_x, int mouse_y)
+{
+    if (row->port_count == 0 || row->port_w[0] <= 0)
+        return;
+
+    for (int i = 0; i < row->port_count && i < 3; i++) {
+        int px = row->port_x[i];
+        int py = row->port_y;
+        int pw = row->port_w[i];
+        int ph = row->port_h;
+
+        if (pw <= 0) break;
+
+        bool hov = in_rect(mouse_x, mouse_y, px, py, pw, ph);
+        Color chip_bg = hov ? with_alpha(UI2RAY(g_ui_theme.subtitle), 60)
+                            : with_alpha(UI2RAY(g_ui_theme.subtitle), 30);
+        DrawRectangleRounded((Rectangle){ (float)px, (float)py,
+                                          (float)pw, (float)ph },
+                             (float)PORT_CHIP_R, 4, chip_bg);
+
+        char chip_label[16];
+        snprintf(chip_label, sizeof(chip_label), ":%d", row->ports[i]);
+        Color chip_fg = hov ? UI2RAY(g_ui_theme.text)
+                            : UI2RAY(g_ui_theme.subtitle);
+        Vector2 sz = MeasureTextEx(font, chip_label, FS_SUB, 0);
+        DrawTextEx(font, chip_label,
+                   (Vector2){ (float)(px + (pw - (int)sz.x) / 2),
+                              (float)(py + (ph - (int)sz.y) / 2) },
+                   FS_SUB, 0, chip_fg);
+    }
+}
+
 static void draw_row(Font font, const WorkspaceRailView *view,
-                     const WorkspaceRailRow *row, bool hovered)
+                     const WorkspaceRailRow *row, bool hovered,
+                     int mouse_x, int mouse_y)
 {
     int x = view->x, w = view->w;
 
@@ -99,6 +141,13 @@ static void draw_row(Font font, const WorkspaceRailView *view,
     } else if (hovered) {
         DrawRectangle(x, row->y, w, row->h,
                       with_alpha(UI2RAY(g_ui_theme.selection), 28));
+    }
+
+    // Dimmed visual during drag.
+    if (view->drag_slot >= 0 && row->index >= 0
+        && row == &view->tabs[row->index]) {
+        // The dragged row is drawn dimmed by the drag insertion line below.
+        (void)0;
     }
 
     char num[8];
@@ -131,6 +180,25 @@ static void draw_row(Font font, const WorkspaceRailView *view,
     // Attention dot on the trailing edge reserves label space.
     Color dot = attention_color(row->attention);
     float text_right = (float)(x + w - PAD_X);
+
+    // Reserve space for port chips when present.
+    if (row->port_count > 0 && row->port_w[0] > 0) {
+        int last_chip_right = 0;
+        for (int i = 0; i < row->port_count && i < 3; i++) {
+            int pr = row->port_x[i] + row->port_w[i];
+            if (pr > last_chip_right) last_chip_right = pr;
+        }
+        if (last_chip_right > 0) {
+            // Clamp text space to end before the first chip.
+            int chip_area_x = text_right - (text_right - last_chip_right);
+            (void)chip_area_x;
+        }
+        // Move text_right to the left of the chips area.
+        float chip_area_left = (float)(row->port_x[0] - 6);
+        if (chip_area_left < text_right)
+            text_right = chip_area_left;
+    }
+
     if (dot.a) {
         DrawCircle(x + w - PAD_X - DOT_R, row->y + row->h / 2, DOT_R, dot);
         text_right -= DOT_R * 2 + 8;
@@ -151,8 +219,13 @@ static void draw_row(Font font, const WorkspaceRailView *view,
     draw_text_clipped(font, primary, (float)(x + ROW_TEXT_X),
                       (float)(row->y + 7), FS_PRIMARY, primary_col, max_w);
 
-    // Secondary line: the unread message when there is one, else the branch.
-    if (row->text[0] && row->attention != WORKSPACE_ATTENTION_NONE) {
+    // Secondary line: closing text (warn tint), attention text, or branch.
+    if (row->closing) {
+        // Warn tint for armed-close "click again to close".
+        Color warn = UI2RAY(g_ui_theme.inline_error);
+        draw_text_clipped(font, row->text, (float)(x + ROW_TEXT_X),
+                          (float)(row->y + 25), FS_SUB, warn, max_w);
+    } else if (row->text[0] && row->attention != WORKSPACE_ATTENTION_NONE) {
         draw_text_clipped(font, row->text, (float)(x + ROW_TEXT_X),
                           (float)(row->y + 25), FS_SUB,
                           attention_color(row->attention), max_w);
@@ -161,6 +234,9 @@ static void draw_row(Font font, const WorkspaceRailView *view,
                           (float)(row->y + 25), FS_SUB,
                           UI2RAY(g_ui_theme.subtitle), max_w);
     }
+
+    // Port chips on the secondary line (right-aligned).
+    draw_port_chips(font, row, (int)(x + w - ROW_TEXT_X), mouse_x, mouse_y);
 }
 
 void ui_workspace_rail_draw(Font font, const WorkspaceRailView *view,
@@ -172,13 +248,35 @@ void ui_workspace_rail_draw(Font font, const WorkspaceRailView *view,
     DrawRectangle(x, y, w, h, UI2RAY(g_ui_theme.panel_bg));
     DrawRectangle(x + w - 1, y, 1, h, UI2RAY(g_ui_theme.sidebar_separator));
 
-    // --- Header: WORKSPACES + [+] ---
+    // --- Header: WORKSPACES + [+] + bell ---
     if (!view->compact) {
         DrawTextEx(font, "WORKSPACES",
                    (Vector2){ (float)(x + PAD_X),
                               (float)(view->header_y + (view->header_h - FS_HEADER) / 2 - 1) },
                    FS_HEADER, 1.5f, UI2RAY(g_ui_theme.subtitle));
     }
+
+    // Bell button (notification history).
+    if (view->bell_w > 0 && view->bell_h > 0) {
+        bool bhov = in_rect(mouse_x, mouse_y, view->bell_x, view->bell_y,
+                            view->bell_w, view->bell_h);
+        Color bb = bhov ? with_alpha(UI2RAY(g_ui_theme.accent), 50)
+                        : with_alpha(UI2RAY(g_ui_theme.subtitle), 30);
+        DrawRectangleRounded((Rectangle){ (float)view->bell_x, (float)view->bell_y,
+                                          (float)view->bell_w, (float)view->bell_h },
+                             0.3f, 4, bb);
+        // Badge count.
+        char btext[8];
+        snprintf(btext, sizeof(btext), "%d", view->bell_unseen);
+        Color bfg = bhov ? UI2RAY(g_ui_theme.text) : UI2RAY(g_ui_theme.subtitle);
+        Vector2 bsz = MeasureTextEx(font, btext, FS_SUB, 0);
+        DrawTextEx(font, btext,
+                   (Vector2){ (float)(view->bell_x + (view->bell_w - (int)bsz.x) / 2),
+                              (float)(view->bell_y + (view->bell_h - (int)bsz.y) / 2) },
+                   FS_SUB, 0, bfg);
+    }
+
+    // "+" new-workspace button.
     {
         bool hov = in_rect(mouse_x, mouse_y, view->plus_x, view->plus_y,
                            view->plus_w, view->plus_h);
@@ -213,7 +311,29 @@ void ui_workspace_rail_draw(Font font, const WorkspaceRailView *view,
     for (int i = 0; i < view->tab_count; i++) {
         const WorkspaceRailRow *row = &view->tabs[i];
         bool hov = in_rect(mouse_x, mouse_y, x, row->y, w, row->h);
-        draw_row(font, view, row, hov);
+        draw_row(font, view, row, hov, mouse_x, mouse_y);
+    }
+
+    // --- Drag insertion line ---
+    if (view->drag_slot >= 0 && view->tab_count > 0) {
+        int slot_y;
+        if (view->drag_slot == 0) {
+            slot_y = view->tabs[0].y;
+        } else if (view->drag_slot >= view->tab_count) {
+            slot_y = view->tabs[view->tab_count - 1].y
+                   + view->tabs[view->tab_count - 1].h;
+        } else {
+            slot_y = view->tabs[view->drag_slot].y;
+        }
+        // Dim the dragged row.
+        int drag_idx = view->drag_from;
+        if (drag_idx >= 0 && drag_idx < view->tab_count) {
+            DrawRectangle(x, view->tabs[drag_idx].y, w,
+                          view->tabs[drag_idx].h,
+                          (Color){ 0, 0, 0, 120 });
+        }
+        // Accent line at the slot.
+        DrawRectangle(x, slot_y - 1, w, 2, UI2RAY(g_ui_theme.accent));
     }
 
     // --- Splits section (only when the active tab is split) ---
@@ -232,7 +352,7 @@ void ui_workspace_rail_draw(Font font, const WorkspaceRailView *view,
         for (int i = 0; i < view->pane_count; i++) {
             const WorkspaceRailRow *row = &view->panes[i];
             bool hov = in_rect(mouse_x, mouse_y, x, row->y, w, row->h);
-            draw_row(font, view, row, hov);
+            draw_row(font, view, row, hov, mouse_x, mouse_y);
         }
     }
 

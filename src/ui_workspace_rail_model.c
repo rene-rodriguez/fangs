@@ -31,6 +31,8 @@ void workspace_rail_build(WorkspaceRailView *view,
 {
     memset(view, 0, sizeof(*view));
     view->compact = compact;
+    view->drag_slot = -1;
+    view->drag_from = -1;
 
     // Build tab rows.
     if (tab_count > WORKSPACE_RAIL_MAX_TABS)
@@ -67,10 +69,19 @@ void workspace_rail_build(WorkspaceRailView *view,
             copy_display(row->branch, sizeof(row->branch), in->branch);
         }
 
+        // Armed-close flag.
+        row->closing = in->closing ? 1 : 0;
+
         // Attention level from workspace status.
         row->attention = workspace_status_level(status, in->id);
-        copy_display(row->text, sizeof(row->text),
-                     workspace_status_text(status, in->id));
+
+        // Closing text wins over attention text.
+        if (row->closing) {
+            snprintf(row->text, sizeof(row->text), "click again to close");
+        } else {
+            copy_display(row->text, sizeof(row->text),
+                         workspace_status_text(status, in->id));
+        }
 
         // Copy dev-server ports.
         row->port_count = in->port_count;
@@ -107,9 +118,18 @@ void workspace_rail_build(WorkspaceRailView *view,
             copy_display(row->branch, sizeof(row->branch), in->branch);
         }
 
+        // Armed-close flag.
+        row->closing = in->closing ? 1 : 0;
+
         row->attention = workspace_status_level(status, in->id);
-        copy_display(row->text, sizeof(row->text),
-                     workspace_status_text(status, in->id));
+
+        // Closing text wins over attention text.
+        if (row->closing) {
+            snprintf(row->text, sizeof(row->text), "click again to close");
+        } else {
+            copy_display(row->text, sizeof(row->text),
+                         workspace_status_text(status, in->id));
+        }
 
         // Copy dev-server ports.
         row->port_count = in->port_count;
@@ -170,7 +190,7 @@ void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h)
     int row_h = view->compact ? WORKSPACE_RAIL_ROW_H_COMPACT : WORKSPACE_RAIL_ROW_H;
     int cur = y;
 
-    // Header with the "+" new-workspace button.
+    // Header with the "+" new-workspace button and bell (history) button.
     view->header_y = cur;
     view->header_h = WORKSPACE_RAIL_HEADER_H;
     view->plus_w = 22;
@@ -178,6 +198,18 @@ void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h)
     view->plus_y = cur + (view->header_h - view->plus_h) / 2;
     view->plus_x = view->compact ? x + (w - view->plus_w) / 2
                                  : x + w - view->plus_w - 8;
+    // Bell button: left side of header, only in full mode with unseen events.
+    if (!view->compact && view->bell_unseen > 0) {
+        view->bell_w = 22;
+        view->bell_h = 22;
+        view->bell_y = cur + (view->header_h - view->bell_h) / 2;
+        view->bell_x = x + 8;
+    } else {
+        view->bell_x = 0;
+        view->bell_y = 0;
+        view->bell_w = 0;
+        view->bell_h = 0;
+    }
     cur += view->header_h;
 
     // Notification strip (full mode, only when there is something to say).
@@ -260,6 +292,15 @@ WorkspaceRailAction workspace_rail_hit(const WorkspaceRailView *view,
     if (!hit_rect(mx, my, view->x, view->y, view->w, view->h))
         return a;
 
+    // Bell button (notification history) — highest priority since it overlaps
+    // the header area.
+    if (view->bell_w > 0 && view->bell_h > 0
+        && hit_rect(mx, my, view->bell_x, view->bell_y,
+                    view->bell_w, view->bell_h)) {
+        a.type = WORKSPACE_RAIL_ACTION_HISTORY;
+        return a;
+    }
+
     if (hit_rect(mx, my, view->plus_x, view->plus_y, view->plus_w, view->plus_h)) {
         a.type = WORKSPACE_RAIL_ACTION_NEW_TAB;
         return a;
@@ -297,4 +338,23 @@ WorkspaceRailAction workspace_rail_hit(const WorkspaceRailView *view,
     }
 
     return a;
+}
+
+int workspace_rail_drop_index(const WorkspaceRailView *view, int my)
+{
+    if (view->tab_count == 0)
+        return 0;
+    int row_h = view->compact ? WORKSPACE_RAIL_ROW_H_COMPACT : WORKSPACE_RAIL_ROW_H;
+
+    if (my <= view->tabs[0].y + row_h / 2)
+        return 0;
+
+    for (int i = 0; i < view->tab_count - 1; i++) {
+        int mid = view->tabs[i].y + row_h / 2;
+        int next_mid = view->tabs[i + 1].y + row_h / 2;
+        if (my >= mid && my < next_mid)
+            return i + 1;
+    }
+
+    return view->tab_count;
 }

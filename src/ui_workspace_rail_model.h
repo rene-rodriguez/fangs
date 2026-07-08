@@ -31,6 +31,7 @@ typedef enum {
     WORKSPACE_RAIL_ACTION_NEW_TAB,        // "+" button
     WORKSPACE_RAIL_ACTION_JUMP_ATTENTION, // notification strip click
     WORKSPACE_RAIL_ACTION_OPEN_PORT,      // click a port chip
+    WORKSPACE_RAIL_ACTION_HISTORY,        // bell button click
 } WorkspaceRailActionType;
 
 // Click result — pure data shared by main.c and the raylib layer.
@@ -50,6 +51,7 @@ typedef struct {
     char     label[64];        // primary line: agent/window title, else cwd label
     char     branch[64];       // secondary line: git branch (empty if none)
     char     text[128];        // attention text — replaces the branch line when set
+    int      closing;          // 1 if row is in armed-close state (set by host)
     int      y, h;             // row rect (set by workspace_rail_layout)
     int      ports[3];         // port numbers, ascending (0 = unused)
     int      port_count;
@@ -68,6 +70,19 @@ typedef struct {
     WorkspaceAttention notification_level; // severity of that notification
     int  compact;              // non-zero for compact mode (numeric only)
     int  show_panes;           // pane section visible (active tab has >1 pane)
+
+    // Bell button (notification history). Host sets bell_seen to the count
+    // of events at last open; layout computes rect; hidden when bell_unseen
+    // is 0 (layout zeroes bell_w/bell_h).
+    int bell_unseen;                      // events newer than last popover open
+    int bell_x, bell_y, bell_w, bell_h;   // bell button rect (set by layout)
+
+    // Drag reorder: host sets drag_slot to the insertion index (0..tab_count)
+    // when a tab is being dragged; -1 means no active drag.  Draw layer
+    // renders an insertion line at that slot.  drag_from is the source tab
+    // index (drawn dimmed during drag).
+    int drag_slot;
+    int drag_from;
 
     // Geometry, set by workspace_rail_layout. Hidden parts have height 0.
     int x, y, w, h;                       // rail bounds
@@ -88,6 +103,7 @@ typedef struct {
     const char  *name;         // user-set workspace name, may be NULL or empty
     int          active;       // 1 if focused
     int          working;      // 1 if recent output detected
+    int          closing;      // 1 if row is in armed-close state (set by host)
     int          ports[3];     // dev-server port numbers, ascending (0 = unused)
     int          port_count;
 } WorkspaceRailInput;
@@ -105,5 +121,10 @@ void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h);
 // Pure click hit test; requires workspace_rail_layout to have run.
 WorkspaceRailAction workspace_rail_hit(const WorkspaceRailView *view,
                                        int mx, int my);
+
+// Return the drop slot index (0..tab_count) for a vertical position my,
+// relative to the tab rows. Requires workspace_rail_layout to have run.
+// 0 = before the first tab, tab_count = after the last.
+int workspace_rail_drop_index(const WorkspaceRailView *view, int my);
 
 #endif

@@ -426,6 +426,216 @@ static void test_working_flag_propagates_to_rows(void)
     EXPECT_INT(view.panes[0].working, 1);
 }
 
+// --- Armed close (closing flag) ---
+
+static void test_closing_flag_propagates_from_input(void)
+{
+    // When a row's closing flag is set, the secondary line should show
+    // "click again to close" in the model.
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "dev", .branch = "main", .active = 1, .closing = 1 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+
+    EXPECT_INT(view.tabs[0].closing, 1);
+    // Secondary text should be "click again to close" when closing.
+    EXPECT_STR(view.tabs[0].text, "click again to close");
+}
+
+static void test_closing_flag_clears_for_non_closing_rows(void)
+{
+    // A row without the closing flag should not have closing text.
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "dev", .branch = "main", .active = 1, .closing = 0 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+
+    EXPECT_INT(view.tabs[0].closing, 0);
+    // When no attention, text should be empty.
+    EXPECT_STR(view.tabs[0].text, "");
+}
+
+static void test_closing_flag_works_with_attention(void)
+{
+    // Closing text should override attention text when set.
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "dev", .branch = "main", .active = 0, .closing = 1 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    // Also set an attention event.
+    workspace_status_note_notify(&st, 1, false, "needs input");
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+
+    EXPECT_INT(view.tabs[0].closing, 1);
+    // Closing text wins over attention text.
+    EXPECT_STR(view.tabs[0].text, "click again to close");
+    EXPECT_INT(view.tabs[0].attention, WORKSPACE_ATTENTION_WARN);
+}
+
+static void test_closing_flag_propagates_to_pane_rows(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "parent", .branch = NULL, .active = 1, .closing = 0 },
+    };
+    WorkspaceRailInput panes[1] = {
+        { .id = 2, .label = "child", .branch = NULL, .active = 1, .closing = 1 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, panes, 1, &st, 0);
+
+    EXPECT_INT(view.panes[0].closing, 1);
+    EXPECT_STR(view.panes[0].text, "click again to close");
+}
+
+// --- Drag reorder ---
+
+static void test_drop_index_empty_rail(void)
+{
+    // Empty rail: drop index is always 0.
+    WorkspaceRailInput tabs[0] = {};
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 0, NULL, 0, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    EXPECT_INT(workspace_rail_drop_index(&view, 0), 0);
+    EXPECT_INT(workspace_rail_drop_index(&view, 100), 0);
+    EXPECT_INT(workspace_rail_drop_index(&view, 800), 0);
+}
+
+static void test_drop_index_above_first_row(void)
+{
+    WorkspaceRailInput tabs[2] = {
+        { .id = 1, .label = "a", .branch = NULL, .active = 1 },
+        { .id = 2, .label = "b", .branch = NULL, .active = 0 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 2, NULL, 0, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    // Above the first row.
+    int idx = workspace_rail_drop_index(&view, view.tabs[0].y - 5);
+    EXPECT_INT(idx, 0);
+}
+
+static void test_drop_index_between_rows(void)
+{
+    WorkspaceRailInput tabs[3] = {
+        { .id = 1, .label = "a", .branch = NULL, .active = 1 },
+        { .id = 2, .label = "b", .branch = NULL, .active = 0 },
+        { .id = 3, .label = "c", .branch = NULL, .active = 0 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 3, NULL, 0, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    // Between row 0 and row 1 (in the lower half of row 0).
+    int mid = view.tabs[0].y + view.tabs[0].h - 2;
+    int idx = workspace_rail_drop_index(&view, mid);
+    EXPECT_INT(idx, 1);
+
+    // Between row 1 and row 2.
+    mid = view.tabs[1].y + view.tabs[1].h - 2;
+    idx = workspace_rail_drop_index(&view, mid);
+    EXPECT_INT(idx, 2);
+}
+
+static void test_drop_index_below_last_row(void)
+{
+    WorkspaceRailInput tabs[2] = {
+        { .id = 1, .label = "a", .branch = NULL, .active = 1 },
+        { .id = 2, .label = "b", .branch = NULL, .active = 0 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 2, NULL, 0, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    // Below the last row.
+    int below = view.tabs[1].y + view.tabs[1].h + 5;
+    int idx = workspace_rail_drop_index(&view, below);
+    EXPECT_INT(idx, 2);
+}
+
+// --- Bell button ---
+
+static void test_bell_button_hidden_when_no_unseen(void)
+{
+    // When unseen count is 0, bell button should have zero dimensions.
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "a", .branch = NULL, .active = 1 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    EXPECT_INT(view.bell_w, 0);
+    EXPECT_INT(view.bell_h, 0);
+}
+
+static void test_bell_button_visible_when_unseen(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "a", .branch = NULL, .active = 1 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+    view.bell_unseen = 3;   // host sets this before layout
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    EXPECT_TRUE(view.bell_w > 0);
+    EXPECT_TRUE(view.bell_h > 0);
+}
+
+static void test_bell_button_hit(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "a", .branch = NULL, .active = 1 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+    view.bell_unseen = 3;
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    // Click on the bell button.
+    WorkspaceRailAction act = workspace_rail_hit(&view, view.bell_x + 2, view.bell_y + 2);
+    EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_HISTORY);
+}
+
 int main(void)
 {
     test_row_ordering();
@@ -445,5 +655,16 @@ int main(void)
     test_port_chip_layout_computed();
     test_port_chip_hit();
     test_row_hit_still_switches_tab_when_ports_present();
+    test_closing_flag_propagates_from_input();
+    test_closing_flag_clears_for_non_closing_rows();
+    test_closing_flag_works_with_attention();
+    test_closing_flag_propagates_to_pane_rows();
+    test_drop_index_empty_rail();
+    test_drop_index_above_first_row();
+    test_drop_index_between_rows();
+    test_drop_index_below_last_row();
+    test_bell_button_hidden_when_no_unseen();
+    test_bell_button_visible_when_unseen();
+    test_bell_button_hit();
     return failures ? 1 : 0;
 }

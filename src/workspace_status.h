@@ -14,6 +14,14 @@ typedef enum {
 
 #define WORKSPACE_STATUS_MAX_PANES 128
 #define WORKSPACE_STATUS_WORKING_MS 2000
+#define WORKSPACE_STATUS_EVENT_MAX 32
+
+typedef struct {
+    uint64_t pane_id;
+    WorkspaceAttention level;
+    char text[96];
+    uint64_t at_ms;
+} WorkspaceStatusEvent;
 
 typedef struct {
     /* Per-pane attention levels */
@@ -25,6 +33,13 @@ typedef struct {
     size_t pane_bytes[WORKSPACE_STATUS_MAX_PANES];
     /* Timestamped working marker, ms from monotonic clock */
     uint64_t last_output_ms[WORKSPACE_STATUS_MAX_PANES];
+
+    /* Event ring buffer — appended by note_notify, failing note_command,
+     * and note_child_exit (not raw output).  Read newest-first via
+     * workspace_status_events(). */
+    WorkspaceStatusEvent events[WORKSPACE_STATUS_EVENT_MAX];
+    int event_count;   // total events written (for newest-first ordering)
+    int event_head;    // next write index in the ring buffer
 } WorkspaceStatus;
 
 void workspace_status_init(WorkspaceStatus *st);
@@ -96,5 +111,16 @@ void workspace_status_prune(WorkspaceStatus *st, const uint64_t *keep_ids, int n
 
 /* Remove a single pane by ID. */
 void workspace_status_remove(WorkspaceStatus *st, uint64_t pane_id);
+
+/* Read attention events, newest-first, up to max events. Returns the number
+ * written to out (≤ max). */
+int workspace_status_events(const WorkspaceStatus *st, WorkspaceStatusEvent *out, int max);
+
+/* Clear all events from the ring buffer. */
+void workspace_status_events_clear(WorkspaceStatus *st);
+
+/* Return the count of events written since the given count (for unseen badge).
+ * Pass the last-seen event_count to get the number of new events. */
+int workspace_status_unseen(const WorkspaceStatus *st, int last_seen_count);
 
 #endif

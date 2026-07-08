@@ -34,6 +34,13 @@ typedef struct {
 // Convenience: convert UiColor (our struct) to raylib Color.
 #define UI2RAY(uc) ((Color){ (uc).r, (uc).g, (uc).b, (uc).a })
 
+// Semantic color constants for UiMenuItem tint (assigned from the current
+// UiTheme at popover-build time via the g_ui_theme global).
+#define UI_COLOR_TEXT          g_ui_theme.text
+#define UI_COLOR_SUBTITLE      g_ui_theme.subtitle
+#define UI_COLOR_INLINE_ERROR  g_ui_theme.inline_error
+#define UI_COLOR_ACCENT        g_ui_theme.accent
+
 // Derive chrome colors from a terminal Theme. Pure function.
 UiTheme ui_theme_derive(const Theme *t);
 
