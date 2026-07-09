@@ -39,6 +39,12 @@ void ui_palette_set_workflows(const WorkflowRegistry *workflows)
     ui_palette_model_set_workflows(&g_palette, workflows);
 }
 
+void ui_palette_set_workspaces(const WorkspacePaletteEntry *entries, int count)
+{
+    ensure_palette();
+    ui_palette_model_set_workspaces(&g_palette, entries, count);
+}
+
 bool ui_palette_is_open(void)
 {
     ensure_palette();
@@ -68,6 +74,8 @@ static const char *entry_section_label(int type)
 {
     if (type == UI_PALETTE_ENTRY_WORKFLOW)
         return "Runbooks";
+    if (type == UI_PALETTE_ENTRY_WORKSPACE)
+        return "Workspaces";
     return "Actions";
 }
 
@@ -162,6 +170,7 @@ bool ui_palette_draw(Font font, float scale, UiPaletteSelection *out_selection)
         UiPaletteEntry entry = ui_palette_model_match_entry_at(&g_palette, idx);
         const FangsAction *a = NULL;
         const Workflow *w = NULL;
+        WorkspacePaletteEntry ws = { .tab_index = -1, .label = "" };
         const char *label = "";
         const char *detail = "";
         const char *shortcut = "";
@@ -180,6 +189,13 @@ bool ui_palette_draw(Font font, float scale, UiPaletteSelection *out_selection)
             label = w->label;
             detail = w->detail;
             shortcut = "Runbook";
+        } else if (entry.type == UI_PALETTE_ENTRY_WORKSPACE) {
+            ws = ui_palette_model_match_workspace_at(&g_palette, idx);
+            if (ws.tab_index < 0)
+                continue;
+            label = ws.label;
+            detail = "";
+            shortcut = "Workspace";
         } else {
             continue;
         }

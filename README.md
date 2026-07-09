@@ -71,7 +71,8 @@ drops the rest:
   and CLI image tools; Sixel and animations are intentionally out of scope for now.
 - **Command palette** &nbsp;`Cmd+P` / `Ctrl+Shift+P` — search and run built-in Fangs actions
   without memorizing every shortcut: panes, tabs, AI entry points, find, clipboard, settings, and
-  font controls. It also picks up local runbooks from your global config and the current project.
+  font controls. It also picks up local runbooks from your global config and the current project,
+  and lists every open workspace by name/title/directory so you can fuzzy-jump straight to one.
 - **Live configuration** — an INI dotfile is the source of truth, with an in-app settings modal
   (`Ctrl+,`) that round-trips to it and hot-reloads instantly. No restarts.
 - **First-class theming** — One Dark, Dark Modern, GitHub Dark, Gruvbox, Monokai, and light

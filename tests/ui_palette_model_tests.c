@@ -140,6 +140,52 @@ static void test_workflows_are_filterable_palette_entries(void)
     EXPECT_FALSE(ui_palette_model_is_open(&m));
 }
 
+static void test_workspaces_are_filterable_palette_entries(void)
+{
+    UiPaletteModel m;
+    ui_palette_model_init(&m);
+
+    WorkspacePaletteEntry entries[2] = {
+        { .tab_index = 0, .label = "fangs" },
+        { .tab_index = 1, .label = "fix-auth" },
+    };
+    ui_palette_model_set_workspaces(&m, entries, 2);
+    ui_palette_model_open(&m);
+    ui_palette_model_set_query(&m, "fix-auth");
+
+    EXPECT_INT_EQ(ui_palette_model_match_count(&m), 1);
+
+    UiPaletteEntry entry = ui_palette_model_match_entry_at(&m, 0);
+    EXPECT_INT_EQ((int)entry.type, (int)UI_PALETTE_ENTRY_WORKSPACE);
+
+    WorkspacePaletteEntry ws = ui_palette_model_match_workspace_at(&m, 0);
+    EXPECT_INT_EQ(ws.tab_index, 1);
+
+    UiPaletteSelection selection = ui_palette_model_accept_selection(&m);
+    EXPECT_INT_EQ((int)selection.type, (int)UI_PALETTE_SELECTION_WORKSPACE);
+    EXPECT_INT_EQ(selection.tab_index, 1);
+    EXPECT_FALSE(ui_palette_model_is_open(&m));
+}
+
+static void test_set_workspaces_replaces_previous_list(void)
+{
+    UiPaletteModel m;
+    ui_palette_model_init(&m);
+
+    WorkspacePaletteEntry first[1] = { { .tab_index = 0, .label = "wsfirst-zzz" } };
+    ui_palette_model_set_workspaces(&m, first, 1);
+
+    WorkspacePaletteEntry second[1] = { { .tab_index = 2, .label = "wssecond-zzz" } };
+    ui_palette_model_set_workspaces(&m, second, 1);
+
+    ui_palette_model_open(&m);
+    ui_palette_model_set_query(&m, "wsfirst-zzz");
+    EXPECT_INT_EQ(ui_palette_model_match_count(&m), 0);
+
+    ui_palette_model_set_query(&m, "wssecond-zzz");
+    EXPECT_INT_EQ(ui_palette_model_match_count(&m), 1);
+}
+
 int main(void)
 {
     test_open_resets_query_and_shows_actions();
@@ -148,6 +194,8 @@ int main(void)
     test_accept_returns_selected_action_and_closes();
     test_empty_result_accepts_nothing();
     test_workflows_are_filterable_palette_entries();
+    test_workspaces_are_filterable_palette_entries();
+    test_set_workspaces_replaces_previous_list();
 
     if (failures != 0) {
         fprintf(stderr, "%d palette model test failure(s)\n", failures);

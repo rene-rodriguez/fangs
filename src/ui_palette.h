@@ -12,9 +12,11 @@ void ui_palette_open(void);
 void ui_palette_close(void);
 bool ui_palette_is_open(void);
 void ui_palette_set_workflows(const WorkflowRegistry *workflows);
+void ui_palette_set_workspaces(const WorkspacePaletteEntry *entries, int count);
 
 // Draws the palette and handles palette-local input. Returns true when the
-// user chose an action or workflow; *out_selection receives the selection.
+// user chose an action, workflow, or workspace; *out_selection receives the
+// selection.
 bool ui_palette_draw(Font font, float scale, UiPaletteSelection *out_selection);
 
 #endif // FANGS_UI_PALETTE_H

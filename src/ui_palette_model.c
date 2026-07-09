@@ -102,6 +102,36 @@ static bool workflow_matches_query(const Workflow *w, const char *query)
     return true;
 }
 
+static bool workspace_matches_query(const WorkspacePaletteEntry *w, const char *query)
+{
+    if (!query || query[0] == '\0')
+        return true;
+
+    char q[UI_PALETTE_QUERY_MAX];
+    snprintf(q, sizeof(q), "%s", query);
+
+    char *p = q;
+    while (*p) {
+        while (*p && isspace((unsigned char)*p))
+            p++;
+        if (!*p)
+            break;
+
+        char *start = p;
+        while (*p && !isspace((unsigned char)*p))
+            p++;
+        if (*p) {
+            *p = '\0';
+            p++;
+        }
+
+        if (!ascii_contains_ci(w->label, start))
+            return false;
+    }
+
+    return true;
+}
+
 static void recompute(UiPaletteModel *m)
 {
     if (!m)
@@ -116,6 +146,7 @@ static void recompute(UiPaletteModel *m)
                 .type = UI_PALETTE_ENTRY_ACTION,
                 .action_id = actions[i].id,
                 .workflow_index = -1,
+                .workspace_index = -1,
             };
         }
     }
@@ -129,8 +160,20 @@ static void recompute(UiPaletteModel *m)
                     .type = UI_PALETTE_ENTRY_WORKFLOW,
                     .action_id = FANGS_ACTION_NONE,
                     .workflow_index = i,
+                    .workspace_index = -1,
                 };
             }
+        }
+    }
+
+    for (int i = 0; i < m->workspace_count && m->match_count < UI_PALETTE_MATCHES_MAX; i++) {
+        if (workspace_matches_query(&m->workspaces[i], m->query)) {
+            m->matches[m->match_count++] = (UiPaletteEntry){
+                .type = UI_PALETTE_ENTRY_WORKSPACE,
+                .action_id = FANGS_ACTION_NONE,
+                .workflow_index = -1,
+                .workspace_index = i,
+            };
         }
     }
 
@@ -186,6 +229,23 @@ void ui_palette_model_set_workflows(UiPaletteModel *m,
     recompute(m);
 }
 
+void ui_palette_model_set_workspaces(UiPaletteModel *m,
+                                     const WorkspacePaletteEntry *entries,
+                                     int count)
+{
+    if (!m)
+        return;
+    if (count < 0)
+        count = 0;
+    if (count > UI_PALETTE_WORKSPACES_MAX)
+        count = UI_PALETTE_WORKSPACES_MAX;
+    if (count > 0 && entries)
+        memcpy(m->workspaces, entries, (size_t)count * sizeof(*entries));
+    m->workspace_count = count;
+    m->selected = 0;
+    recompute(m);
+}
+
 const char *ui_palette_model_query(const UiPaletteModel *m)
 {
     return m ? m->query : "";
@@ -236,6 +296,18 @@ const Workflow *ui_palette_model_match_workflow_at(const UiPaletteModel *m, int 
     return workflows_get(m->workflows, entry.workflow_index);
 }
 
+WorkspacePaletteEntry ui_palette_model_match_workspace_at(const UiPaletteModel *m, int index)
+{
+    WorkspacePaletteEntry empty = { .tab_index = -1, .label = "" };
+    if (!m || index < 0 || index >= m->match_count)
+        return empty;
+    UiPaletteEntry entry = m->matches[index];
+    if (entry.type != UI_PALETTE_ENTRY_WORKSPACE
+        || entry.workspace_index < 0 || entry.workspace_index >= m->workspace_count)
+        return empty;
+    return m->workspaces[entry.workspace_index];
+}
+
 int ui_palette_model_selected(const UiPaletteModel *m)
 {
     return m ? m->selected : 0;
@@ -267,6 +339,7 @@ UiPaletteSelection ui_palette_model_accept_selection(UiPaletteModel *m)
         .type = UI_PALETTE_SELECTION_NONE,
         .action_id = FANGS_ACTION_NONE,
         .workflow_index = -1,
+        .tab_index = -1,
     };
     if (!m || m->match_count == 0)
         return empty;
@@ -281,6 +354,7 @@ UiPaletteSelection ui_palette_model_accept_selection(UiPaletteModel *m)
             .type = UI_PALETTE_SELECTION_ACTION,
             .action_id = a->id,
             .workflow_index = -1,
+            .tab_index = -1,
         };
     }
 
@@ -292,6 +366,20 @@ UiPaletteSelection ui_palette_model_accept_selection(UiPaletteModel *m)
             .type = UI_PALETTE_SELECTION_WORKFLOW,
             .action_id = FANGS_ACTION_NONE,
             .workflow_index = entry.workflow_index,
+            .tab_index = -1,
+        };
+    }
+
+    if (entry.type == UI_PALETTE_ENTRY_WORKSPACE) {
+        if (entry.workspace_index < 0 || entry.workspace_index >= m->workspace_count)
+            return empty;
+        int tab_index = m->workspaces[entry.workspace_index].tab_index;
+        ui_palette_model_close(m);
+        return (UiPaletteSelection){
+            .type = UI_PALETTE_SELECTION_WORKSPACE,
+            .action_id = FANGS_ACTION_NONE,
+            .workflow_index = -1,
+            .tab_index = tab_index,
         };
     }
 
