@@ -4,6 +4,7 @@
 #include "desktop_notify.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int failures = 0;
@@ -61,6 +62,10 @@ static void test_agent_ring_never_crashes(void)
 
 int main(void)
 {
+    // desktop_notify_agent_ring() forks a real osascript unless this is set —
+    // see the matching guard in src/desktop_notify.c.
+    setenv("FANGS_TEST_NO_NOTIFY", "1", 1);
+
     test_applescript_escape();
     test_empty_message_is_allowed();
     test_escape_nul_input();

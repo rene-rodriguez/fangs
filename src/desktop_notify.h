@@ -18,4 +18,10 @@ bool desktop_notify_escape_applescript(const char *input, char *out, int out_siz
 // false on other platforms or if osascript is unavailable.
 bool desktop_notify_agent_ring(const char *workspace, const char *message);
 
+// One-time startup hook: on macOS, requests Notification Center authorization
+// and registers the delegate that activates Fangs when an agent-ring banner
+// is clicked. No-op (and safe to call unconditionally) on other platforms,
+// and when the process has no bundle identity (e.g. a raw binary launch).
+void desktop_notify_startup(void);
+
 #endif

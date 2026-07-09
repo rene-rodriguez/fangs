@@ -11,6 +11,16 @@
 
 #ifdef __APPLE__
 #include <stdlib.h>
+
+// Implemented in desktop_notify_mac.m. UNUserNotificationCenter posts under
+// Fangs' own bundle identity, so a click activates Fangs instead of Script
+// Editor (osascript's `display notification` is permanently misattributed to
+// Script Editor for click-through — no AppleScript string fixes that).
+// Both return/no-op harmlessly when the process has no bundle identity
+// (e.g. running the raw build/fangs binary instead of a packaged .app), so
+// desktop_notify_agent_ring() below falls back to osascript in that case.
+bool desktop_notify_native_ring(const char *workspace, const char *message);
+void desktop_notify_native_startup(void);
 #endif
 
 bool desktop_notify_escape_applescript(const char *input, char *out, int out_size)
@@ -46,6 +56,15 @@ bool desktop_notify_agent_ring(const char *workspace, const char *message)
     (void)message;
     return false;
 #else
+    // Tests link this file directly and call this function with real
+    // messages; without this guard every ctest run pops real Notification
+    // Center banners since nothing here is mocked.
+    if (getenv("FANGS_TEST_NO_NOTIFY"))
+        return true;
+
+    if (desktop_notify_native_ring(workspace, message))
+        return true;
+
     if (!message || !message[0])
         message = "needs attention";
     if (!workspace || !workspace[0])
@@ -97,5 +116,12 @@ bool desktop_notify_agent_ring(const char *workspace, const char *message)
 
     execlp("osascript", "osascript", "-e", script, (char *)NULL);
     _exit(127);
+#endif
+}
+
+void desktop_notify_startup(void)
+{
+#ifdef __APPLE__
+    desktop_notify_native_startup();
 #endif
 }

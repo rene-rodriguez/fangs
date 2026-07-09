@@ -3807,6 +3807,7 @@ int main(int argc, char **argv)
     // Initialize window
     InitWindow(initial_window_w, initial_window_h, "Fangs");
     restore_window_position_if_visible(&cfg);
+    desktop_notify_startup();
     // raylib's default exit key is ESC. A terminal must pass ESC straight
     // through to the child (vim normal mode, cancelling prompts, every TUI),
     // and the settings modal needs ESC to dismiss itself — not kill the app.
@@ -4790,6 +4791,8 @@ int main(int argc, char **argv)
             g_sel.dragging = false;
             if (g_sel.sr == g_sel.er && g_sel.sc == g_sel.ec)
                 g_sel.active = false;   // a plain click clears the selection
+            else
+                sel_copy_to_clipboard();  // copy-on-select, like most terminals
             selection_consumed = true;
         }
 

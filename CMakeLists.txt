@@ -10,6 +10,13 @@
 cmake_minimum_required(VERSION 3.19)
 project(fangs C)
 
+# macOS: desktop_notify_mac.m (native UNUserNotificationCenter delivery) needs
+# the Objective-C compiler; the language must be enabled before any target
+# references an .m source.
+if (APPLE)
+  enable_language(OBJC)
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(FetchContent)
 
@@ -122,9 +129,11 @@ target_include_directories(fangs PRIVATE
   "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(fangs raylib ghostty-vt CURL::libcurl Threads::Threads)
 
-# macOS: raylib windowing/input/rendering frameworks.
+# macOS: raylib windowing/input/rendering frameworks, plus UserNotifications
+# for desktop_notify_mac.m's native notification delivery.
 if (APPLE)
-  target_link_libraries(fangs "-framework IOKit" "-framework Cocoa" "-framework OpenGL")
+  target_sources(fangs PRIVATE src/desktop_notify_mac.m)
+  target_link_libraries(fangs "-framework IOKit" "-framework Cocoa" "-framework OpenGL" "-framework UserNotifications")
 endif()
 # Linux: libutil provides forkpty().
 if (UNIX AND NOT APPLE)
@@ -184,6 +193,12 @@ add_executable(desktop_notify_tests
   src/desktop_notify.c)
 target_compile_features(desktop_notify_tests PRIVATE c_std_11)
 target_include_directories(desktop_notify_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+# desktop_notify.c references desktop_notify_native_{ring,startup} on Apple,
+# so this test binary needs the same .m source + frameworks as fangs itself.
+if (APPLE)
+  target_sources(desktop_notify_tests PRIVATE src/desktop_notify_mac.m)
+  target_link_libraries(desktop_notify_tests "-framework Cocoa" "-framework UserNotifications")
+endif()
 add_test(NAME desktop_notify_tests COMMAND desktop_notify_tests)
 
 add_executable(ui_workspace_rail_model_tests
