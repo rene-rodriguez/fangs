@@ -19,4 +19,34 @@ bool workspace_worktree_candidate(const char *current_branch, int suffix, char *
 bool workspace_worktree_create(const char *cwd, WorkspaceWorktreeResult *out);
 bool workspace_worktree_remove_created(const WorkspaceWorktreeResult *created);
 
+// Resolve the repository root for `cwd` (`git rev-parse --show-toplevel`).
+// Returns false (and empties out) if cwd isn't inside a git repo.
+bool workspace_worktree_repo_root(const char *cwd, char *out, int out_size);
+
+#define WORKTREE_CLEANUP_MAX 32
+
+typedef struct {
+    char path[WORKTREE_PATH_MAX];
+    char branch[WORKTREE_NAME_MAX];
+} WorkspaceWorktreeCandidate;
+
+// Find worktrees under <repo_root>/.worktrees/ eligible for cleanup: branch
+// fully merged into the repo's default branch AND `git status --porcelain`
+// is empty (no uncommitted changes). Never includes a path present in
+// exclude_paths (the caller's currently-open tab cwds) even if otherwise
+// eligible. Returns the number of candidates written to `out` (<= max).
+// Returns 0 (never negative) if the default branch can't be resolved or the
+// repo has no eligible worktrees — never guesses at what's "safe" to delete.
+int workspace_worktree_find_cleanup_candidates(const char *repo_root,
+                                               const char *const *exclude_paths,
+                                               int exclude_count,
+                                               WorkspaceWorktreeCandidate *out,
+                                               int max);
+
+// Remove a worktree and (best-effort) its branch. Mirrors
+// workspace_worktree_remove_created's shape but also deletes the branch,
+// since cleanup candidates are, by construction, already merged.
+bool workspace_worktree_cleanup(const char *repo_root,
+                                const WorkspaceWorktreeCandidate *candidate);
+
 #endif

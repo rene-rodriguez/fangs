@@ -105,6 +105,91 @@ static void test_create_uses_spec_suffix_for_second_worktree(void)
     EXPECT_TRUE(strstr(second.path, "/.worktrees/main-agent-2") != NULL);
 }
 
+// Commit an empty file named `name` on whatever branch is currently checked
+// out in `path` (repo root or a worktree path).
+static void commit_file(const char *path, const char *name)
+{
+    char full[1024];
+    snprintf(full, sizeof(full), "%s/%s", path, name);
+    FILE *f = fopen(full, "w");
+    if (f) {
+        fputs("x\n", f);
+        fclose(f);
+    }
+    run_git(path, "add", "-A", NULL, NULL);
+    run_git(path, "commit", "-m", "add file", NULL);
+}
+
+static bool has_candidate(const WorkspaceWorktreeCandidate *c, int n,
+                          const char *branch)
+{
+    for (int i = 0; i < n; i++) {
+        if (strcmp(c[i].branch, branch) == 0)
+            return true;
+    }
+    return false;
+}
+
+static void test_cleanup_candidates_merged_dirty_and_unmerged(void)
+{
+    if (run_git(NULL, "--version", NULL, NULL, NULL) != 0)
+        return;
+
+    char root[512];
+    snprintf(root, sizeof(root), "/tmp/fangs-worktree-cleanup-test-%ld", (long)getpid());
+    mkdir(root, 0700);
+
+    EXPECT_TRUE(run_git(root, "init", "-b", "main", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "config", "user.email", "fangs@example.test", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "config", "user.name", "Fangs Test", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "commit", "--allow-empty", "-m", "init") == 0);
+
+    // merged: branch fully merged back into main, clean working tree.
+    WorkspaceWorktreeResult merged;
+    EXPECT_TRUE(workspace_worktree_create(root, &merged));
+    commit_file(merged.path, "merged.txt");
+    EXPECT_TRUE(run_git(root, "merge", merged.branch, NULL, NULL) == 0);
+
+    // dirty: merged branch, but an uncommitted change in the worktree.
+    WorkspaceWorktreeResult dirty;
+    EXPECT_TRUE(workspace_worktree_create(root, &dirty));
+    commit_file(dirty.path, "dirty.txt");
+    EXPECT_TRUE(run_git(root, "merge", dirty.branch, NULL, NULL) == 0);
+    char dirty_scratch[1024];
+    snprintf(dirty_scratch, sizeof(dirty_scratch), "%s/scratch.txt", dirty.path);
+    FILE *df = fopen(dirty_scratch, "w");
+    if (df) { fputs("uncommitted\n", df); fclose(df); }
+
+    // unmerged: branch has a commit that was never merged back.
+    WorkspaceWorktreeResult unmerged;
+    EXPECT_TRUE(workspace_worktree_create(root, &unmerged));
+    commit_file(unmerged.path, "unmerged.txt");
+
+    WorkspaceWorktreeCandidate cand[WORKTREE_CLEANUP_MAX];
+    int n = workspace_worktree_find_cleanup_candidates(root, NULL, 0, cand, WORKTREE_CLEANUP_MAX);
+
+    EXPECT_TRUE(has_candidate(cand, n, merged.branch));
+    EXPECT_FALSE(has_candidate(cand, n, dirty.branch));
+    EXPECT_FALSE(has_candidate(cand, n, unmerged.branch));
+
+    // Excluding the merged worktree's own path removes it from the list.
+    const char *exclude[1] = { merged.path };
+    int n2 = workspace_worktree_find_cleanup_candidates(root, exclude, 1, cand, WORKTREE_CLEANUP_MAX);
+    EXPECT_FALSE(has_candidate(cand, n2, merged.branch));
+
+    // Cleanup actually removes the worktree directory and the branch.
+    WorkspaceWorktreeCandidate to_remove;
+    snprintf(to_remove.path, sizeof(to_remove.path), "%s", merged.path);
+    snprintf(to_remove.branch, sizeof(to_remove.branch), "%s", merged.branch);
+    EXPECT_TRUE(workspace_worktree_cleanup(root, &to_remove));
+
+    struct stat st;
+    EXPECT_FALSE(stat(merged.path, &st) == 0);
+    char ref[600];
+    snprintf(ref, sizeof(ref), "refs/heads/%s", merged.branch);
+    EXPECT_TRUE(run_git(root, "show-ref", "--verify", "--quiet", ref) != 0);
+}
+
 int main(void)
 {
     test_sanitize_name();
@@ -112,5 +197,6 @@ int main(void)
     test_create_rejects_non_repo();
     test_create_local_worktree();
     test_create_uses_spec_suffix_for_second_worktree();
+    test_cleanup_candidates_merged_dirty_and_unmerged();
     return failures ? 1 : 0;
 }
