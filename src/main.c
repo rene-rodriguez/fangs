@@ -139,12 +139,25 @@ static bool g_rail_context_is_pane = false;
 #define RAIL_MENU_CLOSE       102
 #define RAIL_MENU_FOCUS       103
 #define RAIL_MENU_HISTORY_CLEAR 104
+#define RAIL_MENU_CLEANUP_CONFIRM 105
 // History event tags start at 200 (tag = 200 + event_index).
 
 // History event cache: snapshot taken when the notification popover opens.
 #define HISTORY_EVENT_CACHE 32
 static WorkspaceStatusEvent g_history_event_cache[HISTORY_EVENT_CACHE];
 static int g_history_event_count = 0;
+
+// Attention Inbox: snapshot of currently-attention-needing tabs' pane ids,
+// taken when the popover opens (tag = RAIL_MENU_INBOX_BASE + index).
+#define RAIL_MENU_INBOX_BASE 300
+static uint64_t g_inbox_pane_cache[WORKSPACE_RAIL_MAX_TABS];
+static int g_inbox_pane_count = 0;
+
+// Worktree cleanup: candidates snapshot taken when the confirm popover
+// opens; acted on only if RAIL_MENU_CLEANUP_CONFIRM is selected.
+static char g_cleanup_repo_root[WORKTREE_PATH_MAX];
+static WorkspaceWorktreeCandidate g_cleanup_candidates[WORKTREE_CLEANUP_MAX];
+static int g_cleanup_candidate_count = 0;
 
 // Produce a stable numeric pane ID from a session pointer.
 static uint64_t pane_id_for_session(const Session *s)
@@ -2989,6 +3002,164 @@ static void execute_host_action(FangsActionId action,
             *prev_term_area_w = -1;
         break;
     }
+    case FANGS_ACTION_ATTENTION_INBOX: {
+        // Snapshot recent events once, to look up "how long has this pane
+        // been waiting" for each candidate below (newest-first; first
+        // match per pane_id is its most recent event).
+        WorkspaceStatusEvent event_cache[HISTORY_EVENT_CACHE];
+        int event_count = workspace_status_events(&g_workspace_status,
+                                                   event_cache, HISTORY_EVENT_CACHE);
+
+        typedef struct {
+            int tab_index;
+            uint64_t pane_id;
+            WorkspaceAttention level;
+            uint64_t at_ms;   // 0 if no matching event found (sorts last)
+        } InboxCandidate;
+
+        InboxCandidate cand[WORKSPACE_RAIL_MAX_TABS];
+        int cn = 0;
+        for (int i = 0; i < app.n_tabs && cn < WORKSPACE_RAIL_MAX_TABS; i++) {
+            uint64_t pid = tab_attention_id(&app.tabs[i]);
+            WorkspaceAttention lvl = workspace_status_level(&g_workspace_status, pid);
+            if (lvl == WORKSPACE_ATTENTION_NONE)
+                continue;
+            uint64_t at_ms = 0;
+            for (int ei = 0; ei < event_count; ei++) {
+                if (event_cache[ei].pane_id == pid) {
+                    at_ms = event_cache[ei].at_ms;
+                    break;
+                }
+            }
+            cand[cn].tab_index = i;
+            cand[cn].pane_id = pid;
+            cand[cn].level = lvl;
+            cand[cn].at_ms = at_ms;
+            cn++;
+        }
+
+        // Sort worst-first: severity descending, then oldest-waiting first
+        // (smaller at_ms first; unknown age sorts last within its tier).
+        for (int a = 0; a < cn - 1; a++) {
+            for (int b = a + 1; b < cn; b++) {
+                bool swap = false;
+                if (cand[b].level > cand[a].level) {
+                    swap = true;
+                } else if (cand[b].level == cand[a].level) {
+                    uint64_t ta = cand[a].at_ms ? cand[a].at_ms : UINT64_MAX;
+                    uint64_t tb = cand[b].at_ms ? cand[b].at_ms : UINT64_MAX;
+                    if (tb < ta) swap = true;
+                }
+                if (swap) {
+                    InboxCandidate tmp = cand[a];
+                    cand[a] = cand[b];
+                    cand[b] = tmp;
+                }
+            }
+        }
+
+        if (cn == 0) {
+            toast_push(TOAST_INFO, "Nothing needs attention");
+            break;
+        }
+
+        UiMenuItem iitems[WORKSPACE_RAIL_MAX_TABS];
+        memset(iitems, 0, sizeof(iitems));
+        g_inbox_pane_count = 0;
+        for (int i = 0; i < cn; i++) {
+            Tab *tt = &app.tabs[cand[i].tab_index];
+            const char *lbl = tt->name[0] ? tt->name : g_rail_inputs.tab_labels[cand[i].tab_index];
+            const char *text = workspace_status_text(&g_workspace_status, cand[i].pane_id);
+            snprintf(iitems[i].label, sizeof(iitems[i].label), "%s: %s",
+                     lbl, (text && text[0]) ? text : "needs attention");
+            iitems[i].tag = RAIL_MENU_INBOX_BASE + i;
+            iitems[i].tint = (cand[i].level == WORKSPACE_ATTENTION_ERROR)
+                ? UI_COLOR_INLINE_ERROR
+                : (cand[i].level == WORKSPACE_ATTENTION_WARN)
+                    ? UI_COLOR_TEXT
+                    : UI_COLOR_SUBTITLE;
+            iitems[i].separator = false;
+            g_inbox_pane_cache[i] = cand[i].pane_id;
+            g_inbox_pane_count++;
+        }
+
+        ui_menu_open(&g_rail_menu, iitems, cn, g_rail_view.bell_x, g_rail_view.bell_y);
+        ui_menu_layout(&g_rail_menu, GetScreenWidth(), GetScreenHeight());
+        break;
+    }
+    case FANGS_ACTION_CLEANUP_WORKTREES: {
+        Session *cur = sync_runtime_for_action(te, pty_fd, child, child_exited,
+                                               terminal, render_state, row_iter,
+                                               row_cells, placement_iter,
+                                               key_encoder, key_event,
+                                               mouse_encoder, mouse_event);
+        if (!cur) break;
+
+        char repo_root[WORKTREE_PATH_MAX];
+        if (!workspace_worktree_repo_root(session_cwd(cur), repo_root, sizeof(repo_root))) {
+            toast_push(TOAST_WARN, "Not inside a git repository");
+            break;
+        }
+
+        // Exclude every currently-open tab's representative cwd, on top of
+        // the clean-worktree check inside find_cleanup_candidates.
+        const char *exclude[WORKSPACE_RAIL_MAX_TABS];
+        char exclude_bufs[WORKSPACE_RAIL_MAX_TABS][WORKTREE_PATH_MAX];
+        int exclude_count = 0;
+        for (int i = 0; i < app.n_tabs && exclude_count < WORKSPACE_RAIL_MAX_TABS; i++) {
+            Tab *tt = &app.tabs[i];
+            Session *rep = tt->focused ? tt->focused->leaf.session : tab_first_leaf_session(tt);
+            const char *cwd = rep ? session_cwd(rep) : NULL;
+            if (cwd && cwd[0]) {
+                snprintf(exclude_bufs[exclude_count], sizeof(exclude_bufs[exclude_count]), "%s", cwd);
+                exclude[exclude_count] = exclude_bufs[exclude_count];
+                exclude_count++;
+            }
+        }
+
+        g_cleanup_candidate_count = workspace_worktree_find_cleanup_candidates(
+            repo_root, exclude, exclude_count, g_cleanup_candidates, WORKTREE_CLEANUP_MAX);
+        snprintf(g_cleanup_repo_root, sizeof(g_cleanup_repo_root), "%s", repo_root);
+        // Confirming acts on exactly what's listed below (leave room for
+        // the separator + "Confirm" items) -- never more than was shown.
+        if (g_cleanup_candidate_count > UI_MENU_MAX_ITEMS - 2)
+            g_cleanup_candidate_count = UI_MENU_MAX_ITEMS - 2;
+
+        if (g_cleanup_candidate_count == 0) {
+            toast_push(TOAST_INFO, "No worktrees to clean up");
+            break;
+        }
+
+        UiMenuItem citems[UI_MENU_MAX_ITEMS];
+        memset(citems, 0, sizeof(citems));
+        int cc = 0;
+        // Leave room for the separator + "Confirm" items.
+        for (int i = 0; i < g_cleanup_candidate_count
+             && cc < UI_MENU_MAX_ITEMS - 2; i++) {
+            snprintf(citems[cc].label, sizeof(citems[cc].label),
+                     "%s (merged, clean)", g_cleanup_candidates[i].branch);
+            citems[cc].tag = -1;  // informational only in v1, not clickable
+            citems[cc].tint = UI_COLOR_SUBTITLE;
+            citems[cc].separator = false;
+            cc++;
+        }
+        citems[cc].separator = true;
+        citems[cc].tag = -1;
+        cc++;
+        snprintf(citems[cc].label, sizeof(citems[cc].label),
+                 "Confirm: remove %d worktree%s", g_cleanup_candidate_count,
+                 g_cleanup_candidate_count == 1 ? "" : "s");
+        citems[cc].tag = RAIL_MENU_CLEANUP_CONFIRM;
+        citems[cc].tint = UI_COLOR_INLINE_ERROR;
+        citems[cc].separator = false;
+        cc++;
+
+        int mx = GetScreenWidth() / 2;
+        int my = GetScreenHeight() / 2;
+        ui_menu_open(&g_rail_menu, citems, cc, mx, my);
+        ui_menu_layout(&g_rail_menu, GetScreenWidth(), GetScreenHeight());
+        break;
+    }
     case FANGS_ACTION_INLINE_COMMAND:
         if (!ui_inline_active())
             open_inline_at_cursor(*render_state, cell_width, cell_height,
@@ -5016,12 +5187,64 @@ int main(int argc, char **argv)
                         workspace_status_events_clear(&g_workspace_status);
                         g_history_last_seen = 0;
                         break;
+                    case RAIL_MENU_CLEANUP_CONFIRM: {
+                        int removed = 0;
+                        bool closed_a_tab = false;
+                        for (int i = 0; i < g_cleanup_candidate_count; i++) {
+                            if (!workspace_worktree_cleanup(g_cleanup_repo_root,
+                                                            &g_cleanup_candidates[i]))
+                                continue;
+                            removed++;
+                            // Defensive: close any tab still pointing at the
+                            // removed path. Shouldn't happen -- the scan
+                            // excluded every open tab's cwd -- but never
+                            // leave a tab pointing at a deleted directory.
+                            for (int ti = app.n_tabs - 1; ti >= 0; ti--) {
+                                Tab *tt = &app.tabs[ti];
+                                Session *rep = tt->focused
+                                    ? tt->focused->leaf.session
+                                    : tab_first_leaf_session(tt);
+                                const char *cwd = rep ? session_cwd(rep) : NULL;
+                                if (cwd && strcmp(cwd, g_cleanup_candidates[i].path) == 0) {
+                                    app_close_tab(ti);
+                                    closed_a_tab = true;
+                                    break;
+                                }
+                            }
+                        }
+                        g_cleanup_candidate_count = 0;
+                        if (closed_a_tab) {
+                            sync_runtime_for_action(
+                                &te, &pty_fd, &child, &child_exited,
+                                &terminal, &render_state, &row_iter,
+                                &row_cells, &placement_iter,
+                                &key_encoder, &key_event,
+                                &mouse_encoder, &mouse_event);
+                            prev_term_area_w = -1;
+                            drain_char_queue();
+                        }
+                        char msg[128];
+                        snprintf(msg, sizeof(msg), "Removed %d worktree%s",
+                                removed, removed == 1 ? "" : "s");
+                        toast_push(removed > 0 ? TOAST_INFO : TOAST_WARN, msg);
+                        break;
+                    }
                     default:
                         // History event jump (tag = 200 + event_index).
                         if (tag >= 200 && tag < 200 + g_history_event_count) {
                             int ei = tag - 200;
                             if (ei >= 0 && ei < g_history_event_count) {
                                 uint64_t target = g_history_event_cache[ei].pane_id;
+                                if (target != 0)
+                                    g_jump_request = target;
+                            }
+                        }
+                        // Attention Inbox jump (tag = RAIL_MENU_INBOX_BASE + index).
+                        if (tag >= RAIL_MENU_INBOX_BASE
+                            && tag < RAIL_MENU_INBOX_BASE + g_inbox_pane_count) {
+                            int ii = tag - RAIL_MENU_INBOX_BASE;
+                            if (ii >= 0 && ii < g_inbox_pane_count) {
+                                uint64_t target = g_inbox_pane_cache[ii];
                                 if (target != 0)
                                     g_jump_request = target;
                             }

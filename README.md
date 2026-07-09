@@ -55,7 +55,11 @@ drops the rest:
   row for Rename / New Worktree Here / Close; **middle-click** arms a close (click again to
   confirm, any other input disarms); **drag** a row to reorder workspaces. The bell button in the
   header opens a **notification history** popover of recent rings — click one to jump to that pane.
-  Set `workspace_command` in the config to auto-type a command (e.g. `claude`) into every new
+  The palette's **Attention Inbox** lists every workspace that currently needs you, worst first
+  (unlike history, it's live — the list shrinks as things get resolved); **Clean Up Worktrees…**
+  removes worktrees whose branch is merged and working tree is clean (never the one you're in,
+  never anything unmerged or dirty — nothing else is touched). Set `workspace_command` in the
+  config to auto-type a command (e.g. `claude`) into every new
   worktree workspace you create interactively. Workspaces (cwd + name) are restored on launch by
   default — set `restore_session = false` to start fresh instead.
 - **AI chat sidebar** &nbsp;`Cmd+B` / `Ctrl+Shift+B` — ask about what's on your screen. Fangs

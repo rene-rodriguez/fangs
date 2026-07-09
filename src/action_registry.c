@@ -164,6 +164,20 @@ static const FangsAction ACTIONS[] = {
         "Create a git worktree and open a workspace there",
         "",
     },
+    {
+        FANGS_ACTION_ATTENTION_INBOX,
+        "workspace.attention_inbox",
+        "Attention Inbox",
+        "List every workspace that currently needs you, worst first",
+        "",
+    },
+    {
+        FANGS_ACTION_CLEANUP_WORKTREES,
+        "workspace.cleanup_worktrees",
+        "Clean Up Worktrees...",
+        "Remove worktrees whose branch is merged and working tree is clean",
+        "",
+    },
 };
 
 const FangsAction *action_registry_all(int *out_count)
