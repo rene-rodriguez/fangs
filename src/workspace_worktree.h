@@ -43,10 +43,13 @@ int workspace_worktree_find_cleanup_candidates(const char *repo_root,
                                                WorkspaceWorktreeCandidate *out,
                                                int max);
 
-// Remove a worktree and (best-effort) its branch. Mirrors
-// workspace_worktree_remove_created's shape but also deletes the branch,
-// since cleanup candidates are, by construction, already merged.
+// Remove a cleanup candidate after re-checking that it is still under
+// <repo_root>/.worktrees/, still not open, still merged, and still clean.
+// Uses non-force git removal/deletion so a concurrent dirty/unmerged change
+// fails closed instead of deleting work.
 bool workspace_worktree_cleanup(const char *repo_root,
+                                const char *const *exclude_paths,
+                                int exclude_count,
                                 const WorkspaceWorktreeCandidate *candidate);
 
 #endif

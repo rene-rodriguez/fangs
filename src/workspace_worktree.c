@@ -378,29 +378,63 @@ static void resolve_default_branch(const char *root, char *out, int out_size)
     }
 }
 
-// True if `branch` appears in `git branch --merged <default>` output.
+static size_t path_trimmed_len(const char *path)
+{
+    size_t len = path ? strlen(path) : 0;
+    while (len > 1 && path[len - 1] == '/')
+        len--;
+    return len;
+}
+
+static bool path_equal_trimmed(const char *a, const char *b)
+{
+    size_t alen = path_trimmed_len(a);
+    size_t blen = path_trimmed_len(b);
+    return alen == blen && alen > 0 && strncmp(a, b, alen) == 0;
+}
+
+static bool path_is_descendant_of(const char *base, const char *path)
+{
+    size_t base_len = path_trimmed_len(base);
+    size_t path_len = path_trimmed_len(path);
+    return base_len > 0 && path_len > base_len
+        && strncmp(path, base, base_len) == 0
+        && path[base_len] == '/';
+}
+
+static bool path_same_or_descendant_of(const char *base, const char *path)
+{
+    return path_equal_trimmed(base, path) || path_is_descendant_of(base, path);
+}
+
+static bool path_under_repo_worktrees(const char *repo_root, const char *path)
+{
+    char worktrees_dir[WORKTREE_PATH_MAX];
+    int n = snprintf(worktrees_dir, sizeof(worktrees_dir),
+                     "%s/.worktrees", repo_root);
+    if (n < 0 || n >= (int)sizeof(worktrees_dir))
+        return false;
+    return path_is_descendant_of(worktrees_dir, path);
+}
+
+// True if `branch` is fully merged into `default_branch`.
 static bool branch_is_merged(const char *root, const char *default_branch,
                              const char *branch)
 {
-    char merged[8192];
-    if (git_capture_4(root, "branch", "--merged", default_branch, NULL,
-                      merged, (int)sizeof(merged)) != 0) {
+    if (!default_branch || !default_branch[0] || !branch || !branch[0])
         return false;
-    }
 
-    // Each line is prefixed with "* " for the branch checked out in this
-    // worktree, "+ " for one checked out in another (linked) worktree, or
-    // plain leading spaces otherwise.
-    for (char *line = strtok(merged, "\n"); line; line = strtok(NULL, "\n")) {
-        while (*line == ' ' || *line == '*' || *line == '+' || *line == '\t')
-            line++;
-        size_t len = strlen(line);
-        while (len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\r'))
-            line[--len] = '\0';
-        if (strcmp(line, branch) == 0)
-            return true;
-    }
-    return false;
+    char branch_ref[WORKTREE_NAME_MAX + 32];
+    char default_ref[WORKTREE_NAME_MAX + 32];
+    int bn = snprintf(branch_ref, sizeof(branch_ref), "refs/heads/%s", branch);
+    int dn = snprintf(default_ref, sizeof(default_ref), "refs/heads/%s",
+                      default_branch);
+    if (bn < 0 || bn >= (int)sizeof(branch_ref)
+        || dn < 0 || dn >= (int)sizeof(default_ref))
+        return false;
+
+    return git_run_4(root, "merge-base", "--is-ancestor",
+                     branch_ref, default_ref) == 0;
 }
 
 // True if `path`'s working tree has no uncommitted changes.
@@ -418,10 +452,25 @@ static bool path_excluded(const char *path, const char *const *exclude_paths,
                           int exclude_count)
 {
     for (int i = 0; i < exclude_count; i++) {
-        if (exclude_paths[i] && strcmp(exclude_paths[i], path) == 0)
+        if (exclude_paths[i] && path_same_or_descendant_of(path, exclude_paths[i]))
             return true;
     }
     return false;
+}
+
+static bool cleanup_candidate_is_safe(const char *repo_root,
+                                      const char *default_branch,
+                                      const char *path,
+                                      const char *branch,
+                                      const char *const *exclude_paths,
+                                      int exclude_count)
+{
+    return path && path[0] && branch && branch[0]
+        && strcmp(branch, default_branch) != 0
+        && path_under_repo_worktrees(repo_root, path)
+        && !path_excluded(path, exclude_paths, exclude_count)
+        && branch_is_merged(repo_root, default_branch, branch)
+        && worktree_is_clean(path);
 }
 
 int workspace_worktree_find_cleanup_candidates(const char *repo_root,
@@ -433,14 +482,18 @@ int workspace_worktree_find_cleanup_candidates(const char *repo_root,
     if (!repo_root || !repo_root[0] || !out || max <= 0)
         return 0;
 
+    char root[WORKTREE_PATH_MAX];
+    if (!workspace_worktree_repo_root(repo_root, root, (int)sizeof(root)))
+        return 0;
+
     char default_branch[WORKTREE_NAME_MAX];
-    resolve_default_branch(repo_root, default_branch, (int)sizeof(default_branch));
+    resolve_default_branch(root, default_branch, (int)sizeof(default_branch));
     if (!default_branch[0])
         return 0;
 
     char list[16384];
     const char *list_argv[7] = { "worktree", "list", "--porcelain", NULL, NULL, NULL, NULL };
-    if (git_capture(repo_root, list_argv, list, (int)sizeof(list)) != 0)
+    if (git_capture(root, list_argv, list, (int)sizeof(list)) != 0)
         return 0;
 
     int n = 0;
@@ -457,11 +510,10 @@ int workspace_worktree_find_cleanup_candidates(const char *repo_root,
     for (char *line = strtok_r(list, "\n", &saveptr); line;
          line = strtok_r(NULL, "\n", &saveptr)) {
         if (strncmp(line, "worktree ", 9) == 0) {
-            if (cur_path[0] && cur_branch[0] && n < max
-                && strstr(cur_path, "/.worktrees/")
-                && !path_excluded(cur_path, exclude_paths, exclude_count)
-                && branch_is_merged(repo_root, default_branch, cur_branch)
-                && worktree_is_clean(cur_path)) {
+            if (n < max
+                && cleanup_candidate_is_safe(root, default_branch,
+                                             cur_path, cur_branch,
+                                             exclude_paths, exclude_count)) {
                 snprintf(out[n].path, sizeof(out[n].path), "%s", cur_path);
                 snprintf(out[n].branch, sizeof(out[n].branch), "%s", cur_branch);
                 n++;
@@ -473,11 +525,10 @@ int workspace_worktree_find_cleanup_candidates(const char *repo_root,
         }
         // Any other line (HEAD <sha>, detached) is ignored.
     }
-    if (cur_path[0] && cur_branch[0] && n < max
-        && strstr(cur_path, "/.worktrees/")
-        && !path_excluded(cur_path, exclude_paths, exclude_count)
-        && branch_is_merged(repo_root, default_branch, cur_branch)
-        && worktree_is_clean(cur_path)) {
+    if (n < max
+        && cleanup_candidate_is_safe(root, default_branch,
+                                     cur_path, cur_branch,
+                                     exclude_paths, exclude_count)) {
         snprintf(out[n].path, sizeof(out[n].path), "%s", cur_path);
         snprintf(out[n].branch, sizeof(out[n].branch), "%s", cur_branch);
         n++;
@@ -487,21 +538,36 @@ int workspace_worktree_find_cleanup_candidates(const char *repo_root,
 }
 
 bool workspace_worktree_cleanup(const char *repo_root,
+                                const char *const *exclude_paths,
+                                int exclude_count,
                                 const WorkspaceWorktreeCandidate *candidate)
 {
-    if (!repo_root || !candidate || !candidate->path[0])
+    if (!repo_root || !repo_root[0] || !candidate || !candidate->path[0]
+        || !candidate->branch[0])
         return false;
 
-    const char *remove_argv[7] = { "worktree", "remove", "--force",
-                                   candidate->path, NULL, NULL, NULL };
-    if (git_run(repo_root, remove_argv) != 0)
+    char root[WORKTREE_PATH_MAX];
+    if (!workspace_worktree_repo_root(repo_root, root, (int)sizeof(root)))
         return false;
 
-    if (candidate->branch[0]) {
-        const char *branch_argv[7] = { "branch", "-D", candidate->branch,
-                                       NULL, NULL, NULL, NULL };
-        git_run(repo_root, branch_argv);  // best-effort
-    }
+    char default_branch[WORKTREE_NAME_MAX];
+    resolve_default_branch(root, default_branch, (int)sizeof(default_branch));
+    if (!default_branch[0])
+        return false;
+
+    if (!cleanup_candidate_is_safe(root, default_branch,
+                                   candidate->path, candidate->branch,
+                                   exclude_paths, exclude_count))
+        return false;
+
+    const char *remove_argv[7] = { "worktree", "remove", candidate->path,
+                                   NULL, NULL, NULL, NULL };
+    if (git_run(root, remove_argv) != 0)
+        return false;
+
+    const char *branch_argv[7] = { "branch", "-d", candidate->branch,
+                                   NULL, NULL, NULL, NULL };
+    git_run(root, branch_argv);  // best-effort: the worktree is already removed.
 
     return true;
 }

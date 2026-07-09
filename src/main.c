@@ -159,6 +159,43 @@ static char g_cleanup_repo_root[WORKTREE_PATH_MAX];
 static WorkspaceWorktreeCandidate g_cleanup_candidates[WORKTREE_CLEANUP_MAX];
 static int g_cleanup_candidate_count = 0;
 
+#define OPEN_WORKTREE_EXCLUDE_MAX (FANGS_MAX_TABS * WORKSPACE_RAIL_MAX_PANES)
+
+static bool string_list_contains(const char *const *items, int count, const char *value)
+{
+    for (int i = 0; i < count; i++) {
+        if (items[i] && value && strcmp(items[i], value) == 0)
+            return true;
+    }
+    return false;
+}
+
+static int collect_open_session_cwds(const char **out, int max)
+{
+    if (!out || max <= 0)
+        return 0;
+
+    int count = 0;
+    for (int ti = 0; ti < app.n_tabs && count < max; ti++) {
+        Tab *tt = &app.tabs[ti];
+        if (!tt->root)
+            continue;
+
+        PaneNode *leaves[WORKSPACE_RAIL_MAX_PANES];
+        int n_leaves = 0;
+        pane_collect_leaves(tt->root, leaves, WORKSPACE_RAIL_MAX_PANES, &n_leaves);
+        for (int pi = 0; pi < n_leaves && count < max; pi++) {
+            if (leaves[pi]->kind != PANE_LEAF)
+                continue;
+            const char *cwd = session_cwd(leaves[pi]->leaf.session);
+            if (!cwd || !cwd[0] || string_list_contains(out, count, cwd))
+                continue;
+            out[count++] = cwd;
+        }
+    }
+    return count;
+}
+
 // Produce a stable numeric pane ID from a session pointer.
 static uint64_t pane_id_for_session(const Session *s)
 {
@@ -2936,6 +2973,7 @@ static void execute_host_action(FangsActionId action,
                                 uint16_t term_cols, uint16_t term_rows,
                                 int term_origin_x, int term_origin_y,
                                 int term_area_w,
+                                uint64_t now_ms,
                                 bool *apply_saved_config,
                                 int *prev_term_area_w)
 {
@@ -3003,6 +3041,8 @@ static void execute_host_action(FangsActionId action,
         break;
     }
     case FANGS_ACTION_ATTENTION_INBOX: {
+        collect_rail_inputs(now_ms);
+
         // Snapshot recent events once, to look up "how long has this pane
         // been waiting" for each candidate below (newest-first; first
         // match per pane_id is its most recent event).
@@ -3083,7 +3123,9 @@ static void execute_host_action(FangsActionId action,
             g_inbox_pane_count++;
         }
 
-        ui_menu_open(&g_rail_menu, iitems, cn, g_rail_view.bell_x, g_rail_view.bell_y);
+        int ix = GetScreenWidth() / 2;
+        int iy = GetScreenHeight() / 2;
+        ui_menu_open(&g_rail_menu, iitems, cn, ix, iy);
         ui_menu_layout(&g_rail_menu, GetScreenWidth(), GetScreenHeight());
         break;
     }
@@ -3101,21 +3143,11 @@ static void execute_host_action(FangsActionId action,
             break;
         }
 
-        // Exclude every currently-open tab's representative cwd, on top of
-        // the clean-worktree check inside find_cleanup_candidates.
-        const char *exclude[WORKSPACE_RAIL_MAX_TABS];
-        char exclude_bufs[WORKSPACE_RAIL_MAX_TABS][WORKTREE_PATH_MAX];
-        int exclude_count = 0;
-        for (int i = 0; i < app.n_tabs && exclude_count < WORKSPACE_RAIL_MAX_TABS; i++) {
-            Tab *tt = &app.tabs[i];
-            Session *rep = tt->focused ? tt->focused->leaf.session : tab_first_leaf_session(tt);
-            const char *cwd = rep ? session_cwd(rep) : NULL;
-            if (cwd && cwd[0]) {
-                snprintf(exclude_bufs[exclude_count], sizeof(exclude_bufs[exclude_count]), "%s", cwd);
-                exclude[exclude_count] = exclude_bufs[exclude_count];
-                exclude_count++;
-            }
-        }
+        // Exclude every currently-open pane cwd, on top of the clean-worktree
+        // check inside find_cleanup_candidates. A pane in a worktree
+        // subdirectory still blocks removing that worktree.
+        const char *exclude[OPEN_WORKTREE_EXCLUDE_MAX];
+        int exclude_count = collect_open_session_cwds(exclude, OPEN_WORKTREE_EXCLUDE_MAX);
 
         g_cleanup_candidate_count = workspace_worktree_find_cleanup_candidates(
             repo_root, exclude, exclude_count, g_cleanup_candidates, WORKTREE_CLEANUP_MAX);
@@ -3935,6 +3967,7 @@ int main(int argc, char **argv)
                                 cell_width, cell_height, pad,
                                 term_cols, term_rows,
                                 lo.terminal.x, lo.terminal.y, term_area_w,
+                                now_ms,
                                 &apply_saved_config,
                                 &prev_term_area_w);
             pending_palette_selection = palette_selection_none();
@@ -5190,8 +5223,13 @@ int main(int argc, char **argv)
                     case RAIL_MENU_CLEANUP_CONFIRM: {
                         int removed = 0;
                         bool closed_a_tab = false;
+                        const char *exclude[OPEN_WORKTREE_EXCLUDE_MAX];
+                        int exclude_count = collect_open_session_cwds(
+                            exclude, OPEN_WORKTREE_EXCLUDE_MAX);
                         for (int i = 0; i < g_cleanup_candidate_count; i++) {
                             if (!workspace_worktree_cleanup(g_cleanup_repo_root,
+                                                            exclude,
+                                                            exclude_count,
                                                             &g_cleanup_candidates[i]))
                                 continue;
                             removed++;

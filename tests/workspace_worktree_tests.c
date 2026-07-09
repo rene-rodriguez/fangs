@@ -130,6 +130,13 @@ static bool has_candidate(const WorkspaceWorktreeCandidate *c, int n,
     return false;
 }
 
+static bool branch_exists(const char *root, const char *branch)
+{
+    char ref[600];
+    snprintf(ref, sizeof(ref), "refs/heads/%s", branch);
+    return run_git(root, "show-ref", "--verify", "--quiet", ref) == 0;
+}
+
 static void test_cleanup_candidates_merged_dirty_and_unmerged(void)
 {
     if (run_git(NULL, "--version", NULL, NULL, NULL) != 0)
@@ -181,13 +188,156 @@ static void test_cleanup_candidates_merged_dirty_and_unmerged(void)
     WorkspaceWorktreeCandidate to_remove;
     snprintf(to_remove.path, sizeof(to_remove.path), "%s", merged.path);
     snprintf(to_remove.branch, sizeof(to_remove.branch), "%s", merged.branch);
-    EXPECT_TRUE(workspace_worktree_cleanup(root, &to_remove));
+    EXPECT_TRUE(workspace_worktree_cleanup(root, NULL, 0, &to_remove));
 
     struct stat st;
     EXPECT_FALSE(stat(merged.path, &st) == 0);
     char ref[600];
     snprintf(ref, sizeof(ref), "refs/heads/%s", merged.branch);
     EXPECT_TRUE(run_git(root, "show-ref", "--verify", "--quiet", ref) != 0);
+}
+
+static void test_cleanup_excludes_open_subdirectory(void)
+{
+    if (run_git(NULL, "--version", NULL, NULL, NULL) != 0)
+        return;
+
+    char root[512];
+    snprintf(root, sizeof(root), "/tmp/fangs-worktree-subdir-test-%ld", (long)getpid());
+    mkdir(root, 0700);
+
+    EXPECT_TRUE(run_git(root, "init", "-b", "main", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "config", "user.email", "fangs@example.test", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "config", "user.name", "Fangs Test", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "commit", "--allow-empty", "-m", "init") == 0);
+
+    WorkspaceWorktreeResult merged;
+    EXPECT_TRUE(workspace_worktree_create(root, &merged));
+    commit_file(merged.path, "merged.txt");
+    EXPECT_TRUE(run_git(root, "merge", merged.branch, NULL, NULL) == 0);
+
+    char subdir[1024];
+    snprintf(subdir, sizeof(subdir), "%s/nested", merged.path);
+    mkdir(subdir, 0700);
+
+    WorkspaceWorktreeCandidate cand[WORKTREE_CLEANUP_MAX];
+    const char *exclude[1] = { subdir };
+    int n = workspace_worktree_find_cleanup_candidates(root, exclude, 1,
+                                                       cand, WORKTREE_CLEANUP_MAX);
+    EXPECT_FALSE(has_candidate(cand, n, merged.branch));
+
+    WorkspaceWorktreeCandidate blocked;
+    snprintf(blocked.path, sizeof(blocked.path), "%s", merged.path);
+    snprintf(blocked.branch, sizeof(blocked.branch), "%s", merged.branch);
+    EXPECT_FALSE(workspace_worktree_cleanup(root, exclude, 1, &blocked));
+
+    struct stat st;
+    EXPECT_TRUE(stat(merged.path, &st) == 0);
+    EXPECT_TRUE(branch_exists(root, merged.branch));
+}
+
+static void test_cleanup_ignores_worktree_outside_repo_worktrees_dir(void)
+{
+    if (run_git(NULL, "--version", NULL, NULL, NULL) != 0)
+        return;
+
+    char root[512];
+    snprintf(root, sizeof(root), "/tmp/fangs-worktree-prefix-test-%ld", (long)getpid());
+    mkdir(root, 0700);
+
+    EXPECT_TRUE(run_git(root, "init", "-b", "main", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "config", "user.email", "fangs@example.test", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "config", "user.name", "Fangs Test", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "commit", "--allow-empty", "-m", "init") == 0);
+
+    char outside_parent[512];
+    snprintf(outside_parent, sizeof(outside_parent),
+             "/tmp/fangs-external-worktrees-%ld", (long)getpid());
+    mkdir(outside_parent, 0700);
+    char outside_worktrees[768];
+    snprintf(outside_worktrees, sizeof(outside_worktrees),
+             "%s/.worktrees", outside_parent);
+    mkdir(outside_worktrees, 0700);
+    char outside_path[1024];
+    snprintf(outside_path, sizeof(outside_path),
+             "%s/external-agent", outside_worktrees);
+
+    EXPECT_TRUE(run_git(root, "branch", "external-agent", NULL, NULL) == 0);
+    EXPECT_TRUE(run_git(root, "worktree", "add", outside_path, "external-agent") == 0);
+    commit_file(outside_path, "external.txt");
+    EXPECT_TRUE(run_git(root, "merge", "external-agent", NULL, NULL) == 0);
+
+    WorkspaceWorktreeCandidate cand[WORKTREE_CLEANUP_MAX];
+    int n = workspace_worktree_find_cleanup_candidates(root, NULL, 0,
+                                                       cand, WORKTREE_CLEANUP_MAX);
+    EXPECT_FALSE(has_candidate(cand, n, "external-agent"));
+}
+
+static void test_cleanup_refuses_stale_dirty_candidate(void)
+{
+    if (run_git(NULL, "--version", NULL, NULL, NULL) != 0)
+        return;
+
+    char root[512];
+    snprintf(root, sizeof(root), "/tmp/fangs-worktree-stale-dirty-test-%ld", (long)getpid());
+    mkdir(root, 0700);
+
+    EXPECT_TRUE(run_git(root, "init", "-b", "main", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "config", "user.email", "fangs@example.test", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "config", "user.name", "Fangs Test", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "commit", "--allow-empty", "-m", "init") == 0);
+
+    WorkspaceWorktreeResult merged;
+    EXPECT_TRUE(workspace_worktree_create(root, &merged));
+    commit_file(merged.path, "merged.txt");
+    EXPECT_TRUE(run_git(root, "merge", merged.branch, NULL, NULL) == 0);
+
+    WorkspaceWorktreeCandidate stale;
+    snprintf(stale.path, sizeof(stale.path), "%s", merged.path);
+    snprintf(stale.branch, sizeof(stale.branch), "%s", merged.branch);
+
+    char scratch[1024];
+    snprintf(scratch, sizeof(scratch), "%s/scratch.txt", merged.path);
+    FILE *sf = fopen(scratch, "w");
+    if (sf) { fputs("dirty\n", sf); fclose(sf); }
+
+    EXPECT_FALSE(workspace_worktree_cleanup(root, NULL, 0, &stale));
+
+    struct stat st;
+    EXPECT_TRUE(stat(merged.path, &st) == 0);
+    EXPECT_TRUE(branch_exists(root, merged.branch));
+}
+
+static void test_cleanup_refuses_stale_unmerged_candidate(void)
+{
+    if (run_git(NULL, "--version", NULL, NULL, NULL) != 0)
+        return;
+
+    char root[512];
+    snprintf(root, sizeof(root), "/tmp/fangs-worktree-stale-unmerged-test-%ld", (long)getpid());
+    mkdir(root, 0700);
+
+    EXPECT_TRUE(run_git(root, "init", "-b", "main", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "config", "user.email", "fangs@example.test", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "config", "user.name", "Fangs Test", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "commit", "--allow-empty", "-m", "init") == 0);
+
+    WorkspaceWorktreeResult merged;
+    EXPECT_TRUE(workspace_worktree_create(root, &merged));
+    commit_file(merged.path, "merged.txt");
+    EXPECT_TRUE(run_git(root, "merge", merged.branch, NULL, NULL) == 0);
+
+    WorkspaceWorktreeCandidate stale;
+    snprintf(stale.path, sizeof(stale.path), "%s", merged.path);
+    snprintf(stale.branch, sizeof(stale.branch), "%s", merged.branch);
+
+    commit_file(merged.path, "unmerged-after-confirm.txt");
+
+    EXPECT_FALSE(workspace_worktree_cleanup(root, NULL, 0, &stale));
+
+    struct stat st;
+    EXPECT_TRUE(stat(merged.path, &st) == 0);
+    EXPECT_TRUE(branch_exists(root, merged.branch));
 }
 
 int main(void)
@@ -198,5 +348,9 @@ int main(void)
     test_create_local_worktree();
     test_create_uses_spec_suffix_for_second_worktree();
     test_cleanup_candidates_merged_dirty_and_unmerged();
+    test_cleanup_excludes_open_subdirectory();
+    test_cleanup_ignores_worktree_outside_repo_worktrees_dir();
+    test_cleanup_refuses_stale_dirty_candidate();
+    test_cleanup_refuses_stale_unmerged_candidate();
     return failures ? 1 : 0;
 }
