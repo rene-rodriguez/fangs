@@ -49,6 +49,8 @@ void workspace_rail_build(WorkspaceRailView *view,
         row->index = i;
         row->active = in->active;
         row->working = in->working ? 1 : 0;
+        row->git_changed_count = in->git_changed_count > 0
+            ? in->git_changed_count : 0;
 
         if (in->id != 0 && notification_id_count < (int)(sizeof(notification_ids) / sizeof(notification_ids[0])))
             notification_ids[notification_id_count++] = in->id;
@@ -102,6 +104,8 @@ void workspace_rail_build(WorkspaceRailView *view,
         row->index = i;
         row->active = in->active;
         row->working = in->working ? 1 : 0;
+        row->git_changed_count = in->git_changed_count > 0
+            ? in->git_changed_count : 0;
 
         if (in->id != 0 && notification_id_count < (int)(sizeof(notification_ids) / sizeof(notification_ids[0])))
             notification_ids[notification_id_count++] = in->id;

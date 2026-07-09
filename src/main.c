@@ -41,6 +41,7 @@
 #include "ui_rename_prompt.h"
 #include "workspace_info.h"
 #include "workspace_session_store.h"
+#include "workspace_git_status.h"
 #include "workspace_status.h"
 #include "workspace_worktree.h"
 #include "ui_workspace_rail.h"
@@ -89,6 +90,7 @@ static CmdBlocks *g_cmdblocks = NULL;
 // Workspace attention model for notification rings (workspace rail).
 static WorkspaceStatus g_workspace_status = {0};
 static bool g_workspace_status_inited = false;
+static WorkspaceGitStatusSampler *g_git_status_sampler = NULL;
 
 // Per-pane last-seen command-block completion and notification sequences for
 // detecting new events in background panes.
@@ -389,6 +391,7 @@ static void collect_rail_inputs(uint64_t now_ms)
             ? cmdblocks_title((CmdBlocks *)session_cmdblocks(rep)) : "";
         ri->tabs[i].name = tt->name;
         ri->tabs[i].active = (ti == app.active) ? 1 : 0;
+        ri->tabs[i].git_changed_count = 0;
 
         // Armed-close state: match on the tab's stable id (the attention
         // representative shifts when attention changes mid-confirmation).
@@ -411,6 +414,8 @@ static void collect_rail_inputs(uint64_t now_ms)
             }
             if (workspace_status_any_working_at(&g_workspace_status, tpids, ntp, now_ms))
                 working = 1;
+            ri->tabs[i].git_changed_count =
+                workspace_git_status_sum_unique_for(g_git_status_sampler, tpids, ntp);
         }
         ri->tabs[i].working = working;
 
@@ -458,6 +463,8 @@ static void collect_rail_inputs(uint64_t now_ms)
             ri->panes[i].name = NULL;   // panes are never renamed
             ri->panes[i].active = (aleaves[pi] == atab->focused) ? 1 : 0;
             ri->panes[i].working = workspace_status_is_working_at(&g_workspace_status, pid, now_ms) ? 1 : 0;
+            ri->panes[i].git_changed_count =
+                workspace_git_status_count_for(g_git_status_sampler, pid);
             ri->panes[i].closing = 0;  // pane rows are not armed for close
 
             // Collect dev-server ports from this pane session.
@@ -3842,6 +3849,11 @@ int main(int argc, char **argv)
         workspace_status_init(&g_workspace_status);
         g_workspace_status_inited = true;
     }
+    if (!g_git_status_sampler) {
+        g_git_status_sampler = workspace_git_status_start();
+        if (!g_git_status_sampler)
+            fprintf(stderr, "warning: workspace git-status sampler unavailable\n");
+    }
 
     GhosttyTerminal terminal = term_engine_terminal(te);
     GhosttyRenderState render_state = term_engine_render_state(te);
@@ -4380,6 +4392,8 @@ int main(int argc, char **argv)
 
                 uint64_t live_ids[WORKSPACE_STATUS_MAX_PANES];
                 int live_count = 0;
+                WorkspaceGitStatusTarget git_targets[WORKSPACE_GIT_STATUS_MAX_TARGETS];
+                int git_target_count = 0;
                 bool window_focused_now = IsWindowFocused();
 
                 for (int ti = 0; ti < app.n_tabs; ti++) {
@@ -4400,6 +4414,13 @@ int main(int argc, char **argv)
                         uint64_t pane_id = pane_id_for_session(ss);
                         if (live_count < WORKSPACE_STATUS_MAX_PANES)
                             live_ids[live_count++] = pane_id;
+                        if (git_target_count < WORKSPACE_GIT_STATUS_MAX_TARGETS) {
+                            git_targets[git_target_count].pane_id = pane_id;
+                            snprintf(git_targets[git_target_count].cwd,
+                                     sizeof(git_targets[git_target_count].cwd),
+                                     "%s", session_cwd(ss) ? session_cwd(ss) : "");
+                            git_target_count++;
+                        }
 
                         // Feed PTY and detect background output activity.
                         SessionFeedStats stats = session_feed_pty_stats(ss);
@@ -4459,6 +4480,8 @@ int main(int argc, char **argv)
 
                 workspace_status_prune(&g_workspace_status, live_ids, live_count);
                 pane_prune_completion_seen(live_ids, live_count);
+                workspace_git_status_set_targets(g_git_status_sampler,
+                                                 git_targets, git_target_count);
             }
         }
 
@@ -5714,6 +5737,10 @@ cleanup:
     if (g_remote_api) {
         remote_api_stop(g_remote_api);
         g_remote_api = NULL;
+    }
+    if (g_git_status_sampler) {
+        workspace_git_status_stop(g_git_status_sampler);
+        g_git_status_sampler = NULL;
     }
     kitty_image_renderer_destroy(kitty_renderer);
     if (!save_window_geometry(&cfg, config_path))

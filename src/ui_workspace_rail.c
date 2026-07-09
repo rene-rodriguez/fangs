@@ -61,6 +61,15 @@ static Color working_color(void)
     return c;
 }
 
+static void git_badge_label(int count, char *out, int out_size)
+{
+    if (!out || out_size <= 0)
+        return;
+    if (count < 0)
+        count = 0;
+    snprintf(out, (size_t)out_size, "+%d", count);
+}
+
 static bool in_rect(int mx, int my, int x, int y, int w, int h)
 {
     return mx >= x && mx < x + w && my >= y && my < y + h;
@@ -163,6 +172,15 @@ static void draw_row(Font font, const WorkspaceRailView *view,
             Color wc = working_color();
             DrawCircle(x + w - 10, row->y + row->h - 10, 3, wc);
         }
+        if (row->git_changed_count > 0) {
+            char dirty[16];
+            git_badge_label(row->git_changed_count, dirty, sizeof(dirty));
+            Vector2 dsz = MeasureTextEx(font, dirty, FS_HEADER, 0);
+            DrawTextEx(font, dirty,
+                       (Vector2){ x + ((float)w - dsz.x) / 2.0f,
+                                  (float)(row->y + row->h - 13) },
+                       FS_HEADER, 0, UI2RAY(g_ui_theme.accent));
+        }
         return;
     }
 
@@ -193,6 +211,25 @@ static void draw_row(Font font, const WorkspaceRailView *view,
         DrawCircle((int)wx, row->y + row->h / 2, DOT_R, wc);
         text_right -= DOT_R * 2 + 8;
     }
+
+    char git_badge[16] = "";
+    int git_badge_x = 0;
+    int git_badge_y = 0;
+    int git_badge_w = 0;
+    int git_badge_h = PORT_CHIP_H;
+    if (row->git_changed_count > 0) {
+        git_badge_label(row->git_changed_count, git_badge, sizeof(git_badge));
+        Vector2 gsz = MeasureTextEx(font, git_badge, FS_SUB, 0);
+        git_badge_w = (int)gsz.x + PORT_CHIP_PAD + 2;
+        git_badge_x = (int)text_right - git_badge_w;
+        git_badge_y = row->y + row->h - git_badge_h - 4;
+        if (git_badge_x >= x + ROW_TEXT_X) {
+            text_right = (float)(git_badge_x - 6);
+        } else {
+            git_badge_w = 0;
+        }
+    }
+
     float max_w = text_right - (float)(x + ROW_TEXT_X);
 
     // Primary line: agent/window title or cwd label.
@@ -216,6 +253,17 @@ static void draw_row(Font font, const WorkspaceRailView *view,
         draw_text_clipped(font, row->branch, (float)(x + ROW_TEXT_X),
                           (float)(row->y + 25), FS_SUB,
                           UI2RAY(g_ui_theme.subtitle), max_w);
+    }
+
+    if (git_badge_w > 0) {
+        DrawRectangleRounded((Rectangle){ (float)git_badge_x, (float)git_badge_y,
+                                          (float)git_badge_w, (float)git_badge_h },
+                             0.5f, 4, with_alpha(UI2RAY(g_ui_theme.accent), 38));
+        Vector2 gsz = MeasureTextEx(font, git_badge, FS_SUB, 0);
+        DrawTextEx(font, git_badge,
+                   (Vector2){ (float)(git_badge_x + (git_badge_w - (int)gsz.x) / 2),
+                              (float)(git_badge_y + (git_badge_h - (int)gsz.y) / 2) },
+                   FS_SUB, 0, UI2RAY(g_ui_theme.accent));
     }
 
     // Port chips on the secondary line (right-aligned).

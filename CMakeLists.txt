@@ -105,6 +105,7 @@ add_executable(fangs
   src/workspace_info.c
   src/workspace_status.c
   src/workspace_worktree.c
+  src/workspace_git_status.c
   src/desktop_notify.c
   src/ui_workspace_rail_model.c
   src/ui_workspace_rail.c
@@ -169,6 +170,14 @@ add_executable(workspace_worktree_tests
 target_compile_features(workspace_worktree_tests PRIVATE c_std_11)
 target_include_directories(workspace_worktree_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 add_test(NAME workspace_worktree_tests COMMAND workspace_worktree_tests)
+
+add_executable(workspace_git_status_tests
+  tests/workspace_git_status_tests.c
+  src/workspace_git_status.c)
+target_compile_features(workspace_git_status_tests PRIVATE c_std_11)
+target_include_directories(workspace_git_status_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(workspace_git_status_tests Threads::Threads)
+add_test(NAME workspace_git_status_tests COMMAND workspace_git_status_tests)
 
 add_executable(desktop_notify_tests
   tests/desktop_notify_tests.c

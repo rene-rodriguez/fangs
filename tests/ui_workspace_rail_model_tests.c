@@ -411,10 +411,12 @@ static void test_row_hit_still_switches_tab_when_ports_present(void)
 static void test_working_flag_propagates_to_rows(void)
 {
     WorkspaceRailInput tabs[1] = {
-        { .id = 1, .label = "agent", .branch = "main", .active = 1, .working = 1 },
+        { .id = 1, .label = "agent", .branch = "main", .active = 1,
+          .working = 1, .git_changed_count = 3 },
     };
     WorkspaceRailInput panes[1] = {
-        { .id = 2, .label = "agent", .branch = "main", .active = 1, .working = 1 },
+        { .id = 2, .label = "agent", .branch = "main", .active = 1,
+          .working = 1, .git_changed_count = 2 },
     };
     WorkspaceStatus st;
     workspace_status_init(&st);
@@ -424,6 +426,8 @@ static void test_working_flag_propagates_to_rows(void)
 
     EXPECT_INT(view.tabs[0].working, 1);
     EXPECT_INT(view.panes[0].working, 1);
+    EXPECT_INT(view.tabs[0].git_changed_count, 3);
+    EXPECT_INT(view.panes[0].git_changed_count, 2);
 }
 
 // --- Armed close (closing flag) ---

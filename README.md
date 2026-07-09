@@ -51,10 +51,12 @@ drops the rest:
   from the palette. Rename any workspace with `Cmd+Shift+R` (or the palette) — a custom name pins
   the row label, beating the agent title and directory; save an empty name to go back to automatic
   labels. Rows show up to three **dev-server port chips** (`:5173`) detected straight from PTY
-  output — click one to open it in your browser; they clear on the next prompt. **Right-click** a
-  row for Rename / New Worktree Here / Close; **middle-click** arms a close (click again to
-  confirm, any other input disarms); **drag** a row to reorder workspaces. The bell button in the
-  header opens a **notification history** popover of recent rings — click one to jump to that pane.
+  output — click one to open it in your browser; they clear on the next prompt. Rows also show a
+  `+N` git badge when that workspace has dirty or untracked files, sampled in the background so
+  the rail can show which agents have produced work. **Right-click** a row for Rename / New
+  Worktree Here / Close; **middle-click** arms a close (click again to confirm, any other input
+  disarms); **drag** a row to reorder workspaces. The bell button in the header opens a
+  **notification history** popover of recent rings — click one to jump to that pane.
   The palette's **Attention Inbox** lists every workspace that currently needs you, worst first
   (unlike history, it's live — the list shrinks as things get resolved); **Clean Up Worktrees…**
   removes worktrees whose branch is merged and working tree is clean (never the one you're in,
