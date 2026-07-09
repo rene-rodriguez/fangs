@@ -888,20 +888,32 @@ static Vector2 fangs_content_scale(void)
 // LoadFontFromMemory only rasterizes the default 95 basic-Latin glyphs, so
 // any other codepoint falls back to raylib's GLYPH_NOTFOUND '?' glyph at
 // render time. TUI apps (tmux, vim, htop, ...) draw window borders with the
-// Unicode box-drawing and block-element blocks, both fully covered by
-// JetBrains Mono, so include them explicitly to keep those glyphs intact.
+// Unicode box-drawing and block-element blocks; AI CLIs (claude, codex, ...)
+// lean on smart quotes/dashes, chevron prompts, and braille spinners. All of
+// these are fully covered by JetBrains Mono, so include them explicitly to
+// keep those glyphs from silently degrading to '?'.
 static const int *terminal_font_codepoints(int *out_count)
 {
-    static int codepoints[95 + 128 + 32];
+    // Basic Latin(95) + Latin-1 Supplement(96) + General Punctuation(112) +
+    // Box Drawing(128) + Block Elements(32) + Geometric Shapes(96) +
+    // Arrows(112) + Misc Technical(256) + Dingbats(192) + Braille(256).
+    static int codepoints[95 + 96 + 112 + 128 + 32 + 96 + 112 + 256 + 192 + 256];
     static bool built = false;
     if (!built) {
         int n = 0;
         for (int cp = 0x20; cp <= 0x7E; cp++) codepoints[n++] = cp;     // Basic Latin
+        for (int cp = 0xA0; cp <= 0xFF; cp++) codepoints[n++] = cp;     // Latin-1 Supplement (NBSP, accents, guillemets, degree, ...)
+        for (int cp = 0x2000; cp <= 0x206F; cp++) codepoints[n++] = cp; // General Punctuation (smart quotes ' ' " ", en/em dash, ellipsis, bullet)
         for (int cp = 0x2500; cp <= 0x257F; cp++) codepoints[n++] = cp; // Box Drawing
         for (int cp = 0x2580; cp <= 0x259F; cp++) codepoints[n++] = cp; // Block Elements
+        for (int cp = 0x25A0; cp <= 0x25FF; cp++) codepoints[n++] = cp; // Geometric Shapes (bullets/markers used by TUIs)
+        for (int cp = 0x2190; cp <= 0x21FF; cp++) codepoints[n++] = cp; // Arrows
+        for (int cp = 0x2300; cp <= 0x23FF; cp++) codepoints[n++] = cp; // Misc Technical (⏎, ⏵⏵ auto-accept indicator, ⌘, ...)
+        for (int cp = 0x2700; cp <= 0x27BF; cp++) codepoints[n++] = cp; // Dingbats (❯ prompt chevron, ✓, ✗, ...)
+        for (int cp = 0x2800; cp <= 0x28FF; cp++) codepoints[n++] = cp; // Braille Patterns (spinner animations)
         built = true;
     }
-    *out_count = 95 + 128 + 32;
+    *out_count = (int)(sizeof(codepoints) / sizeof(codepoints[0]));
     return codepoints;
 }
 
