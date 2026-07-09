@@ -366,6 +366,58 @@ static bool tab_contains_pane(Tab *tab, uint64_t pane_id)
 // Snapshot tab and pane descriptors for the rail. A tab is represented by its
 // focused pane (falling back to the first leaf): cwd label, git branch, and
 // the OSC 0/2 window title so agent tabs read as what they're doing.
+// workspace_git_branch() walks the filesystem (stat/fopen up to the repo
+// root) and collect_rail_inputs() runs every frame the rail is visible, so
+// without caching that walk re-runs 60+ times/sec for every tab and every
+// pane in the active tab — for a value that only changes on checkout/cd.
+// Throttled to the same cadence as the git-status dirty-count sampler
+// (workspace_git_status.c) so both rail signals refresh in lockstep.
+#define RAIL_BRANCH_CACHE_SIZE 96
+typedef struct {
+    char cwd[1024];
+    char branch[64];
+    uint64_t computed_ms;
+    bool used;
+} RailBranchCacheEntry;
+
+static RailBranchCacheEntry g_rail_branch_cache[RAIL_BRANCH_CACHE_SIZE];
+
+static bool cached_git_branch(const char *cwd, char *out, int out_size, uint64_t now_ms)
+{
+    if (!cwd || !*cwd || out_size <= 0) {
+        if (out_size > 0) out[0] = '\0';
+        return false;
+    }
+
+    int match = -1;
+    int lru = 0;
+    for (int i = 0; i < RAIL_BRANCH_CACHE_SIZE; i++) {
+        RailBranchCacheEntry *e = &g_rail_branch_cache[i];
+        if (!e->used) { lru = i; continue; }
+        if (strcmp(e->cwd, cwd) == 0) { match = i; break; }
+        if (!g_rail_branch_cache[lru].used
+            || e->computed_ms < g_rail_branch_cache[lru].computed_ms)
+            lru = i;
+    }
+
+    if (match >= 0) {
+        RailBranchCacheEntry *e = &g_rail_branch_cache[match];
+        if (now_ms - e->computed_ms < WORKSPACE_GIT_STATUS_INTERVAL_MS) {
+            snprintf(out, out_size, "%s", e->branch);
+            return e->branch[0] != '\0';
+        }
+        lru = match;
+    }
+
+    bool found = workspace_git_branch(cwd, out, out_size);
+    RailBranchCacheEntry *slot = &g_rail_branch_cache[lru];
+    snprintf(slot->cwd, sizeof(slot->cwd), "%s", cwd);
+    snprintf(slot->branch, sizeof(slot->branch), "%s", found ? out : "");
+    slot->computed_ms = now_ms;
+    slot->used = true;
+    return found;
+}
+
 static void collect_rail_inputs(uint64_t now_ms)
 {
     RailInputs *ri = &g_rail_inputs;
@@ -388,8 +440,8 @@ static void collect_rail_inputs(uint64_t now_ms)
         workspace_cwd_label(cwd, home, ri->tab_labels[i],
                             (int)sizeof(ri->tab_labels[i]));
         if (cwd && cwd[0])
-            workspace_git_branch(cwd, ri->tab_branches[i],
-                                 (int)sizeof(ri->tab_branches[i]));
+            cached_git_branch(cwd, ri->tab_branches[i],
+                              (int)sizeof(ri->tab_branches[i]), now_ms);
 
         ri->tabs[i].id = tab_attention_id(tt);
         ri->tabs[i].label = ri->tab_labels[i];
@@ -459,8 +511,8 @@ static void collect_rail_inputs(uint64_t now_ms)
             workspace_cwd_label(pcwd, home, ri->pane_labels[i],
                                 (int)sizeof(ri->pane_labels[i]));
             if (pcwd && pcwd[0])
-                workspace_git_branch(pcwd, ri->pane_branches[i],
-                                     (int)sizeof(ri->pane_branches[i]));
+                cached_git_branch(pcwd, ri->pane_branches[i],
+                                  (int)sizeof(ri->pane_branches[i]), now_ms);
 
             uint64_t pid = pane_id_for_session(ps);
             ri->panes[i].id = pid;
