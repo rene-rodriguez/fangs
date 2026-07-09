@@ -273,6 +273,31 @@ static Session *tab_first_leaf_session(Tab *tab)
     return NULL;
 }
 
+// Stable identity for arming destructive actions on a tab: the first leaf
+// pane id. tab_attention_id() shifts whenever attention levels change, which
+// would break an armed close between the two confirmation clicks.
+static uint64_t tab_stable_id(Tab *tab)
+{
+    Session *s = tab_first_leaf_session(tab);
+    return s ? pane_id_for_session(s) : 0;
+}
+
+// True when the tab's pane tree contains the given pane id.
+static bool tab_contains_pane(Tab *tab, uint64_t pane_id)
+{
+    if (!tab || !tab->root || pane_id == 0)
+        return false;
+    PaneNode *leaves[WORKSPACE_RAIL_MAX_PANES];
+    int n = 0;
+    pane_collect_leaves(tab->root, leaves, WORKSPACE_RAIL_MAX_PANES, &n);
+    for (int i = 0; i < n; i++) {
+        if (leaves[i]->kind == PANE_LEAF
+            && pane_id_for_session(leaves[i]->leaf.session) == pane_id)
+            return true;
+    }
+    return false;
+}
+
 // Snapshot tab and pane descriptors for the rail. A tab is represented by its
 // focused pane (falling back to the first leaf): cwd label, git branch, and
 // the OSC 0/2 window title so agent tabs read as what they're doing.
@@ -309,11 +334,11 @@ static void collect_rail_inputs(uint64_t now_ms)
         ri->tabs[i].name = tt->name;
         ri->tabs[i].active = (ti == app.active) ? 1 : 0;
 
-        // Armed-close state: check if this tab's representative pane id is
-        // the armed target and the deadline hasn't expired.
-        uint64_t tab_attn_id = tab_attention_id(tt);
+        // Armed-close state: match on the tab's stable id (the attention
+        // representative shifts when attention changes mid-confirmation).
+        uint64_t tab_close_id = tab_stable_id(tt);
         ri->tabs[i].closing = (g_armed_pane_id != 0
-                               && g_armed_pane_id == tab_attn_id
+                               && g_armed_pane_id == tab_close_id
                                && g_armed_deadline_ms > now_ms) ? 1 : 0;
 
         // Compute working state: aggregate over all leaf panes in this tab.
@@ -396,6 +421,27 @@ static void collect_rail_inputs(uint64_t now_ms)
             ri->pane_count++;
         }
     }
+}
+
+// Build + lay out the shared rail view (g_rail_view): snapshot inputs, inject
+// host-side bell/drag state, assign geometry. Every rail consumer (click
+// handlers, drag tracking, drawing) must go through this so hit targets can't
+// drift from what is painted — and so host-owned fields like bell_unseen are
+// never forgotten (workspace_rail_build memsets the view).
+static void build_rail_view(const Layout *lo, uint64_t now_ms)
+{
+    collect_rail_inputs(now_ms);
+    workspace_rail_build(&g_rail_view,
+                         g_rail_inputs.tabs, g_rail_inputs.tab_count,
+                         g_rail_inputs.panes, g_rail_inputs.pane_count,
+                         &g_workspace_status,
+                         lo->rail_compact ? 1 : 0);
+    g_rail_view.bell_unseen = workspace_status_unseen(&g_workspace_status,
+                                                      g_history_last_seen);
+    workspace_rail_layout(&g_rail_view, lo->rail.x, lo->rail.y,
+                          lo->rail.w, lo->rail.h);
+    g_rail_view.drag_from = g_drag_from;
+    g_rail_view.drag_slot = g_drag_slot;
 }
 
 // ---------------------------------------------------------------------------
@@ -629,6 +675,9 @@ static void app_close_tab(int idx)
     if (n > 0)
         memmove(&app.tabs[idx], &app.tabs[idx + 1], (size_t)n * sizeof(Tab));
     app.n_tabs--;
+    // Keep the active selection pointing at the same tab after the shift;
+    // closing the active tab itself falls through to the next one.
+    if (idx < app.active) app.active--;
     if (app.active >= app.n_tabs) app.active = app.n_tabs - 1;
     if (app.active < 0) app.active = 0;
 }
@@ -4281,7 +4330,7 @@ int main(int argc, char **argv)
         // mode, and release to complete the reorder.  The actual drag-state
         // globals are propagated into the rail view for drawing below.
         // ----------------------------------------------------------------
-        if (lo.rail_visible) {
+        if (lo.rail_visible && !ui_menu_active(&g_rail_menu)) {
             int rail_mx = GetMouseX();
             int rail_my = GetMouseY();
             bool in_rail = (rail_mx >= lo.rail.x && rail_mx < lo.rail.x + lo.rail.w
@@ -4291,14 +4340,7 @@ int main(int argc, char **argv)
             // candidate tracking.  We build the model once here to resolve
             // geometry; if the hit is not a tab switch we clear the candidate.
             if (in_rail && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && g_drag_from < 0) {
-                collect_rail_inputs(now_ms);
-                workspace_rail_build(&g_rail_view,
-                                     g_rail_inputs.tabs, g_rail_inputs.tab_count,
-                                     g_rail_inputs.panes, g_rail_inputs.pane_count,
-                                     &g_workspace_status,
-                                     lo.rail_compact ? 1 : 0);
-                workspace_rail_layout(&g_rail_view, lo.rail.x, lo.rail.y,
-                                      lo.rail.w, lo.rail.h);
+                build_rail_view(&lo, now_ms);
                 WorkspaceRailAction act = workspace_rail_hit(&g_rail_view,
                                                              rail_mx, rail_my);
                 if (act.type == WORKSPACE_RAIL_ACTION_SWITCH_TAB
@@ -4318,14 +4360,7 @@ int main(int argc, char **argv)
                 }
                 if (g_drag_from >= 0) {
                     // Rebuild layout each frame to keep drop index accurate.
-                    collect_rail_inputs(now_ms);
-                    workspace_rail_build(&g_rail_view,
-                                         g_rail_inputs.tabs, g_rail_inputs.tab_count,
-                                         g_rail_inputs.panes, g_rail_inputs.pane_count,
-                                         &g_workspace_status,
-                                         lo.rail_compact ? 1 : 0);
-                    workspace_rail_layout(&g_rail_view, lo.rail.x, lo.rail.y,
-                                          lo.rail.w, lo.rail.h);
+                    build_rail_view(&lo, now_ms);
                     g_drag_slot = workspace_rail_drop_index(&g_rail_view, rail_my);
                 }
             }
@@ -4391,17 +4426,11 @@ int main(int argc, char **argv)
         // terminal: pane rects start to the right of the rail.
         // ----------------------------------------------------------------
         if (lo.rail_visible && g_drag_from < 0
+            && !ui_menu_active(&g_rail_menu)
             && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
             && GetMouseX() >= lo.rail.x && GetMouseX() < lo.rail.x + lo.rail.w
             && GetMouseY() >= lo.rail.y && GetMouseY() < lo.rail.y + lo.rail.h) {
-            collect_rail_inputs(now_ms);
-            workspace_rail_build(&g_rail_view,
-                                 g_rail_inputs.tabs, g_rail_inputs.tab_count,
-                                 g_rail_inputs.panes, g_rail_inputs.pane_count,
-                                 &g_workspace_status,
-                                 lo.rail_compact ? 1 : 0);
-            workspace_rail_layout(&g_rail_view, lo.rail.x, lo.rail.y,
-                                  lo.rail.w, lo.rail.h);
+            build_rail_view(&lo, now_ms);
             WorkspaceRailAction act = workspace_rail_hit(&g_rail_view,
                                                          GetMouseX(), GetMouseY());
 
@@ -4515,25 +4544,25 @@ int main(int argc, char **argv)
                 g_history_last_seen = g_workspace_status.event_count;
 
                 UiMenuItem hitems[HISTORY_EVENT_CACHE + 2];
+                memset(hitems, 0, sizeof(hitems));
                 int hc = 0;
-                for (int hi = 0; hi < g_history_event_count && hc < UI_MENU_MAX_ITEMS; hi++) {
+                // Leave room for the separator + "Clear history" items.
+                for (int hi = 0; hi < g_history_event_count
+                     && hc < UI_MENU_MAX_ITEMS - 2; hi++) {
                     WorkspaceStatusEvent *ev = &g_history_event_cache[hi];
                     snprintf(hitems[hc].label, sizeof(hitems[hc].label),
                              "%s", ev->text);
-                    // Label with workspace prefix for context.
+                    // Label with workspace prefix for context: find the tab
+                    // that contains the ringing pane (it may not be the tab's
+                    // current attention representative).
                     for (int j = 0; j < app.n_tabs; j++) {
-                        uint64_t tid = tab_attention_id(&app.tabs[j]);
-                        if (tid == ev->pane_id) {
-                            char prefixed[UI_MENU_LABEL_MAX];
-                            const char *lbl = app.tabs[j].name[0]
-                                ? app.tabs[j].name : "";
-                            if (!lbl[0]) lbl = g_rail_inputs.tab_labels[j];
-                            snprintf(prefixed, sizeof(prefixed), "%s: %s",
-                                     lbl, ev->text);
-                            strncpy(hitems[hc].label, prefixed,
-                                    sizeof(hitems[hc].label) - 1);
-                            break;
-                        }
+                        if (!tab_contains_pane(&app.tabs[j], ev->pane_id))
+                            continue;
+                        const char *lbl = app.tabs[j].name[0]
+                            ? app.tabs[j].name : g_rail_inputs.tab_labels[j];
+                        snprintf(hitems[hc].label, sizeof(hitems[hc].label),
+                                 "%s: %s", lbl, ev->text);
+                        break;
                     }
                     hitems[hc].tag = 200 + hi;   // event index
                     hitems[hc].tint = (ev->level == WORKSPACE_ATTENTION_ERROR)
@@ -4549,8 +4578,8 @@ int main(int argc, char **argv)
                     hitems[hc].tag = -1;
                     hc++;
                 }
-                strncpy(hitems[hc].label, "Clear history",
-                        sizeof(hitems[hc].label) - 1);
+                snprintf(hitems[hc].label, sizeof(hitems[hc].label),
+                         "Clear history");
                 hitems[hc].tag = RAIL_MENU_HISTORY_CLEAR;
                 hitems[hc].tint = UI_COLOR_INLINE_ERROR;
                 hitems[hc].separator = false;
@@ -4573,17 +4602,11 @@ int main(int argc, char **argv)
         // Opens a popover with actions for the clicked row.
         // ----------------------------------------------------------------
         if (lo.rail_visible && g_drag_from < 0
+            && !ui_menu_active(&g_rail_menu)
             && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)
             && GetMouseX() >= lo.rail.x && GetMouseX() < lo.rail.x + lo.rail.w
             && GetMouseY() >= lo.rail.y && GetMouseY() < lo.rail.y + lo.rail.h) {
-            collect_rail_inputs(now_ms);
-            workspace_rail_build(&g_rail_view,
-                                 g_rail_inputs.tabs, g_rail_inputs.tab_count,
-                                 g_rail_inputs.panes, g_rail_inputs.pane_count,
-                                 &g_workspace_status,
-                                 lo.rail_compact ? 1 : 0);
-            workspace_rail_layout(&g_rail_view, lo.rail.x, lo.rail.y,
-                                  lo.rail.w, lo.rail.h);
+            build_rail_view(&lo, now_ms);
 
             // Find which row was clicked.
             int hit_tab = -1;
@@ -4603,24 +4626,22 @@ int main(int argc, char **argv)
             }
 
             UiMenuItem mitems[8];
+            memset(mitems, 0, sizeof(mitems));
             int mc = 0;
             if (hit_tab >= 0) {
                 g_rail_context_tab = hit_tab;
                 g_rail_context_is_pane = false;
-                strncpy(mitems[mc].label, "Rename...",
-                        sizeof(mitems[mc].label) - 1);
+                snprintf(mitems[mc].label, sizeof(mitems[mc].label), "Rename...");
                 mitems[mc].tag = RAIL_MENU_RENAME;
                 mitems[mc].tint = UI_COLOR_TEXT;
                 mitems[mc].separator = false;
                 mc++;
-                strncpy(mitems[mc].label, "New Worktree Here",
-                        sizeof(mitems[mc].label) - 1);
+                snprintf(mitems[mc].label, sizeof(mitems[mc].label), "New Worktree Here");
                 mitems[mc].tag = RAIL_MENU_WORKTREE;
                 mitems[mc].tint = UI_COLOR_TEXT;
                 mitems[mc].separator = false;
                 mc++;
-                strncpy(mitems[mc].label, "Close Workspace",
-                        sizeof(mitems[mc].label) - 1);
+                snprintf(mitems[mc].label, sizeof(mitems[mc].label), "Close Workspace");
                 mitems[mc].tag = RAIL_MENU_CLOSE;
                 mitems[mc].tint = UI_COLOR_INLINE_ERROR;
                 mitems[mc].separator = false;
@@ -4628,14 +4649,12 @@ int main(int argc, char **argv)
             } else if (hit_pane >= 0) {
                 g_rail_context_pane = g_rail_view.panes[hit_pane].id;
                 g_rail_context_is_pane = true;
-                strncpy(mitems[mc].label, "Focus",
-                        sizeof(mitems[mc].label) - 1);
+                snprintf(mitems[mc].label, sizeof(mitems[mc].label), "Focus");
                 mitems[mc].tag = RAIL_MENU_FOCUS;
                 mitems[mc].tint = UI_COLOR_TEXT;
                 mitems[mc].separator = false;
                 mc++;
-                strncpy(mitems[mc].label, "Close Pane",
-                        sizeof(mitems[mc].label) - 1);
+                snprintf(mitems[mc].label, sizeof(mitems[mc].label), "Close Pane");
                 mitems[mc].tag = RAIL_MENU_CLOSE;
                 mitems[mc].tint = UI_COLOR_INLINE_ERROR;
                 mitems[mc].separator = false;
@@ -4653,17 +4672,11 @@ int main(int argc, char **argv)
         // middle-click within the window closes the tab.
         // ----------------------------------------------------------------
         if (lo.rail_visible && g_drag_from < 0
+            && !ui_menu_active(&g_rail_menu)
             && IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE)
             && GetMouseX() >= lo.rail.x && GetMouseX() < lo.rail.x + lo.rail.w
             && GetMouseY() >= lo.rail.y && GetMouseY() < lo.rail.y + lo.rail.h) {
-            collect_rail_inputs(now_ms);
-            workspace_rail_build(&g_rail_view,
-                                 g_rail_inputs.tabs, g_rail_inputs.tab_count,
-                                 g_rail_inputs.panes, g_rail_inputs.pane_count,
-                                 &g_workspace_status,
-                                 lo.rail_compact ? 1 : 0);
-            workspace_rail_layout(&g_rail_view, lo.rail.x, lo.rail.y,
-                                  lo.rail.w, lo.rail.h);
+            build_rail_view(&lo, now_ms);
 
             // Find the clicked tab row.
             int mmx = GetMouseX(), mmy = GetMouseY();
@@ -4675,8 +4688,9 @@ int main(int argc, char **argv)
             }
 
             if (clicked_tab >= 0 && clicked_tab < app.n_tabs) {
-                uint64_t tid = tab_attention_id(&app.tabs[clicked_tab]);
-                if (g_armed_pane_id == tid && g_armed_deadline_ms > now_ms) {
+                uint64_t tid = tab_stable_id(&app.tabs[clicked_tab]);
+                if (tid != 0 && g_armed_pane_id == tid
+                    && g_armed_deadline_ms > now_ms) {
                     // Already armed — close it.
                     app_close_tab(clicked_tab);
                     disarm_armed_close();
@@ -4894,16 +4908,7 @@ int main(int argc, char **argv)
 
         // Draw workspace rail inside the drawing block.
         if (lo.rail_visible) {
-            collect_rail_inputs(now_ms);
-            workspace_rail_build(&g_rail_view,
-                                 g_rail_inputs.tabs, g_rail_inputs.tab_count,
-                                 g_rail_inputs.panes, g_rail_inputs.pane_count,
-                                 &g_workspace_status,
-                                 lo.rail_compact ? 1 : 0);
-            workspace_rail_layout(&g_rail_view, lo.rail.x, lo.rail.y,
-                                  lo.rail.w, lo.rail.h);
-            g_rail_view.drag_from = g_drag_from;
-            g_rail_view.drag_slot = g_drag_slot;
+            build_rail_view(&lo, now_ms);
             ui_workspace_rail_draw(mono_font, &g_rail_view,
                                    GetMouseX(), GetMouseY());
         }

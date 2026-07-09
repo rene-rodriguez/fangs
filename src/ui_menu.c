@@ -27,16 +27,19 @@ void ui_menu_layout(UiMenu *m, int win_w, int win_h)
     if (!m || !m->open) return;
 
     // Compute width: max label width + padding, minimum UI_MENU_MIN_W.
+    // 10 px/char covers the mono glyph advance (~8.4 px at the 14 px draw
+    // size) plus the 1 px letter spacing the draw layer uses.
     int max_w = UI_MENU_MIN_W;
     for (int i = 0; i < m->count; i++) {
-        int lw = (int)strlen(m->items[i].label) * 8; // ~8 px per char at FS_SUB
+        int lw = (int)strlen(m->items[i].label) * 10;
         int need = lw + UI_MENU_PAD * 2;
         if (need > max_w) max_w = need;
     }
     m->w = max_w;
-    m->h = m->count * m->item_h + UI_MENU_PAD;
+    m->h = m->count * m->item_h + UI_MENU_PAD * 2;
 
     // Clamp to window bounds.
+    if (m->w > win_w) m->w = win_w;
     if (m->x + m->w > win_w)
         m->x = win_w - m->w;
     if (m->x < 0) m->x = 0;
@@ -79,12 +82,13 @@ void ui_menu_draw(Font font, const UiMenu *m, int mouse_x, int mouse_y,
     Color bg = UI2RAY(theme->inline_bg);
     Color border = UI2RAY(theme->panel_border);
 
+    // Roundness is a 0..1 fraction of the short edge in raylib, not pixels.
     DrawRectangleRounded((Rectangle){ (float)m->x, (float)m->y,
                                       (float)m->w, (float)m->h },
-                         4.0f, 4, bg);
+                         0.12f, 4, bg);
     DrawRectangleRoundedLines((Rectangle){ (float)m->x, (float)m->y,
                                            (float)m->w, (float)m->h },
-                              4.0f, 4, border);
+                              0.12f, 4, border);
 
     // Items.
     int font_size = 14;
@@ -99,11 +103,12 @@ void ui_menu_draw(Font font, const UiMenu *m, int mouse_x, int mouse_y,
             continue;
         }
 
-        // Hover highlight.
+        // Hover highlight (selection wash — the bg color would be invisible
+        // painted over itself).
         if (mouse_x >= m->x && mouse_x < m->x + m->w &&
             mouse_y >= iy && mouse_y < iy + m->item_h) {
-            Color hover = bg;
-            hover.a = 200;
+            Color hover = UI2RAY(theme->selection);
+            hover.a = 70;
             DrawRectangle(m->x + 2, iy, m->w - 4, m->item_h, hover);
         }
 

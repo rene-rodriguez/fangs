@@ -112,9 +112,10 @@ static void draw_port_chips(Font font, const WorkspaceRailRow *row,
         bool hov = in_rect(mouse_x, mouse_y, px, py, pw, ph);
         Color chip_bg = hov ? with_alpha(UI2RAY(g_ui_theme.subtitle), 60)
                             : with_alpha(UI2RAY(g_ui_theme.subtitle), 30);
+        // Roundness is a 0..1 fraction of the short edge, not pixels.
         DrawRectangleRounded((Rectangle){ (float)px, (float)py,
                                           (float)pw, (float)ph },
-                             (float)PORT_CHIP_R, 4, chip_bg);
+                             0.5f, 4, chip_bg);
 
         char chip_label[16];
         snprintf(chip_label, sizeof(chip_label), ":%d", row->ports[i]);
@@ -141,13 +142,6 @@ static void draw_row(Font font, const WorkspaceRailView *view,
     } else if (hovered) {
         DrawRectangle(x, row->y, w, row->h,
                       with_alpha(UI2RAY(g_ui_theme.selection), 28));
-    }
-
-    // Dimmed visual during drag.
-    if (view->drag_slot >= 0 && row->index >= 0
-        && row == &view->tabs[row->index]) {
-        // The dragged row is drawn dimmed by the drag insertion line below.
-        (void)0;
     }
 
     char num[8];
@@ -181,19 +175,8 @@ static void draw_row(Font font, const WorkspaceRailView *view,
     Color dot = attention_color(row->attention);
     float text_right = (float)(x + w - PAD_X);
 
-    // Reserve space for port chips when present.
+    // Reserve space for port chips: secondary text ends before the first chip.
     if (row->port_count > 0 && row->port_w[0] > 0) {
-        int last_chip_right = 0;
-        for (int i = 0; i < row->port_count && i < 3; i++) {
-            int pr = row->port_x[i] + row->port_w[i];
-            if (pr > last_chip_right) last_chip_right = pr;
-        }
-        if (last_chip_right > 0) {
-            // Clamp text space to end before the first chip.
-            int chip_area_x = text_right - (text_right - last_chip_right);
-            (void)chip_area_x;
-        }
-        // Move text_right to the left of the chips area.
         float chip_area_left = (float)(row->port_x[0] - 6);
         if (chip_area_left < text_right)
             text_right = chip_area_left;

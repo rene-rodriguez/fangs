@@ -198,12 +198,13 @@ void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h)
     view->plus_y = cur + (view->header_h - view->plus_h) / 2;
     view->plus_x = view->compact ? x + (w - view->plus_w) / 2
                                  : x + w - view->plus_w - 8;
-    // Bell button: left side of header, only in full mode with unseen events.
+    // Bell button: right side of the header, left of "+", only in full mode
+    // with unseen events. (The left side belongs to the WORKSPACES title.)
     if (!view->compact && view->bell_unseen > 0) {
         view->bell_w = 22;
         view->bell_h = 22;
         view->bell_y = cur + (view->header_h - view->bell_h) / 2;
-        view->bell_x = x + 8;
+        view->bell_x = view->plus_x - view->bell_w - 6;
     } else {
         view->bell_x = 0;
         view->bell_y = 0;

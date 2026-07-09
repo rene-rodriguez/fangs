@@ -616,6 +616,9 @@ static void test_bell_button_visible_when_unseen(void)
 
     EXPECT_TRUE(view.bell_w > 0);
     EXPECT_TRUE(view.bell_h > 0);
+    // Sits left of the "+" button, clear of the WORKSPACES title area.
+    EXPECT_TRUE(view.bell_x + view.bell_w <= view.plus_x);
+    EXPECT_TRUE(view.bell_x > 130);
 }
 
 static void test_bell_button_hit(void)
