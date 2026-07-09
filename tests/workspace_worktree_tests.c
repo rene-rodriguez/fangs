@@ -340,6 +340,55 @@ static void test_cleanup_refuses_stale_unmerged_candidate(void)
     EXPECT_TRUE(branch_exists(root, merged.branch));
 }
 
+static void test_default_branch_prefers_origin_head(void)
+{
+    if (run_git(NULL, "--version", NULL, NULL, NULL) != 0)
+        return;
+
+    char remote[512];
+    snprintf(remote, sizeof(remote), "/tmp/fangs-worktree-default-branch-remote-%ld", (long)getpid());
+    mkdir(remote, 0700);
+    EXPECT_TRUE(run_git(remote, "init", "-b", "trunk", NULL) == 0);
+    EXPECT_TRUE(run_git(remote, "config", "user.email", "fangs@example.test", NULL) == 0);
+    EXPECT_TRUE(run_git(remote, "config", "user.name", "Fangs Test", NULL) == 0);
+    EXPECT_TRUE(run_git(remote, "commit", "--allow-empty", "-m", "init") == 0);
+
+    char root[512];
+    snprintf(root, sizeof(root), "/tmp/fangs-worktree-default-branch-test-%ld", (long)getpid());
+    EXPECT_TRUE(run_git(NULL, "clone", remote, root, NULL) == 0);
+    EXPECT_TRUE(run_git(root, "config", "user.email", "fangs@example.test", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "config", "user.name", "Fangs Test", NULL) == 0);
+
+    char out[WORKTREE_NAME_MAX];
+    EXPECT_TRUE(workspace_worktree_default_branch(root, out, sizeof(out)));
+    EXPECT_STR(out, "trunk");
+}
+
+static void test_default_branch_falls_back_to_main(void)
+{
+    if (run_git(NULL, "--version", NULL, NULL, NULL) != 0)
+        return;
+
+    char root[512];
+    snprintf(root, sizeof(root), "/tmp/fangs-worktree-default-branch-main-test-%ld", (long)getpid());
+    mkdir(root, 0700);
+    EXPECT_TRUE(run_git(root, "init", "-b", "main", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "config", "user.email", "fangs@example.test", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "config", "user.name", "Fangs Test", NULL) == 0);
+    EXPECT_TRUE(run_git(root, "commit", "--allow-empty", "-m", "init") == 0);
+
+    char out[WORKTREE_NAME_MAX];
+    EXPECT_TRUE(workspace_worktree_default_branch(root, out, sizeof(out)));
+    EXPECT_STR(out, "main");
+}
+
+static void test_default_branch_rejects_non_repo(void)
+{
+    char out[WORKTREE_NAME_MAX];
+    EXPECT_FALSE(workspace_worktree_default_branch("/tmp", out, sizeof(out)));
+    EXPECT_STR(out, "");
+}
+
 int main(void)
 {
     test_sanitize_name();
@@ -352,5 +401,8 @@ int main(void)
     test_cleanup_ignores_worktree_outside_repo_worktrees_dir();
     test_cleanup_refuses_stale_dirty_candidate();
     test_cleanup_refuses_stale_unmerged_candidate();
+    test_default_branch_prefers_origin_head();
+    test_default_branch_falls_back_to_main();
+    test_default_branch_rejects_non_repo();
     return failures ? 1 : 0;
 }

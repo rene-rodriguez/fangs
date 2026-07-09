@@ -23,6 +23,11 @@ bool workspace_worktree_remove_created(const WorkspaceWorktreeResult *created);
 // Returns false (and empties out) if cwd isn't inside a git repo.
 bool workspace_worktree_repo_root(const char *cwd, char *out, int out_size);
 
+// Resolve the repository's base branch for PR/diff purposes: origin/HEAD if
+// set, else "main", else "master". Returns false (and empties out) if none
+// of those can be determined.
+bool workspace_worktree_default_branch(const char *repo_root, char *out, int out_size);
+
 #define WORKTREE_CLEANUP_MAX 32
 
 typedef struct {

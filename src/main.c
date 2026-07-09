@@ -142,6 +142,8 @@ static bool g_rail_context_is_pane = false;
 #define RAIL_MENU_FOCUS       103
 #define RAIL_MENU_HISTORY_CLEAR 104
 #define RAIL_MENU_CLEANUP_CONFIRM 105
+#define RAIL_MENU_PR_CREATE   106
+#define RAIL_MENU_PR_DIFF     107
 // History event tags start at 200 (tag = 200 + event_index).
 
 // History event cache: snapshot taken when the notification popover opens.
@@ -160,6 +162,11 @@ static int g_inbox_pane_count = 0;
 static char g_cleanup_repo_root[WORKTREE_PATH_MAX];
 static WorkspaceWorktreeCandidate g_cleanup_candidates[WORKTREE_CLEANUP_MAX];
 static int g_cleanup_candidate_count = 0;
+
+// PR/review handoff: repo root + base branch resolved when the rail context
+// menu opens on a tab row; acted on if RAIL_MENU_PR_CREATE/PR_DIFF is chosen.
+static char g_pr_repo_root[WORKTREE_PATH_MAX];
+static char g_pr_base_branch[WORKTREE_NAME_MAX];
 
 #define OPEN_WORKTREE_EXCLUDE_MAX (FANGS_MAX_TABS * WORKSPACE_RAIL_MAX_PANES)
 
@@ -956,6 +963,68 @@ static void compute_terminal_grid(int term_area_w, int pad,
 
     *cols_out = (uint16_t)cols;
     *rows_out = (uint16_t)rows;
+}
+
+// Per-pane variant of compute_terminal_grid: computes a grid sized to a
+// specific pane's own pixel rect rather than the whole (possibly multi-pane)
+// terminal area. Splits must each get their own grid — sizing every pane's
+// PTY/VT engine to the full area's width/height while rendering it into a
+// fraction of that space is what made split content look garbled (§16.4).
+static void compute_pane_grid(int pane_w, int pane_h, int pad,
+                              int cell_width, int cell_height,
+                              uint16_t *cols_out, uint16_t *rows_out)
+{
+    int cols = (pane_w - 2 * pad) / cell_width;
+    int rows = (pane_h - 2 * pad) / cell_height;
+    if (cols < 1) cols = 1;
+    if (rows < 1) rows = 1;
+
+    *cols_out = (uint16_t)cols;
+    *rows_out = (uint16_t)rows;
+}
+
+// Resize every leaf session in `tab` to its own pane rect (from
+// layout_compute_panes over the given terminal-area bounds), rather than the
+// single shared grid the whole area would imply. Writes the focused leaf's
+// resulting cols/rows to *focused_cols_out/*focused_rows_out so callers can
+// keep their "current session" grid vars (used for new-tab/split defaults,
+// banners, cmdblocks row counts, ...) in sync with whichever pane has focus.
+static void resize_pane_leaves_to_fit(Tab *tab,
+                                      int term_x, int term_y,
+                                      int term_w, int term_h,
+                                      int pad, int cell_width, int cell_height,
+                                      uint16_t *focused_cols_out,
+                                      uint16_t *focused_rows_out)
+{
+    if (!tab || !tab->root)
+        return;
+
+    PaneRectEntry rects[64];
+    PaneRectCollector collector = { .entries = rects, .count = 0, .capacity = 64 };
+    layout_compute_panes(tab->root, term_x, term_y, term_w, term_h,
+                         pane_rect_collect_cb, &collector);
+
+    for (int i = 0; i < collector.count; i++) {
+        PaneNode *leaf = collector.entries[i].leaf;
+        int pw = collector.entries[i].w;
+        int ph = collector.entries[i].h;
+        Session *ss = leaf->leaf.session;
+        if (!ss) continue;
+
+        uint16_t cols, rows;
+        compute_pane_grid(pw, ph, pad, cell_width, cell_height, &cols, &rows);
+
+        TermEngine *ste = (TermEngine *)session_engine(ss);
+        int spfd = session_pty_fd(ss);
+        term_engine_resize(ste, cols, rows, cell_width, cell_height);
+        update_session_effects(ss, cols, rows, cell_width, cell_height);
+        pty_set_winsize(spfd, cols, rows, cell_width, cell_height);
+
+        if (leaf == tab->focused) {
+            if (focused_cols_out) *focused_cols_out = cols;
+            if (focused_rows_out) *focused_rows_out = rows;
+        }
+    }
 }
 
 static bool export_screen_image(const char *path)
@@ -4300,6 +4369,14 @@ int main(int argc, char **argv)
                 ui_rename_prompt_open(app.active, app.tabs[app.active].name);
                 drain_char_queue();
             }
+
+            // --- Toggle workspace rail: Cmd+Shift+E (Ctrl+Shift+E on Linux) ---
+            if (shift_down && IsKeyPressed(KEY_E)) {
+                cfg.workspace_rail = !cfg.workspace_rail;
+                config_save(&cfg, config_path);
+                prev_term_area_w = -1;
+                drain_char_queue();
+            }
         }
 
         // --- Pane focus move: Cmd+Opt+Arrow (macOS) / Ctrl+Shift+Arrow (Linux).
@@ -4358,24 +4435,58 @@ int main(int argc, char **argv)
                                       pad, min_terminal_w);
         term_area_w = lo.terminal.w;
         if (w != prev_width || h != prev_height || term_area_w != prev_term_area_w) {
+            // Fallback/default grid (whole-area size) — used for sizing brand
+            // new tabs/sessions elsewhere and as the value if the active tab
+            // has no pane tree yet. Each existing pane is then resized to its
+            // own rect below, which overrides term_cols/term_rows with the
+            // focused leaf's actual (possibly smaller) grid.
             compute_terminal_grid(term_area_w, pad, cell_width, cell_height,
                                   &term_cols, &term_rows);
-            // Resize all sessions in the active tab.
             Tab *tab = &app.tabs[app.active];
-            PaneNode *leaves[64];
-            int n_leaves = 0;
-            pane_collect_leaves(tab->root, leaves, 64, &n_leaves);
-            for (int i = 0; i < n_leaves; i++) {
-                Session *ss = leaves[i]->leaf.session;
-                TermEngine *ste = (TermEngine *)session_engine(ss);
-                int spfd = session_pty_fd(ss);
-                term_engine_resize(ste, term_cols, term_rows, cell_width, cell_height);
-                update_session_effects(ss, term_cols, term_rows, cell_width, cell_height);
-                pty_set_winsize(spfd, term_cols, term_rows, cell_width, cell_height);
-            }
+            resize_pane_leaves_to_fit(tab, lo.terminal.x, lo.terminal.y,
+                                      lo.terminal.w, lo.terminal.h,
+                                      pad, cell_width, cell_height,
+                                      &term_cols, &term_rows);
             prev_width = w;
             prev_height = h;
             prev_term_area_w = term_area_w;
+        }
+
+        // Active tab's current pane rects — used both to focus-follow a
+        // click into a different pane (below) and, later this frame, to
+        // scope mouse coordinate math to whichever pane ends up focused
+        // instead of the union of all panes (§16.4).
+        PaneRectEntry active_pane_rects[64];
+        PaneRectCollector active_pane_collector = {
+            .entries = active_pane_rects, .count = 0, .capacity = 64,
+        };
+        if (app.n_tabs > 0 && app.tabs[app.active].root) {
+            layout_compute_panes(app.tabs[app.active].root,
+                                 lo.terminal.x, lo.terminal.y,
+                                 lo.terminal.w, lo.terminal.h,
+                                 pane_rect_collect_cb, &active_pane_collector);
+        }
+
+        // --- Click-to-focus: clicking inside a non-focused pane switches
+        // focus to it before this frame's runtime sync (below), so the
+        // click's own selection/mouse-forwarding targets the pane the user
+        // actually clicked rather than whatever was focused before. ---
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && app.n_tabs > 0
+            && !ui_settings_open() && !ui_inline_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
+            && !ui_menu_active(&g_rail_menu) && !ui_sidebar_focused()
+            && GetMouseX() >= lo.terminal.x && GetMouseX() < lo.terminal.x + lo.terminal.w
+            && GetMouseY() >= lo.terminal.y && GetMouseY() < lo.terminal.y + lo.terminal.h) {
+            Tab *click_tab = &app.tabs[app.active];
+            int mx = GetMouseX(), my = GetMouseY();
+            for (int i = 0; i < active_pane_collector.count; i++) {
+                PaneRectEntry *r = &active_pane_collector.entries[i];
+                if (mx >= r->x && mx < r->x + r->w && my >= r->y && my < r->y + r->h) {
+                    if (r->leaf != click_tab->focused)
+                        click_tab->focused = r->leaf;
+                    break;
+                }
+            }
         }
 
         // Drain PTY output from ALL sessions in the active tab and feed their
@@ -4545,11 +4656,31 @@ int main(int argc, char **argv)
         if (!session_child_alive(active_session) && child_exit_status == 0)
             break;
 
+        // Mouse coordinate math below targets whichever pane is focused, not
+        // the union of every pane in the tab — otherwise a split's column/row
+        // math (and therefore selection and pty mouse-forwarding) is computed
+        // against the wrong origin/width once there's more than one pane
+        // (§16.4). Falls back to the whole terminal area when the focused
+        // leaf isn't in the collector (e.g. no pane tree yet).
+        Rect focused_pane_rect = lo.terminal;
+        if (app.n_tabs > 0) {
+            PaneNode *focused_leaf = app.tabs[app.active].focused;
+            for (int i = 0; i < active_pane_collector.count; i++) {
+                if (active_pane_collector.entries[i].leaf == focused_leaf) {
+                    focused_pane_rect.x = active_pane_collector.entries[i].x;
+                    focused_pane_rect.y = active_pane_collector.entries[i].y;
+                    focused_pane_rect.w = active_pane_collector.entries[i].w;
+                    focused_pane_rect.h = active_pane_collector.entries[i].h;
+                    break;
+                }
+            }
+        }
+
         bool mouse_in_terminal =
-            GetMouseX() >= lo.terminal.x
-            && GetMouseX() < lo.terminal.x + term_area_w
-            && GetMouseY() >= lo.terminal.y
-            && GetMouseY() < lo.terminal.y + lo.terminal.h;
+            GetMouseX() >= focused_pane_rect.x
+            && GetMouseX() < focused_pane_rect.x + focused_pane_rect.w
+            && GetMouseY() >= focused_pane_rect.y
+            && GetMouseY() < focused_pane_rect.y + focused_pane_rect.h;
 
         if (ui_sidebar_visible() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
             && mouse_in_terminal) {
@@ -4564,8 +4695,8 @@ int main(int argc, char **argv)
             && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             scrollbar_consumed = handle_scrollbar(terminal, render_state,
                                                    &scrollbar_dragging,
-                                                   lo.terminal.x, lo.terminal.y,
-                                                   term_area_w, lo.terminal.h);
+                                                   focused_pane_rect.x, focused_pane_rect.y,
+                                                   focused_pane_rect.w, focused_pane_rect.h);
         }
 
         // Host text selection (click-drag) when the app isn't grabbing the mouse
@@ -4581,8 +4712,8 @@ int main(int argc, char **argv)
         if ((ctrl_down || cmd_down) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
             && mouse_in_terminal && !ui_palette_is_open()
             && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)) {
-            int ucc = (GetMouseX() - lo.terminal.x - pad) / cell_width;
-            int ucr = (GetMouseY() - lo.terminal.y - pad) / cell_height;
+            int ucc = (GetMouseX() - focused_pane_rect.x - pad) / cell_width;
+            int ucr = (GetMouseY() - focused_pane_rect.y - pad) / cell_height;
             char url[2048];
             if (url_at(ucr, ucc, url, (int)sizeof(url))) {
                 open_url(url);
@@ -4590,8 +4721,8 @@ int main(int argc, char **argv)
             }
         }
         if (!selection_consumed && can_select && !scrollbar_consumed && mouse_in_terminal) {
-            int cc = (GetMouseX() - lo.terminal.x - pad) / cell_width;
-            int cr = (GetMouseY() - lo.terminal.y - pad) / cell_height;
+            int cc = (GetMouseX() - focused_pane_rect.x - pad) / cell_width;
+            int cr = (GetMouseY() - focused_pane_rect.y - pad) / cell_height;
             if (cc < 0) cc = 0;
             if (cr < 0) cr = 0;
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -4625,8 +4756,8 @@ int main(int argc, char **argv)
             if (!scrollbar_consumed && !selection_consumed && mouse_in_terminal)
                 handle_mouse(pty_fd, mouse_encoder, mouse_event, terminal,
                              cell_width, cell_height, pad,
-                             lo.terminal.x, lo.terminal.y,
-                             term_area_w, lo.terminal.h);
+                             focused_pane_rect.x, focused_pane_rect.y,
+                             focused_pane_rect.w, focused_pane_rect.h);
         }
 
         // Apply the color theme when it changes (e.g. on Save). Setting the
@@ -5049,6 +5180,32 @@ int main(int argc, char **argv)
                 mitems[mc].tint = UI_COLOR_TEXT;
                 mitems[mc].separator = false;
                 mc++;
+
+                // PR/review handoff -- only offered when the row's cwd is
+                // inside a git repo with a resolvable base branch.
+                g_pr_repo_root[0] = '\0';
+                g_pr_base_branch[0] = '\0';
+                Tab *ct = &app.tabs[hit_tab];
+                Session *rep = ct->focused
+                    ? ct->focused->leaf.session
+                    : tab_first_leaf_session(ct);
+                const char *cwd = rep ? session_cwd(rep) : NULL;
+                if (cwd && cwd[0]
+                    && workspace_worktree_repo_root(cwd, g_pr_repo_root, sizeof(g_pr_repo_root))
+                    && workspace_worktree_default_branch(g_pr_repo_root, g_pr_base_branch, sizeof(g_pr_base_branch))) {
+                    snprintf(mitems[mc].label, sizeof(mitems[mc].label), "Create Pull Request");
+                    mitems[mc].tag = RAIL_MENU_PR_CREATE;
+                    mitems[mc].tint = UI_COLOR_TEXT;
+                    mitems[mc].separator = false;
+                    mc++;
+                    snprintf(mitems[mc].label, sizeof(mitems[mc].label),
+                             "View Diff vs %s", g_pr_base_branch);
+                    mitems[mc].tag = RAIL_MENU_PR_DIFF;
+                    mitems[mc].tint = UI_COLOR_TEXT;
+                    mitems[mc].separator = false;
+                    mc++;
+                }
+
                 snprintf(mitems[mc].label, sizeof(mitems[mc].label), "Close Workspace");
                 mitems[mc].tag = RAIL_MENU_CLOSE;
                 mitems[mc].tint = UI_COLOR_INLINE_ERROR;
@@ -5199,6 +5356,35 @@ int main(int argc, char **argv)
                             }
                         }
                         break;
+                    case RAIL_MENU_PR_CREATE:
+                    case RAIL_MENU_PR_DIFF: {
+                        if (g_rail_context_tab >= 0
+                            && g_rail_context_tab < app.n_tabs
+                            && g_pr_base_branch[0]) {
+                            Session *target = app_switch_tab(
+                                g_rail_context_tab, &te, &pty_fd,
+                                &child, &child_exited);
+                            if (target) {
+                                char cmd[160];
+                                if (tag == RAIL_MENU_PR_CREATE) {
+                                    snprintf(cmd, sizeof(cmd),
+                                            "gh pr create --fill --base %s",
+                                            g_pr_base_branch);
+                                } else {
+                                    snprintf(cmd, sizeof(cmd),
+                                            "git diff %s...HEAD",
+                                            g_pr_base_branch);
+                                }
+                                pty_write(pty_fd, cmd, strlen(cmd));
+                                toast_push(TOAST_INFO, tag == RAIL_MENU_PR_CREATE
+                                    ? "Staged gh pr create -- press Enter to run"
+                                    : "Staged git diff -- press Enter to run");
+                                drain_char_queue();
+                            }
+                            prev_term_area_w = -1;
+                        }
+                        break;
+                    }
                     case RAIL_MENU_CLOSE:
                         if (!g_rail_context_is_pane) {
                             if (g_rail_context_tab >= 0

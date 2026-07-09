@@ -148,7 +148,7 @@ static const FangsAction ACTIONS[] = {
         "workspace.toggle_rail",
         "Toggle Workspace Rail",
         "Show or hide vertical tabs, panes, and notifications",
-        "",
+        "Cmd+Shift+E / Ctrl+Shift+E",
     },
     {
         FANGS_ACTION_RENAME_WORKSPACE,

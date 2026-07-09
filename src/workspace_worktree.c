@@ -378,6 +378,18 @@ static void resolve_default_branch(const char *root, char *out, int out_size)
     }
 }
 
+bool workspace_worktree_default_branch(const char *repo_root, char *out, int out_size)
+{
+    if (!out || out_size <= 0)
+        return false;
+    out[0] = '\0';
+    if (!repo_root || !repo_root[0])
+        return false;
+
+    resolve_default_branch(repo_root, out, out_size);
+    return out[0] != '\0';
+}
+
 static size_t path_trimmed_len(const char *path)
 {
     size_t len = path ? strlen(path) : 0;
