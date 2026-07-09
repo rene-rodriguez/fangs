@@ -145,6 +145,14 @@ static void apply_key_value(AppConfig *c, const char *section,
             if (parse_bool_value(value, &parsed))
                 c->remote_api_send = parsed;
         }
+    } else if (strcmp(section, "workspace") == 0) {
+        if (strcmp(key, "workspace_command") == 0) {
+            copy_string(c->workspace_command, sizeof(c->workspace_command), value);
+        } else if (strcmp(key, "restore_session") == 0) {
+            bool parsed = false;
+            if (parse_bool_value(value, &parsed))
+                c->restore_session = parsed;
+        }
     } else if (strcmp(section, "ai") == 0) {
         if (strcmp(key, "provider") == 0) {
             copy_string(c->provider, sizeof(c->provider), value);
@@ -197,6 +205,9 @@ void config_defaults(AppConfig *c)
     c->workspace_rail = true;
     c->remote_api = false;
     c->remote_api_send = false;
+
+    copy_string(c->workspace_command, sizeof(c->workspace_command), "");
+    c->restore_session = true;
 
     c->window_width = 800;
     c->window_height = 600;
@@ -322,6 +333,10 @@ bool config_save(const AppConfig *c, const char *path)
         "remote_api = %s\n"
         "remote_api_send = %s\n"
         "\n"
+        "[workspace]\n"
+        "workspace_command = %s\n"
+        "restore_session = %s\n"
+        "\n"
         "[ai]\n"
         "provider = %s\n"
         "endpoint = %s\n"
@@ -344,6 +359,8 @@ bool config_save(const AppConfig *c, const char *path)
         c->workspace_rail ? "true" : "false",
         c->remote_api ? "true" : "false",
         c->remote_api_send ? "true" : "false",
+        c->workspace_command,
+        c->restore_session ? "true" : "false",
         c->provider,
         c->endpoint,
         c->model,

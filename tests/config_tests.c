@@ -266,6 +266,41 @@ static void test_remote_api_parse_and_round_trip(void)
     free(path);
 }
 
+static void test_workspace_ops_defaults(void)
+{
+    AppConfig cfg;
+    config_defaults(&cfg);
+    EXPECT_STR(cfg.workspace_command, "");
+    EXPECT_TRUE(cfg.restore_session);
+}
+
+static void test_workspace_ops_parse_and_round_trip(void)
+{
+    char *path = temp_config_path();
+    write_file(path,
+        "[workspace]\n"
+        "workspace_command = claude\n"
+        "restore_session = false\n");
+
+    AppConfig cfg;
+    EXPECT_TRUE(config_load(&cfg, path));
+    EXPECT_STR(cfg.workspace_command, "claude");
+    EXPECT_TRUE(!cfg.restore_session);
+
+    // Modify and save
+    snprintf(cfg.workspace_command, sizeof(cfg.workspace_command), "claude --model sonnet");
+    cfg.restore_session = true;
+    EXPECT_TRUE(config_save(&cfg, path));
+
+    // Re-load and verify
+    AppConfig loaded;
+    EXPECT_TRUE(config_load(&loaded, path));
+    EXPECT_STR(loaded.workspace_command, "claude --model sonnet");
+    EXPECT_TRUE(loaded.restore_session);
+
+    free(path);
+}
+
 int main(void)
 {
     test_defaults();
@@ -275,6 +310,8 @@ int main(void)
     test_save_round_trips_app_config();
     test_remote_api_defaults_false();
     test_remote_api_parse_and_round_trip();
+    test_workspace_ops_defaults();
+    test_workspace_ops_parse_and_round_trip();
 
     if (failures != 0) {
         fprintf(stderr, "%d config test failure(s)\n", failures);

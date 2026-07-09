@@ -40,6 +40,7 @@
 #include "ui_menu_draw.h"
 #include "ui_rename_prompt.h"
 #include "workspace_info.h"
+#include "workspace_session_store.h"
 #include "workspace_status.h"
 #include "workspace_worktree.h"
 #include "ui_workspace_rail.h"
@@ -112,6 +113,11 @@ static UiMenu g_rail_menu = {0};
 // Armed-close state: pane_id and deadline (monotonic ms). 0 = not armed.
 static uint64_t g_armed_pane_id = 0;
 static uint64_t g_armed_deadline_ms = 0;
+
+// Set on any tab-list mutation (add/close/rename/reorder); the per-frame
+// loop saves the session state and clears it when set, so writes happen at
+// most once per frame and only when something actually changed.
+static bool g_session_dirty = false;
 
 // Drag-to-reorder state.
 static int g_drag_from = -1;        // source tab index, -1 = not dragging
@@ -544,14 +550,17 @@ static Session *sync_active_runtime(TermEngine **te_out,
 }
 
 // Initialize the App with a single tab containing one leaf Session.
+// `cwd` is NULL to inherit the process's launch directory (the default), or
+// a restored workspace's cwd when session restore is placing the first tab.
 // Returns the Session pointer for handle extraction, or NULL on failure.
 static Session *app_init_first_tab(uint16_t cols, uint16_t rows,
                                     int cell_w, int cell_h,
                                     int max_scrollback,
                                     bool kitty_images,
-                                    int kitty_image_storage_mb)
+                                    int kitty_image_storage_mb,
+                                    const char *cwd)
 {
-    Session *s = session_create(cols, rows, cell_w, cell_h, max_scrollback, NULL,
+    Session *s = session_create(cols, rows, cell_w, cell_h, max_scrollback, cwd,
                                 kitty_images, kitty_image_storage_mb);
     if (!s) return NULL;
 
@@ -597,6 +606,7 @@ static Session *app_add_tab(uint16_t cols, uint16_t rows,
     tab->name[0] = '\0';
     app.n_tabs++;
     app.active = app.n_tabs - 1;  // switch to the new tab
+    g_session_dirty = true;
     return sync_active_session(te, pty_fd, child, child_exited);
 }
 
@@ -680,6 +690,7 @@ static void app_close_tab(int idx)
     if (idx < app.active) app.active--;
     if (app.active >= app.n_tabs) app.active = app.n_tabs - 1;
     if (app.active < 0) app.active = 0;
+    g_session_dirty = true;
 }
 
 // Close a specific pane by its session's pane_id. If it's the last pane in its
@@ -2542,7 +2553,91 @@ static UiPaletteSelection palette_selection_none(void)
         .type = UI_PALETTE_SELECTION_NONE,
         .action_id = FANGS_ACTION_NONE,
         .workflow_index = -1,
+        .tab_index = -1,
     };
+}
+
+// Feed the currently open tabs into the command palette so they're
+// fuzzy-matchable alongside actions and workflows. Same label precedence as
+// the rail (name > title > cwd) — see workspace_rail_build's comment.
+static void refresh_palette_workspaces(void)
+{
+    WorkspacePaletteEntry entries[FANGS_MAX_TABS];
+    int n = 0;
+    const char *home = getenv("HOME");
+
+    for (int i = 0; i < app.n_tabs && i < FANGS_MAX_TABS; i++) {
+        Tab *tt = &app.tabs[i];
+        entries[n].tab_index = i;
+        entries[n].label[0] = '\0';
+
+        if (tt->name[0]) {
+            snprintf(entries[n].label, sizeof(entries[n].label), "%s", tt->name);
+        } else {
+            Session *rep = (tt->focused && tt->focused->kind == PANE_LEAF)
+                ? tt->focused->leaf.session : NULL;
+            if (!rep)
+                rep = tab_first_leaf_session(tt);
+            const char *title = rep
+                ? cmdblocks_title((CmdBlocks *)session_cmdblocks(rep)) : "";
+            if (title && title[0]) {
+                snprintf(entries[n].label, sizeof(entries[n].label), "%s", title);
+            } else {
+                const char *cwd = rep ? session_cwd(rep) : "";
+                workspace_cwd_label(cwd, home, entries[n].label,
+                                    (int)sizeof(entries[n].label));
+            }
+        }
+        n++;
+    }
+
+    ui_palette_set_workspaces(entries, n);
+}
+
+// Types cfg->workspace_command + Enter into a freshly created worktree
+// workspace's shell, if configured. Only called from interactive worktree
+// creation (palette action, Option/Alt-click +, row context menu) — not
+// `fangs ctl new --worktree`, which already has its own explicit --run.
+static void maybe_auto_launch(Session *ns, const AppConfig *cfg)
+{
+    if (!ns || !cfg->workspace_command[0])
+        return;
+    int fd = session_pty_fd(ns);
+    if (fd < 0)
+        return;
+    pty_write(fd, cfg->workspace_command, strlen(cfg->workspace_command));
+    pty_write(fd, "\n", 1);
+}
+
+// Save the current tab list (cwd + name) so it can be restored on next
+// launch. Called once per frame only when g_session_dirty, plus once more
+// as a shutdown safety net. Failures are silent (best-effort persistence,
+// same as the rest of the rail's non-critical state).
+static void persist_session_if_dirty(const AppConfig *cfg)
+{
+    if (!g_session_dirty)
+        return;
+    g_session_dirty = false;
+    if (!cfg->restore_session)
+        return;
+
+    WorkspaceSessionState state;
+    memset(&state, 0, sizeof(state));
+    state.count = app.n_tabs < WORKSPACE_SESSION_MAX_TABS
+        ? app.n_tabs : WORKSPACE_SESSION_MAX_TABS;
+    state.active = (app.active >= 0 && app.active < state.count) ? app.active : 0;
+
+    for (int i = 0; i < state.count; i++) {
+        Tab *tt = &app.tabs[i];
+        Session *rep = tt->focused ? tt->focused->leaf.session : tab_first_leaf_session(tt);
+        const char *cwd = rep ? session_cwd(rep) : "";
+        snprintf(state.tabs[i].cwd, sizeof(state.tabs[i].cwd), "%s", cwd ? cwd : "");
+        snprintf(state.tabs[i].name, sizeof(state.tabs[i].name), "%s", tt->name);
+    }
+
+    char session_path[4096];
+    if (workspace_session_default_path(session_path, sizeof(session_path)))
+        workspace_session_save(session_path, &state);
 }
 
 static void workflow_path_from_config_path(const char *config_path,
@@ -2833,6 +2928,7 @@ static void execute_host_action(FangsActionId action,
 {
     switch (action) {
     case FANGS_ACTION_OPEN_COMMAND_PALETTE:
+        refresh_palette_workspaces();
         ui_palette_open();
         break;
     case FANGS_ACTION_OPEN_SETTINGS:
@@ -2880,6 +2976,7 @@ static void execute_host_action(FangsActionId action,
                 toast_push(TOAST_WARN, "Failed to open workspace for worktree");
             } else {
                 toast_push(TOAST_INFO, "Created worktree");
+                maybe_auto_launch(ns, cfg);
             }
         } else {
             toast_push(TOAST_WARN, wtr.error);
@@ -3459,10 +3556,38 @@ int main(int argc, char **argv)
     // so the Kitty graphics protocol can accept PNG images.
     ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG, (const void *)decode_png);
 
+    // Session restore: load the last-saved tab list (cwd + name), filter out
+    // any whose directory no longer exists, and remap the active index
+    // through that filter. Disabled or missing/empty -> today's unchanged
+    // single-tab startup (first_cwd stays NULL).
+    WorkspaceSessionState restore_state;
+    memset(&restore_state, 0, sizeof(restore_state));
+    WorkspaceSessionTab restore_valid[WORKSPACE_SESSION_MAX_TABS];
+    int restore_valid_count = 0;
+    int restore_active = 0;
+    int restore_skipped = 0;
+    if (cfg.restore_session) {
+        char session_path[4096];
+        if (workspace_session_default_path(session_path, sizeof(session_path))
+            && workspace_session_load(session_path, &restore_state)) {
+            for (int i = 0; i < restore_state.count; i++) {
+                if (access(restore_state.tabs[i].cwd, F_OK) == 0) {
+                    if (i == restore_state.active)
+                        restore_active = restore_valid_count;
+                    restore_valid[restore_valid_count++] = restore_state.tabs[i];
+                } else {
+                    restore_skipped++;
+                }
+            }
+        }
+    }
+    const char *first_cwd = restore_valid_count > 0 ? restore_valid[0].cwd : NULL;
+
     // Initialise the first tab/session via the App (§16.5).
     Session *s = app_init_first_tab(term_cols, term_rows, cell_width, cell_height,
                                      cfg.scrollback,
-                                     cfg.kitty_images, cfg.kitty_image_storage_mb);
+                                     cfg.kitty_images, cfg.kitty_image_storage_mb,
+                                     first_cwd);
     if (!s) {
         fprintf(stderr, "failed to create initial session\n");
         toast_push(TOAST_ERROR, "Failed to create terminal session.");
@@ -3470,6 +3595,13 @@ int main(int argc, char **argv)
         goto cleanup;
     }
     register_session_effects(s);
+    if (restore_valid_count > 0 && restore_valid[0].name[0])
+        snprintf(app.tabs[0].name, sizeof(app.tabs[0].name), "%s", restore_valid[0].name);
+    // Cover the case where the whole session is just this one tab and the
+    // user never adds/closes/renames another: still capture its final cwd
+    // (which may drift via `cd`) on exit instead of only persisting on
+    // multi-tab mutations.
+    g_session_dirty = true;
 
     // Borrow handles for the per-frame input/render code via the active session.
     // sync_active_session() is called each frame to keep these current across
@@ -3479,6 +3611,28 @@ int main(int argc, char **argv)
     pid_t child = -1;
     bool child_exited = true;
     sync_active_session(&te, &pty_fd, &child, &child_exited);
+
+    // Restore any remaining tabs, then move focus to the persisted active tab.
+    for (int i = 1; i < restore_valid_count; i++) {
+        Session *rs = app_add_tab(term_cols, term_rows, cell_width, cell_height,
+                                  cfg.scrollback, restore_valid[i].cwd,
+                                  cfg.kitty_images, cfg.kitty_image_storage_mb,
+                                  &te, &pty_fd, &child, &child_exited);
+        if (rs && restore_valid[i].name[0])
+            snprintf(app.tabs[app.n_tabs - 1].name,
+                    sizeof(app.tabs[app.n_tabs - 1].name), "%s", restore_valid[i].name);
+    }
+    if (restore_valid_count > 1) {
+        int want_active = (restore_active >= 0 && restore_active < app.n_tabs) ? restore_active : 0;
+        if (want_active != app.active)
+            app_switch_tab(want_active, &te, &pty_fd, &child, &child_exited);
+    }
+    if (restore_skipped > 0) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "%d workspace%s skipped - directory no longer exists",
+                restore_skipped, restore_skipped == 1 ? "" : "s");
+        toast_push(TOAST_WARN, msg);
+    }
 
     // Init workspace attention model for the rail.
     if (!g_workspace_status_inited) {
@@ -3616,6 +3770,18 @@ int main(int argc, char **argv)
         } else if (pending_palette_selection.type == UI_PALETTE_SELECTION_WORKFLOW) {
             handle_workflow_selection(&palette_workflows, pending_palette_selection, pty_fd);
             pending_palette_selection = palette_selection_none();
+        } else if (pending_palette_selection.type == UI_PALETTE_SELECTION_WORKSPACE) {
+            int tab_idx = pending_palette_selection.tab_index;
+            if (tab_idx >= 0 && tab_idx < app.n_tabs) {
+                app_switch_tab(tab_idx, &te, &pty_fd, &child, &child_exited);
+                sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                        &terminal, &render_state, &row_iter,
+                                        &row_cells, &placement_iter,
+                                        &key_encoder, &key_event,
+                                        &mouse_encoder, &mouse_event);
+                prev_term_area_w = -1;
+            }
+            pending_palette_selection = palette_selection_none();
         }
 
         bool palette_chord_consumed = false;
@@ -3628,6 +3794,7 @@ int main(int argc, char **argv)
                                                    &key_encoder, &key_event,
                                                    &mouse_encoder, &mouse_event);
             refresh_palette_workflows(&palette_workflows, config_path, session_cwd(cur));
+            refresh_palette_workspaces();
             ui_palette_open();
             ui_sidebar_focus(false);
             g_search_active = false;
@@ -4397,6 +4564,7 @@ int main(int argc, char **argv)
                                             &mouse_encoder, &mouse_event);
                     prev_term_area_w = -1;
                     drain_char_queue();
+                    g_session_dirty = true;
                 }
                 g_drag_from = -1;
                 g_drag_slot = -1;
@@ -4503,6 +4671,7 @@ int main(int argc, char **argv)
                             toast_push(TOAST_WARN, "Failed to open workspace for worktree");
                         } else {
                             toast_push(TOAST_INFO, "Created worktree");
+                            maybe_auto_launch(ns, &cfg);
                         }
                     } else {
                         toast_push(TOAST_WARN, wtr.error);
@@ -4775,6 +4944,7 @@ int main(int argc, char **argv)
                                     } else {
                                         toast_push(TOAST_INFO,
                                             "Created worktree");
+                                        maybe_auto_launch(ns, &cfg);
                                     }
                                 } else {
                                     toast_push(TOAST_WARN, wtr.error);
@@ -5112,6 +5282,9 @@ int main(int argc, char **argv)
         // Advance toast timers each frame.
         toast_tick(GetFrameTime());
 
+        // Flush the session-state file if the tab list changed this frame.
+        persist_session_if_dirty(&cfg);
+
         if (ui_settings_open()) {
             bool saved = false;
             ui_settings_draw(&cfg, &saved, 1.0f);
@@ -5147,6 +5320,7 @@ int main(int argc, char **argv)
                 && rename_tab >= 0 && rename_tab < app.n_tabs) {
                 snprintf(app.tabs[rename_tab].name,
                          sizeof(app.tabs[rename_tab].name), "%s", rename_name);
+                g_session_dirty = true;
             }
         }
 
@@ -5283,6 +5457,7 @@ cleanup:
     kitty_image_renderer_destroy(kitty_renderer);
     if (!save_window_geometry(&cfg, config_path))
         fprintf(stderr, "warning: failed to save window geometry at %s\n", config_path);
+    persist_session_if_dirty(&cfg);  // final flush safety net
     CloseWindow();
     // Destroy all tabs/sessions — this closes PTY fds, kills children,
     // destroys term engines, and frees userdata via session_destroy().

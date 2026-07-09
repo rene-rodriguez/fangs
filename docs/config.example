@@ -36,6 +36,15 @@ y = -1
 remote_api = false       ;; enable Unix-socket JSON API (read-only)
 remote_api_send = false  ;; additionally enable send and new --run
 
+[workspace]
+;; Typed + Entered into a worktree workspace's shell right after you create
+;; one (palette action, Option/Alt-click +, or the row context menu). Only
+;; fires for interactive creation, not `fangs ctl new --worktree` (which has
+;; its own explicit --run). Empty disables it.
+workspace_command =
+;; Reopen the workspaces (cwd + name) that were open last time, on launch.
+restore_session = true
+
 [ai]
 provider = openai     ;; "openai" (OpenAI-compatible) or "anthropic"
 endpoint = https://api.openai.com/v1/chat/completions

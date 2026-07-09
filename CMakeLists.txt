@@ -112,6 +112,7 @@ add_executable(fangs
   src/remote_proto.c
   src/ui_menu.c
   src/workspace_ports.c
+  src/workspace_session_store.c
   "${FONT_HEADER}"
   "${FONT_BOLD_HEADER}")
 target_compile_features(fangs PRIVATE c_std_11)
@@ -264,6 +265,16 @@ add_executable(workspace_ports_tests
 target_compile_features(workspace_ports_tests PRIVATE c_std_11)
 target_include_directories(workspace_ports_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 add_test(NAME workspace_ports_tests COMMAND workspace_ports_tests)
+
+add_executable(workspace_session_store_tests
+  tests/workspace_session_store_tests.c
+  src/workspace_session_store.c
+  src/config.c
+  src/cJSON.c)
+target_compile_features(workspace_session_store_tests PRIVATE c_std_11)
+target_include_directories(workspace_session_store_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(workspace_session_store_tests m)
+add_test(NAME workspace_session_store_tests COMMAND workspace_session_store_tests)
 
 # --- Remote protocol (pure) --------------------------------------------------
 add_executable(remote_proto_tests

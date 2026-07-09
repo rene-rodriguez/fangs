@@ -34,6 +34,10 @@ typedef struct {
     // Remote control API (Unix socket JSON protocol).
     bool remote_api;       // enables the socket + read-only/benign commands
     bool remote_api_send;  // additionally enables send and new --run
+
+    // Workspace ops: auto-launch + session restore.
+    char workspace_command[512];  // typed into new worktree workspaces; "" = disabled
+    bool restore_session;         // reopen last session's tabs on launch
 } AppConfig;
 
 void config_defaults(AppConfig *c);
