@@ -178,6 +178,13 @@ static const FangsAction ACTIONS[] = {
         "Remove worktrees whose branch is merged and working tree is clean",
         "",
     },
+    {
+        FANGS_ACTION_BROADCAST_COMMAND,
+        "workspace.broadcast_command",
+        "Broadcast Command...",
+        "Send the same command to every live session across all workspaces",
+        "",
+    },
 };
 
 const FangsAction *action_registry_all(int *out_count)

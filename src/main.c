@@ -39,6 +39,7 @@
 #include "ui_menu.h"
 #include "ui_menu_draw.h"
 #include "ui_rename_prompt.h"
+#include "ui_broadcast_prompt.h"
 #include "workspace_info.h"
 #include "workspace_session_store.h"
 #include "workspace_git_status.h"
@@ -65,6 +66,13 @@
 
 // Max tabs (Cmd+1..9 selects tab N; 0 reserved).
 #define FANGS_MAX_TABS 9
+
+// Idle-aware frame pacing: drop to a low FPS floor when nothing has
+// happened for a while (no input, no PTY/AI output, no UI animation),
+// and snap back to full FPS on any activity. See the idle-tracking block
+// at the end of the main loop, right before EndDrawing().
+#define FANGS_IDLE_TIMEOUT_MS 2000   // ms of no activity before throttling FPS
+#define FANGS_IDLE_FPS        15     // FPS floor while idle
 
 // Tab structure: owns a pane tree of terminal sessions.
 typedef struct {
@@ -461,6 +469,7 @@ static void collect_rail_inputs(uint64_t now_ms)
 
         // Compute working state: aggregate over all leaf panes in this tab.
         int working = 0;
+        int idle_ms = -1;
         if (tt->root) {
             PaneNode *tleaves[WORKSPACE_RAIL_MAX_PANES];
             int tnl = 0;
@@ -473,10 +482,19 @@ static void collect_rail_inputs(uint64_t now_ms)
             }
             if (workspace_status_any_working_at(&g_workspace_status, tpids, ntp, now_ms))
                 working = 1;
+            // Idle duration = time since the MOST RECENT output across any
+            // pane in this tab (i.e. based on the max last_output_ms).
+            uint64_t most_recent = 0;
+            for (int pi = 0; pi < ntp; pi++) {
+                uint64_t lo_ms = workspace_status_last_output_ms(&g_workspace_status, tpids[pi]);
+                if (lo_ms > most_recent) most_recent = lo_ms;
+            }
+            if (most_recent) idle_ms = (int)(now_ms - most_recent);
             ri->tabs[i].git_changed_count =
                 workspace_git_status_sum_unique_for(g_git_status_sampler, tpids, ntp);
         }
         ri->tabs[i].working = working;
+        ri->tabs[i].idle_ms = idle_ms;
 
         // Collect dev-server ports from the representative session.
         ri->tab_port_counts[i] = 0;
@@ -522,6 +540,10 @@ static void collect_rail_inputs(uint64_t now_ms)
             ri->panes[i].name = NULL;   // panes are never renamed
             ri->panes[i].active = (aleaves[pi] == atab->focused) ? 1 : 0;
             ri->panes[i].working = workspace_status_is_working_at(&g_workspace_status, pid, now_ms) ? 1 : 0;
+            {
+                uint64_t plast = workspace_status_last_output_ms(&g_workspace_status, pid);
+                ri->panes[i].idle_ms = plast ? (int)(now_ms - plast) : -1;
+            }
             ri->panes[i].git_changed_count =
                 workspace_git_status_count_for(g_git_status_sampler, pid);
             ri->panes[i].closing = 0;  // pane rows are not armed for close
@@ -1985,7 +2007,7 @@ static void render_terminal(GhosttyRenderState render_state,
                             KittyImageRenderer *kitty_renderer,
                             int origin_x, int origin_y,
                             AppConfig *cfg,
-                            int frame_count)
+                            uint64_t now_ms)
 {
     // Grab colors (palette, default fg/bg) from the render state so we
     // can resolve palette-indexed cell colors.
@@ -2282,10 +2304,12 @@ static void render_terminal(GhosttyRenderState render_state,
                     GHOSTTY_RENDER_STATE_DATA_CURSOR_BLINKING, &blink_u32) == GHOSTTY_SUCCESS)
                 blinking = (blink_u32 != 0);
 
-            // Determine blink phase (~500 ms on/off at 60 fps).
+            // Determine blink phase (~500 ms on/off, wall-clock based so it
+            // stays correct even while the idle-frame-rate throttle is
+            // holding the render loop at a lower FPS).
             bool blink_on = true;
             if (blinking && cfg->cursor_blink && focused)
-                blink_on = (frame_count / 30) % 2 == 0;
+                blink_on = ((now_ms / 500) % 2) == 0;
 
             // Window unfocused → always hollow outline.
             if (!focused) {
@@ -3332,6 +3356,9 @@ static void execute_host_action(FangsActionId action,
         ui_menu_layout(&g_rail_menu, GetScreenWidth(), GetScreenHeight());
         break;
     }
+    case FANGS_ACTION_BROADCAST_COMMAND:
+        ui_broadcast_prompt_open();
+        break;
     case FANGS_ACTION_INLINE_COMMAND:
         if (!ui_inline_active())
             open_inline_at_cursor(*render_state, cell_width, cell_height,
@@ -4039,6 +4066,7 @@ int main(int argc, char **argv)
     bool kitty_smoke_started = false;
     int  kitty_smoke_frames = 0;
     int frame_count = 0;
+    uint64_t last_activity_ms = 0;   // set on the first frame, below
     WorkflowRegistry palette_workflows;
     workflows_init(&palette_workflows);
     ui_palette_set_workflows(&palette_workflows);
@@ -4051,6 +4079,7 @@ int main(int argc, char **argv)
         struct timespec _now_ts;
         clock_gettime(CLOCK_MONOTONIC, &_now_ts);
         uint64_t now_ms = (uint64_t)_now_ts.tv_sec * 1000 + (uint64_t)_now_ts.tv_nsec / 1000000;
+        if (frame_count == 1) last_activity_ms = now_ms;
 
         sync_active_runtime(&te, &pty_fd, &child, &child_exited,
                             &terminal, &render_state, &row_iter, &row_cells,
@@ -4103,6 +4132,20 @@ int main(int argc, char **argv)
         bool cmd_down   = IsKeyDown(KEY_LEFT_SUPER)   || IsKeyDown(KEY_RIGHT_SUPER);
         bool alt_down   = IsKeyDown(KEY_LEFT_ALT)     || IsKeyDown(KEY_RIGHT_ALT);
 
+        // Idle-frame-rate activity signal: any real input this frame.
+        // GetKeyPressed() is otherwise unused in this file, so draining its
+        // queue here has no side effects on input handling elsewhere.
+        bool _any_key_pressed = false;
+        while (GetKeyPressed() != 0) _any_key_pressed = true;
+        Vector2 _mouse_delta = GetMouseDelta();
+        if (_any_key_pressed || GetMouseWheelMove() != 0.0f
+            || _mouse_delta.x != 0.0f || _mouse_delta.y != 0.0f
+            || IsMouseButtonDown(MOUSE_BUTTON_LEFT)
+            || IsMouseButtonDown(MOUSE_BUTTON_RIGHT)
+            || IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) {
+            last_activity_ms = now_ms;
+        }
+
         if (pending_palette_selection.type == UI_PALETTE_SELECTION_ACTION) {
             execute_host_action(pending_palette_selection.action_id,
                                 &te, &pty_fd, &child, &child_exited,
@@ -4137,7 +4180,7 @@ int main(int argc, char **argv)
         bool palette_chord_consumed = false;
         if (IsKeyPressed(KEY_P) && (cmd_down || (ctrl_down && shift_down))
             && !ui_settings_open() && !ui_inline_active()
-            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)) {
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             Session *cur = sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
                                                    &terminal, &render_state, &row_iter,
                                                    &row_cells, &placement_iter,
@@ -4158,7 +4201,7 @@ int main(int argc, char **argv)
         if (IsKeyPressed(KEY_COMMA)
             && (IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER)
                 || IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)) {
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             ui_settings_toggle();
             settings_shortcut_consumed = true;
             drain_char_queue();
@@ -4170,7 +4213,7 @@ int main(int argc, char **argv)
                 || ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))
                     && (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT))));
         if (sidebar_chord && !ui_settings_open() && !ui_palette_is_open()
-            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)) {
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             ui_sidebar_toggle();
             ui_sidebar_focus(ui_sidebar_visible());
             sidebar_chord_consumed = true;
@@ -4181,7 +4224,7 @@ int main(int argc, char **argv)
         bool inline_chord = IsKeyPressed(KEY_SPACE)
             && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL));
         if (inline_chord && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)) {
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             open_inline_at_cursor(render_state, cell_width, cell_height,
                                   lo.terminal.x, lo.terminal.y, pad);
             drain_char_queue();
@@ -4189,7 +4232,7 @@ int main(int argc, char **argv)
 
         int mouse_cursor = MOUSE_CURSOR_DEFAULT;
         if (!ui_settings_open() && !ui_inline_active() && !ui_palette_is_open()
-            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)
             && GetMouseX() >= lo.terminal.x && GetMouseX() < lo.terminal.x + term_area_w
             && GetMouseY() >= lo.terminal.y && GetMouseY() < lo.terminal.y + lo.terminal.h) {
             int ucc = (GetMouseX() - lo.terminal.x - pad) / cell_width;
@@ -4212,7 +4255,7 @@ int main(int argc, char **argv)
         // keys aren't also forwarded to the child shell.
         bool block_nav_consumed = false;
         if ((cmd_down || ctrl_down) && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)
             && !g_search_active && !ui_sidebar_focused()) {
             if (IsKeyPressed(KEY_UP))   block_nav_consumed = cmdblocks_navigate(g_cmdblocks, te, -1);
             if (IsKeyPressed(KEY_DOWN)) block_nav_consumed = cmdblocks_navigate(g_cmdblocks, te, +1);
@@ -4226,7 +4269,7 @@ int main(int argc, char **argv)
         bool ask_last_command_consumed = false;
         if (tab_chord && shift_down && IsKeyPressed(KEY_SLASH)
             && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)
             && !g_search_active) {
             ask_ai_about_latest_block(te, term_rows);
             ask_last_command_consumed = true;
@@ -4245,7 +4288,7 @@ int main(int argc, char **argv)
         // prompt (all raygui GuiTextBox, which now handles paste itself) would
         // be bypassed and the paste would land in the terminal behind them.
         bool text_field_capturing = ui_settings_open() || ui_inline_active()
-            || ui_palette_is_open() || ui_workflow_prompt_active() || ui_rename_prompt_active() || ui_menu_active(&g_rail_menu)
+            || ui_palette_is_open() || ui_workflow_prompt_active() || ui_rename_prompt_active() || ui_broadcast_prompt_active() || ui_menu_active(&g_rail_menu)
             || ui_sidebar_focused() || g_search_active;
         if ((((ctrl_down && shift_down) || cmd_down) && IsKeyPressed(KEY_V))
             || (shift_down && IsKeyPressed(KEY_INSERT))) {
@@ -4259,7 +4302,7 @@ int main(int argc, char **argv)
         // Find overlay: Ctrl+F / Cmd+F toggles; while open it captures typing.
         bool search_consumed = false;
         if ((ctrl_down || cmd_down) && IsKeyPressed(KEY_F)
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)) {
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             g_search_active = !g_search_active;
             if (!g_search_active) g_search_query[0] = '\0';
             search_consumed = true;
@@ -4276,7 +4319,7 @@ int main(int argc, char **argv)
         // end-of-frame apply_config() reload the font + reflow the grid + pty.
         bool zoom_consumed = false;
         if ((ctrl_down || cmd_down) && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)
             && !g_search_active && !ui_sidebar_focused()) {
             int new_size = cfg.font_size;
             if (IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD))
@@ -4297,7 +4340,7 @@ int main(int argc, char **argv)
         // Intercepted before handle_input so these key events never reach the
         // shell — and gated on tab_chord so bare Ctrl+<key> still does.
         if (tab_chord && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)
             && !g_search_active && !ui_sidebar_focused()) {
 
             // --- New tab: Cmd/Ctrl+T ---
@@ -4439,7 +4482,7 @@ int main(int argc, char **argv)
         if (focus_chord && app.n_tabs > 0
             && pane_count_leaves(app.tabs[app.active].root) > 1
             && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)
             && !g_search_active && !ui_sidebar_focused()) {
             int dx = 0, dy = 0;
             if (IsKeyPressed(KEY_LEFT))       dx = -1;
@@ -4488,6 +4531,7 @@ int main(int argc, char **argv)
                                       pad, min_terminal_w);
         term_area_w = lo.terminal.w;
         if (w != prev_width || h != prev_height || term_area_w != prev_term_area_w) {
+            last_activity_ms = now_ms;   // resize counts as activity
             // Fallback/default grid (whole-area size) — used for sizing brand
             // new tabs/sessions elsewhere and as the value if the active tab
             // has no pane tree yet. Each existing pane is then resized to its
@@ -4526,7 +4570,7 @@ int main(int argc, char **argv)
         // actually clicked rather than whatever was focused before. ---
         if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && app.n_tabs > 0
             && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active()
             && !ui_menu_active(&g_rail_menu) && !ui_sidebar_focused()
             && GetMouseX() >= lo.terminal.x && GetMouseX() < lo.terminal.x + lo.terminal.w
             && GetMouseY() >= lo.terminal.y && GetMouseY() < lo.terminal.y + lo.terminal.h) {
@@ -4553,6 +4597,7 @@ int main(int argc, char **argv)
         if (!active_session)
             break;   // no sessions left — exit the app
 
+        bool any_pty_activity = false;
         if (!blocks_smoke) {
             if (app.n_tabs > 0 && app.active >= 0) {
                 Tab *active_tab = &app.tabs[app.active];
@@ -4600,6 +4645,8 @@ int main(int argc, char **argv)
 
                         // Feed PTY and detect background output activity.
                         SessionFeedStats stats = session_feed_pty_stats(ss);
+                        if (stats.bytes_read > 0)
+                            any_pty_activity = true;
                         workspace_status_note_output_at(&g_workspace_status, pane_id,
                                                         focused, stats.bytes_read, now_ms);
 
@@ -4660,6 +4707,7 @@ int main(int argc, char **argv)
                                                  git_targets, git_target_count);
             }
         }
+        if (any_pty_activity) last_activity_ms = now_ms;
 
         // Send focus in/out events when the window focus state changes,
         // but only if the application has enabled focus reporting
@@ -4668,6 +4716,7 @@ int main(int argc, char **argv)
         // asked for them.
         bool focused = IsWindowFocused();
         if (focused != prev_focused) {
+            if (focused) last_activity_ms = now_ms;   // focus-gained: wake up
             // Window gained focus: clear the active pane's attention since
             // the user can now see it directly.
             if (focused && app.n_tabs > 0 && app.active >= 0) {
@@ -4745,7 +4794,7 @@ int main(int argc, char **argv)
         // (e.g. vim, tmux) as spurious mouse events.
         bool scrollbar_consumed = false;
         if (!ui_settings_open() && !ui_palette_is_open()
-            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)) {
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             scrollbar_consumed = handle_scrollbar(terminal, render_state,
                                                    &scrollbar_dragging,
                                                    focused_pane_rect.x, focused_pane_rect.y,
@@ -4759,12 +4808,12 @@ int main(int argc, char **argv)
         ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &mouse_tracking);
         bool can_select = (!mouse_tracking || shift_down)
                           && !ui_settings_open() && !ui_inline_active()
-                          && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu);
+                          && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu);
         bool selection_consumed = false;
         // Ctrl/Cmd+click on a URL opens it (handled before starting a selection).
         if ((ctrl_down || cmd_down) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
             && mouse_in_terminal && !ui_palette_is_open()
-            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)) {
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             int ucc = (GetMouseX() - focused_pane_rect.x - pad) / cell_width;
             int ucr = (GetMouseY() - focused_pane_rect.y - pad) / cell_height;
             char url[2048];
@@ -4799,7 +4848,7 @@ int main(int argc, char **argv)
         // Forward keyboard/mouse input only while the child is alive and no UI
         // element is capturing keys. Sidebar visibility alone does not block.
         if (!ui_inline_active() && !ui_palette_is_open()
-            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)
             && !inline_chord && !palette_chord_consumed && !clipboard_consumed
             && !g_search_active && !search_consumed && !block_nav_consumed
             && !zoom_consumed
@@ -5676,7 +5725,7 @@ int main(int argc, char **argv)
             render_terminal(lrs, lri, lrc, mono_font, bold_font,
                             cell_width, cell_height, font_size, pad,
                             lpane_term_area_w, lsb_ptr, lterm, lpi,
-                            kitty_renderer, px, py, &cfg, frame_count);
+                            kitty_renderer, px, py, &cfg, now_ms);
 
             // Focused-pane highlight (a 1-pixel bright border).
             if (leaf == tab->focused) {
@@ -5694,7 +5743,7 @@ int main(int argc, char **argv)
                     && GetMouseX() >= px && GetMouseX() < px + pw
                     && GetMouseY() >= py && GetMouseY() < py + ph
                     && !ui_settings_open() && !ui_inline_active()
-                    && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_menu_active(&g_rail_menu)
+                    && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)
                     && !ui_sidebar_focused();
                 if (cmdblocks_draw(g_cmdblocks, te, mono_font, &theme,
                                    cell_width, cell_height, font_size,
@@ -5861,6 +5910,38 @@ int main(int argc, char **argv)
             }
         }
 
+        // Broadcast prompt: draw, then send the accepted text to every
+        // live session's PTY across every open workspace.
+        ui_broadcast_prompt_draw(mono_font, 1.0f);
+        {
+            char broadcast_text[BROADCAST_PROMPT_TEXT_MAX];
+            if (ui_broadcast_prompt_take(broadcast_text, (int)sizeof(broadcast_text))
+                && broadcast_text[0] != '\0') {
+                int sent = 0;
+                for (int ti = 0; ti < app.n_tabs; ti++) {
+                    PaneNode *bleaves[WORKSPACE_RAIL_MAX_PANES];
+                    int bn = 0;
+                    pane_collect_leaves(app.tabs[ti].root, bleaves,
+                                        WORKSPACE_RAIL_MAX_PANES, &bn);
+                    for (int bi = 0; bi < bn; bi++) {
+                        if (bleaves[bi]->kind != PANE_LEAF)
+                            continue;
+                        Session *bs = bleaves[bi]->leaf.session;
+                        if (!bs || !session_child_alive(bs))
+                            continue;
+                        pty_write(session_pty_fd(bs), broadcast_text,
+                                 strlen(broadcast_text));
+                        pty_write(session_pty_fd(bs), "\r", 1);
+                        sent++;
+                    }
+                }
+                char toast_msg[64];
+                snprintf(toast_msg, sizeof(toast_msg),
+                         "Sent to %d workspace%s", sent, sent == 1 ? "" : "s");
+                toast_push(TOAST_INFO, toast_msg);
+            }
+        }
+
         // Draw toast notifications (fading pills, bottom-right).
         {
             int n_toasts = toast_count();
@@ -5894,6 +5975,22 @@ int main(int argc, char **argv)
         if (g_rail_menu.open) {
             ui_menu_draw(mono_font, &g_rail_menu, GetMouseX(), GetMouseY(),
                          &g_ui_theme);
+        }
+
+        // Idle-aware frame pacing: any open UI surface, in-flight AI stream,
+        // in-progress drag, or visible toast counts as activity, same as
+        // input/PTY/resize/focus above. Skipped entirely during headless
+        // smoke runs so their frame-count-based timing is untouched.
+        if (ui_settings_open() || ui_palette_is_open() || ui_workflow_prompt_active()
+            || ui_rename_prompt_active() || ui_broadcast_prompt_active() || ui_menu_active(&g_rail_menu)
+            || ui_inline_active() || g_search_active
+            || active_stream || inline_stream
+            || g_drag_from >= 0 || toast_count() > 0) {
+            last_activity_ms = now_ms;
+        }
+        if (!phase3_smoke && !blocks_smoke && !kitty_smoke) {
+            bool idle = (now_ms - last_activity_ms) >= FANGS_IDLE_TIMEOUT_MS;
+            SetTargetFPS(idle ? FANGS_IDLE_FPS : 60);
         }
 
         EndDrawing();

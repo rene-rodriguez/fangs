@@ -89,6 +89,7 @@ add_executable(fangs
   src/ui_palette.c
   src/ui_workflow_prompt.c
   src/ui_rename_prompt.c
+  src/ui_broadcast_prompt.c
   src/ui_settings.c
   src/term_engine.c
   src/ai_http.c

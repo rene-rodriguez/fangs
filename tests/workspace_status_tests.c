@@ -153,6 +153,22 @@ static void test_working_expires_after_silence(void)
     EXPECT_TRUE(!workspace_status_is_working_at(&st, 10, 3001));
 }
 
+static void test_last_output_ms_tracks_most_recent_output(void)
+{
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    EXPECT_INT((int)workspace_status_last_output_ms(&st, 10), 0);
+
+    workspace_status_note_output_at(&st, 10, false, 42, 1000);
+    EXPECT_INT((int)workspace_status_last_output_ms(&st, 10), 1000);
+
+    workspace_status_note_output_at(&st, 10, false, 7, 4200);
+    EXPECT_INT((int)workspace_status_last_output_ms(&st, 10), 4200);
+
+    EXPECT_INT((int)workspace_status_last_output_ms(&st, 999), 0);
+}
+
 /* --- Event ring buffer tests --- */
 
 static void test_event_appended_on_notify(void)
@@ -275,6 +291,7 @@ int main(void)
     test_active_pane_can_be_marked_when_caller_says_not_focused();
     test_output_marks_working_without_unread_when_focused();
     test_working_expires_after_silence();
+    test_last_output_ms_tracks_most_recent_output();
     test_event_appended_on_notify();
     test_event_appended_on_command_fail();
     test_event_appended_on_child_exit();

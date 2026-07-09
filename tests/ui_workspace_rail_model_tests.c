@@ -430,6 +430,26 @@ static void test_working_flag_propagates_to_rows(void)
     EXPECT_INT(view.panes[0].git_changed_count, 2);
 }
 
+static void test_idle_ms_propagates_to_rows(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "agent", .branch = "main", .active = 1,
+          .idle_ms = 42000 },
+    };
+    WorkspaceRailInput panes[1] = {
+        { .id = 2, .label = "agent", .branch = "main", .active = 1,
+          .idle_ms = -1 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, panes, 1, &st, 0);
+
+    EXPECT_INT(view.tabs[0].idle_ms, 42000);
+    EXPECT_INT(view.panes[0].idle_ms, -1);
+}
+
 // --- Armed close (closing flag) ---
 
 static void test_closing_flag_propagates_from_input(void)
@@ -658,6 +678,7 @@ int main(void)
     test_hit_targets();
     test_hit_skips_hidden_pane_section();
     test_working_flag_propagates_to_rows();
+    test_idle_ms_propagates_to_rows();
     test_ports_copy_from_inputs();
     test_port_chip_layout_computed();
     test_port_chip_hit();

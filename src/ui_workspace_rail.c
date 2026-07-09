@@ -70,6 +70,22 @@ static void git_badge_label(int count, char *out, int out_size)
     snprintf(out, (size_t)out_size, "+%d", count);
 }
 
+// Short elapsed-time label for the idle-duration badge, e.g. "12s", "3m",
+// "2h". idle_ms is assumed >= 0 (callers gate on the -1 "never had output"
+// sentinel before calling this).
+static void format_idle_label(int idle_ms, char *out, int out_size)
+{
+    if (!out || out_size <= 0)
+        return;
+    long secs = idle_ms / 1000;
+    if (secs < 60)
+        snprintf(out, (size_t)out_size, "%lds", secs);
+    else if (secs < 3600)
+        snprintf(out, (size_t)out_size, "%ldm", secs / 60);
+    else
+        snprintf(out, (size_t)out_size, "%ldh", secs / 3600);
+}
+
 static bool in_rect(int mx, int my, int x, int y, int w, int h)
 {
     return mx >= x && mx < x + w && my >= y && my < y + h;
@@ -210,6 +226,18 @@ static void draw_row(Font font, const WorkspaceRailView *view,
         float wx = dot.a ? text_right - DOT_R : (float)(x + w - PAD_X - DOT_R);
         DrawCircle((int)wx, row->y + row->h / 2, DOT_R, wc);
         text_right -= DOT_R * 2 + 8;
+    } else if (row->idle_ms >= 0) {
+        // Not currently working: show how long it's been quiet, so you can
+        // triage several running agents at a glance (which one's gone
+        // quietest vs. which just finished).
+        char idle_label[8];
+        format_idle_label(row->idle_ms, idle_label, sizeof(idle_label));
+        Vector2 isz = MeasureTextEx(font, idle_label, FS_SUB, 0);
+        float ix = text_right - isz.x;
+        DrawTextEx(font, idle_label,
+                   (Vector2){ ix, (float)row->y + (float)row->h / 2.0f - isz.y / 2.0f },
+                   FS_SUB, 0, UI2RAY(g_ui_theme.subtitle));
+        text_right = ix - 8;
     }
 
     char git_badge[16] = "";

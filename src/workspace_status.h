@@ -91,6 +91,10 @@ WorkspaceAttention workspace_status_level(const WorkspaceStatus *st, uint64_t pa
 /* Get the notification text for a single pane (empty string if none). */
 const char *workspace_status_text(const WorkspaceStatus *st, uint64_t pane_id);
 
+/* Get the last-output timestamp (ms, monotonic clock) for a single pane.
+ * Returns 0 if the pane is unknown or has never produced output. */
+uint64_t workspace_status_last_output_ms(const WorkspaceStatus *st, uint64_t pane_id);
+
 /* Get the highest attention level among the given pane IDs. */
 WorkspaceAttention workspace_status_highest(const WorkspaceStatus *st,
                                             const uint64_t *pane_ids, int n);

@@ -49,6 +49,7 @@ void workspace_rail_build(WorkspaceRailView *view,
         row->index = i;
         row->active = in->active;
         row->working = in->working ? 1 : 0;
+        row->idle_ms = in->idle_ms;
         row->git_changed_count = in->git_changed_count > 0
             ? in->git_changed_count : 0;
 
@@ -104,6 +105,7 @@ void workspace_rail_build(WorkspaceRailView *view,
         row->index = i;
         row->active = in->active;
         row->working = in->working ? 1 : 0;
+        row->idle_ms = in->idle_ms;
         row->git_changed_count = in->git_changed_count > 0
             ? in->git_changed_count : 0;
 

@@ -164,6 +164,13 @@ const char *workspace_status_text(const WorkspaceStatus *st, uint64_t pane_id)
     return st->texts[idx];
 }
 
+uint64_t workspace_status_last_output_ms(const WorkspaceStatus *st, uint64_t pane_id)
+{
+    int idx = find_pane(st, pane_id);
+    if (idx < 0) return 0;
+    return st->last_output_ms[idx];
+}
+
 WorkspaceAttention workspace_status_highest(const WorkspaceStatus *st,
                                             const uint64_t *pane_ids, int n)
 {

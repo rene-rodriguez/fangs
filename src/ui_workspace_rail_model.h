@@ -47,6 +47,7 @@ typedef struct {
     int      index;            // 0-based tab or pane index
     int      active;           // 1 if this row is the focused item
     int      working;          // 1 if recent output detected
+    int      idle_ms;          // ms since last output; -1 = never had output
     int      git_changed_count;// dirty/untracked file count for +N badge
     WorkspaceAttention attention;
     char     label[64];        // primary line: agent/window title, else cwd label
@@ -104,6 +105,7 @@ typedef struct {
     const char  *name;         // user-set workspace name, may be NULL or empty
     int          active;       // 1 if focused
     int          working;      // 1 if recent output detected
+    int          idle_ms;      // ms since last output; -1 = never had output
     int          git_changed_count; // dirty/untracked file count for +N badge
     int          closing;      // 1 if row is in armed-close state (set by host)
     int          ports[3];     // dev-server port numbers, ascending (0 = unused)
