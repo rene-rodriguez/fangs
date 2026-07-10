@@ -50,6 +50,7 @@ void workspace_rail_build(WorkspaceRailView *view,
         row->active = in->active;
         row->working = in->working ? 1 : 0;
         row->idle_ms = in->idle_ms;
+        row->color_tag = in->color_tag;
         row->git_changed_count = in->git_changed_count > 0
             ? in->git_changed_count : 0;
 
@@ -106,6 +107,7 @@ void workspace_rail_build(WorkspaceRailView *view,
         row->active = in->active;
         row->working = in->working ? 1 : 0;
         row->idle_ms = in->idle_ms;
+        row->color_tag = in->color_tag;
         row->git_changed_count = in->git_changed_count > 0
             ? in->git_changed_count : 0;
 
@@ -184,6 +186,57 @@ static void row_layout_port_chips(WorkspaceRailRow *row, int row_w)
         row->port_w[i] = cw;
         cx -= gap;
     }
+}
+
+// Estimated width (px) reserved by the trailing indicators drawn to the
+// right of the badge/label area on the row's secondary line — the dot
+// (attention) and the working-pulse/idle-duration text. Fixed estimates
+// (not MeasureTextEx) for the same reason row_layout_port_chips uses them:
+// this module stays Raylib-free. A few px of slack here only shifts the
+// badge's click zone slightly; it doesn't affect what's drawn.
+static int row_estimate_trailing_w(const WorkspaceRailRow *row)
+{
+    int w = 0;
+    if (row->attention != WORKSPACE_ATTENTION_NONE)
+        w += 16; // attention dot + gap
+    if (row->working)
+        w += 16; // working pulse + gap
+    else if (row->idle_ms >= 0)
+        w += 36; // idle duration text ("12m", "3h", ...) + gap
+    return w;
+}
+
+// Compute the git-changed badge rect for a single row. Mirrors
+// row_layout_port_chips' char-width estimate ("+" plus digit count, 8px per
+// char + 6px padding) and must run after that function since the badge sits
+// immediately left of the port chip block when one is present.
+static void row_layout_git_badge(WorkspaceRailRow *row, int row_w)
+{
+    if (row->git_changed_count <= 0) {
+        row->git_badge_x = 0;
+        row->git_badge_y = 0;
+        row->git_badge_w = 0;
+        row->git_badge_h = 0;
+        return;
+    }
+
+    int right_edge = row_w - 8 - row_estimate_trailing_w(row);
+    if (row->port_count > 0 && row->port_w[0] > 0) {
+        int chip_area_left = row->port_x[0] - 6;
+        if (chip_area_left < right_edge)
+            right_edge = chip_area_left;
+    }
+
+    int count = row->git_changed_count;
+    int digits = 1;
+    if (count >= 10000) digits = 5; else if (count >= 1000) digits = 4;
+    else if (count >= 100) digits = 3; else if (count >= 10) digits = 2;
+    int bw = (digits + 1) * 8 + 6; // "+" prefix + digits
+
+    row->git_badge_h = 14;
+    row->git_badge_y = row->y + row->h - row->git_badge_h - 4;
+    row->git_badge_w = bw;
+    row->git_badge_x = right_edge - bw;
 }
 
 void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h)
@@ -271,6 +324,14 @@ void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h)
         for (int i = 0; i < view->pane_count; i++)
             if (view->panes[i].h > 0)
                 row_layout_port_chips(&view->panes[i], w);
+
+        // Git-changed badge rects — depends on port chip rects above, so it
+        // must run after the port chip layout loop.
+        for (int i = 0; i < view->tab_count; i++)
+            row_layout_git_badge(&view->tabs[i], w);
+        for (int i = 0; i < view->pane_count; i++)
+            if (view->panes[i].h > 0)
+                row_layout_git_badge(&view->panes[i], w);
     }
 }
 
@@ -289,6 +350,20 @@ static bool hit_row_port_chips(const WorkspaceRailRow *row, int row_x, int mx, i
         }
     }
     return false;
+}
+
+// Check the git-changed badge; returns true and sets `a` if hit.
+static bool hit_row_git_badge(const WorkspaceRailRow *row, int row_x, int mx, int my,
+                              WorkspaceRailAction *a)
+{
+    if (row->git_badge_w <= 0)
+        return false;
+    if (!hit_rect(mx, my, row_x + row->git_badge_x, row->git_badge_y,
+                 row->git_badge_w, row->git_badge_h))
+        return false;
+    a->type = WORKSPACE_RAIL_ACTION_VIEW_DIFF;
+    a->pane_id = row->id;
+    return true;
 }
 
 WorkspaceRailAction workspace_rail_hit(const WorkspaceRailView *view,
@@ -323,7 +398,9 @@ WorkspaceRailAction workspace_rail_hit(const WorkspaceRailView *view,
     for (int i = 0; i < view->tab_count; i++) {
         if (!hit_rect(mx, my, view->x, view->tabs[i].y, view->w, view->tabs[i].h))
             continue;
-        // Port chips take priority over tab switch.
+        // Git badge and port chips take priority over tab switch.
+        if (hit_row_git_badge(&view->tabs[i], view->x, mx, my, &a))
+            return a;
         if (hit_row_port_chips(&view->tabs[i], view->x, mx, my, &a))
             return a;
         a.type = WORKSPACE_RAIL_ACTION_SWITCH_TAB;
@@ -335,6 +412,8 @@ WorkspaceRailAction workspace_rail_hit(const WorkspaceRailView *view,
         for (int i = 0; i < view->pane_count; i++) {
             if (!hit_rect(mx, my, view->x, view->panes[i].y, view->w, view->panes[i].h))
                 continue;
+            if (hit_row_git_badge(&view->panes[i], view->x, mx, my, &a))
+                return a;
             if (hit_row_port_chips(&view->panes[i], view->x, mx, my, &a))
                 return a;
             a.type = WORKSPACE_RAIL_ACTION_FOCUS_PANE;
@@ -345,6 +424,31 @@ WorkspaceRailAction workspace_rail_hit(const WorkspaceRailView *view,
     }
 
     return a;
+}
+
+int workspace_rail_row_at(const WorkspaceRailView *view, int mx, int my,
+                         bool *out_is_pane)
+{
+    if (out_is_pane) *out_is_pane = false;
+
+    if (!hit_rect(mx, my, view->x, view->y, view->w, view->h))
+        return -1;
+
+    for (int i = 0; i < view->tab_count; i++) {
+        if (hit_rect(mx, my, view->x, view->tabs[i].y, view->w, view->tabs[i].h))
+            return i;
+    }
+
+    if (view->show_panes) {
+        for (int i = 0; i < view->pane_count; i++) {
+            if (hit_rect(mx, my, view->x, view->panes[i].y, view->w, view->panes[i].h)) {
+                if (out_is_pane) *out_is_pane = true;
+                return i;
+            }
+        }
+    }
+
+    return -1;
 }
 
 int workspace_rail_drop_index(const WorkspaceRailView *view, int my)

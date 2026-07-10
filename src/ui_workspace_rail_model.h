@@ -32,6 +32,7 @@ typedef enum {
     WORKSPACE_RAIL_ACTION_JUMP_ATTENTION, // notification strip click
     WORKSPACE_RAIL_ACTION_OPEN_PORT,      // click a port chip
     WORKSPACE_RAIL_ACTION_HISTORY,        // bell button click
+    WORKSPACE_RAIL_ACTION_VIEW_DIFF,      // click a row's git-changed badge
 } WorkspaceRailActionType;
 
 // Click result — pure data shared by main.c and the raylib layer.
@@ -48,6 +49,7 @@ typedef struct {
     int      active;           // 1 if this row is the focused item
     int      working;          // 1 if recent output detected
     int      idle_ms;          // ms since last output; -1 = never had output
+    int      color_tag;        // 0 = none, else 1-based palette index
     int      git_changed_count;// dirty/untracked file count for +N badge
     WorkspaceAttention attention;
     char     label[64];        // primary line: agent/window title, else cwd label
@@ -60,6 +62,8 @@ typedef struct {
     int      port_x[3];        // chip rect x-positions (set by layout)
     int      port_w[3];        // chip rect widths (set by layout)
     int      port_y, port_h;   // chip rect common y/h (set by layout)
+    int      git_badge_x, git_badge_y; // git-changed badge rect (set by layout)
+    int      git_badge_w, git_badge_h; // 0 width = not shown/not clickable
 } WorkspaceRailRow;
 
 typedef struct {
@@ -106,6 +110,7 @@ typedef struct {
     int          active;       // 1 if focused
     int          working;      // 1 if recent output detected
     int          idle_ms;      // ms since last output; -1 = never had output
+    int          color_tag;    // 0 = none, else 1-based palette index
     int          git_changed_count; // dirty/untracked file count for +N badge
     int          closing;      // 1 if row is in armed-close state (set by host)
     int          ports[3];     // dev-server port numbers, ascending (0 = unused)
@@ -130,5 +135,12 @@ WorkspaceRailAction workspace_rail_hit(const WorkspaceRailView *view,
 // relative to the tab rows. Requires workspace_rail_layout to have run.
 // 0 = before the first tab, tab_count = after the last.
 int workspace_rail_drop_index(const WorkspaceRailView *view, int my);
+
+// Row (tab or pane) under (mx, my), restricted to row y-ranges only (not
+// header/footer/notification/bell areas) — the pure hover hit test.
+// Returns the row's 0-based index within its own array (tabs[] or panes[],
+// selected via *out_is_pane), or -1 if (mx, my) is not over any row.
+int workspace_rail_row_at(const WorkspaceRailView *view, int mx, int my,
+                         bool *out_is_pane);
 
 #endif

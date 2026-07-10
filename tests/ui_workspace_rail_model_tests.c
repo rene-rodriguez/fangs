@@ -319,6 +319,50 @@ static void test_hit_skips_hidden_pane_section(void)
     EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_NONE);
 }
 
+static void test_row_at_resolves_hovered_row(void)
+{
+    WorkspaceRailInput tabs[2] = {
+        { .id = 1, .label = "act", .branch = NULL, .active = 1 },
+        { .id = 2, .label = "b", .branch = NULL, .active = 0 },
+    };
+    WorkspaceRailInput panes[2] = {
+        { .id = 3, .label = "act", .branch = NULL, .active = 1 },
+        { .id = 4, .label = "b", .branch = NULL, .active = 0 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 2, panes, 2, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    bool is_pane = true;
+    // Outside the rail entirely.
+    EXPECT_INT(workspace_rail_row_at(&view, 300, 100, &is_pane), -1);
+    EXPECT_TRUE(!is_pane);
+
+    // Over the "+" button / header — not a row.
+    is_pane = true;
+    EXPECT_INT(workspace_rail_row_at(&view, view.plus_x + 1, view.plus_y + 1, &is_pane), -1);
+    EXPECT_TRUE(!is_pane);
+
+    // Second tab row.
+    is_pane = true;
+    int idx = workspace_rail_row_at(&view, 10, view.tabs[1].y + 1, &is_pane);
+    EXPECT_INT(idx, 1);
+    EXPECT_TRUE(!is_pane);
+
+    // Second pane row.
+    is_pane = false;
+    idx = workspace_rail_row_at(&view, 10, view.panes[1].y + 1, &is_pane);
+    EXPECT_INT(idx, 1);
+    EXPECT_TRUE(is_pane);
+
+    // Empty space below the rows.
+    EXPECT_INT(workspace_rail_row_at(&view, 10,
+        view.panes[1].y + view.panes[1].h + 5, &is_pane), -1);
+}
+
 static void test_ports_copy_from_inputs(void)
 {
     // Port data should flow from inputs to rows without modification.
@@ -408,6 +452,89 @@ static void test_row_hit_still_switches_tab_when_ports_present(void)
     EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_SWITCH_TAB);
 }
 
+static void test_git_badge_layout_computed(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "dev", .branch = NULL, .active = 1,
+          .git_changed_count = 3 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    EXPECT_TRUE(view.tabs[0].git_badge_w > 0);
+    EXPECT_TRUE(view.tabs[0].git_badge_h > 0);
+    // Badge sits inside the row, left of the row's right edge.
+    EXPECT_TRUE(view.tabs[0].git_badge_x > 0);
+    EXPECT_TRUE(view.tabs[0].git_badge_x + view.tabs[0].git_badge_w < 260);
+}
+
+static void test_git_badge_hidden_when_clean(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "dev", .branch = NULL, .active = 1,
+          .git_changed_count = 0 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    EXPECT_INT(view.tabs[0].git_badge_w, 0);
+}
+
+static void test_git_badge_hit_reports_pane_id(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 42, .label = "dev", .branch = NULL, .active = 1,
+          .git_changed_count = 7 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    int cx = view.tabs[0].git_badge_x + 2;
+    int cy = view.tabs[0].git_badge_y + 2;
+    WorkspaceRailAction act = workspace_rail_hit(&view, cx, cy);
+    EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_VIEW_DIFF);
+    EXPECT_INT((int)act.pane_id, 42);
+}
+
+static void test_git_badge_hit_works_on_pane_rows(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "dev", .branch = NULL, .active = 1 },
+    };
+    WorkspaceRailInput panes[2] = {
+        { .id = 11, .label = "left",  .branch = NULL, .active = 1,
+          .git_changed_count = 2 },
+        { .id = 12, .label = "right", .branch = NULL, .active = 0 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, panes, 2, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    EXPECT_TRUE(view.panes[0].git_badge_w > 0);
+    EXPECT_INT(view.panes[1].git_badge_w, 0);
+
+    int cx = view.panes[0].git_badge_x + 2;
+    int cy = view.panes[0].git_badge_y + 2;
+    WorkspaceRailAction act = workspace_rail_hit(&view, cx, cy);
+    EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_VIEW_DIFF);
+    EXPECT_INT((int)act.pane_id, 11);
+}
+
 static void test_working_flag_propagates_to_rows(void)
 {
     WorkspaceRailInput tabs[1] = {
@@ -448,6 +575,26 @@ static void test_idle_ms_propagates_to_rows(void)
 
     EXPECT_INT(view.tabs[0].idle_ms, 42000);
     EXPECT_INT(view.panes[0].idle_ms, -1);
+}
+
+static void test_color_tag_propagates_to_rows(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "agent", .branch = "main", .active = 1,
+          .color_tag = 3 },
+    };
+    WorkspaceRailInput panes[1] = {
+        { .id = 2, .label = "agent", .branch = "main", .active = 1,
+          .color_tag = 0 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, panes, 1, &st, 0);
+
+    EXPECT_INT(view.tabs[0].color_tag, 3);
+    EXPECT_INT(view.panes[0].color_tag, 0);
 }
 
 // --- Armed close (closing flag) ---
@@ -677,12 +824,18 @@ int main(void)
     test_layout_positions();
     test_hit_targets();
     test_hit_skips_hidden_pane_section();
+    test_row_at_resolves_hovered_row();
     test_working_flag_propagates_to_rows();
     test_idle_ms_propagates_to_rows();
+    test_color_tag_propagates_to_rows();
     test_ports_copy_from_inputs();
     test_port_chip_layout_computed();
     test_port_chip_hit();
     test_row_hit_still_switches_tab_when_ports_present();
+    test_git_badge_layout_computed();
+    test_git_badge_hidden_when_clean();
+    test_git_badge_hit_reports_pane_id();
+    test_git_badge_hit_works_on_pane_rows();
     test_closing_flag_propagates_from_input();
     test_closing_flag_clears_for_non_closing_rows();
     test_closing_flag_works_with_attention();

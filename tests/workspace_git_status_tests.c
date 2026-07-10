@@ -196,11 +196,90 @@ static void test_sampler_sums_unique_worktrees(void)
     remove_repo(root);
 }
 
+static void test_list_changes_reports_status_and_numstat(void)
+{
+    if (run_git(NULL, "--version", NULL, NULL, NULL) != 0)
+        return;
+
+    char root[512];
+    EXPECT_TRUE(make_repo(root, sizeof(root), "list"));
+
+    char tracked[512];
+    snprintf(tracked, sizeof(tracked), "%s/tracked.txt", root);
+    EXPECT_TRUE(write_file(tracked, "changed\nmore\n"));
+
+    char untracked[512];
+    snprintf(untracked, sizeof(untracked), "%s/untracked.txt", root);
+    EXPECT_TRUE(write_file(untracked, "new\n"));
+
+    WorkspaceGitFileChange changes[WORKSPACE_GIT_STATUS_MAX_FILES];
+    int total = -1;
+    int n = workspace_git_status_list_changes(root, changes,
+                                              WORKSPACE_GIT_STATUS_MAX_FILES,
+                                              &total);
+    EXPECT_INT(n, 2);
+    EXPECT_INT(total, 2);
+
+    bool found_tracked = false, found_untracked = false;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(changes[i].path, "tracked.txt") == 0) {
+            found_tracked = true;
+            EXPECT_TRUE(changes[i].status[1] == 'M');
+            EXPECT_INT(changes[i].insertions, 2);
+            EXPECT_INT(changes[i].deletions, 1);
+        } else if (strcmp(changes[i].path, "untracked.txt") == 0) {
+            found_untracked = true;
+            EXPECT_TRUE(changes[i].status[0] == '?' && changes[i].status[1] == '?');
+            EXPECT_INT(changes[i].insertions, -1);
+            EXPECT_INT(changes[i].deletions, -1);
+        }
+    }
+    EXPECT_TRUE(found_tracked);
+    EXPECT_TRUE(found_untracked);
+
+    remove_repo(root);
+}
+
+static void test_list_changes_caps_output_and_reports_true_total(void)
+{
+    if (run_git(NULL, "--version", NULL, NULL, NULL) != 0)
+        return;
+
+    char root[512];
+    EXPECT_TRUE(make_repo(root, sizeof(root), "cap"));
+
+    for (int i = 0; i < 5; i++) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/file%d.txt", root, i);
+        EXPECT_TRUE(write_file(path, "new\n"));
+    }
+
+    WorkspaceGitFileChange changes[3];
+    int total = -1;
+    int n = workspace_git_status_list_changes(root, changes, 3, &total);
+    EXPECT_INT(n, 3);
+    EXPECT_INT(total, 5);
+
+    remove_repo(root);
+}
+
+static void test_list_changes_rejects_non_repo(void)
+{
+    WorkspaceGitFileChange changes[4];
+    int total = -1;
+    int n = workspace_git_status_list_changes("/tmp", changes, 4, &total);
+    EXPECT_INT(n, 0);
+    EXPECT_INT(total, 0);
+}
+
 int main(void)
 {
     test_count_path_reports_dirty_file_count();
     test_count_path_rejects_non_repo();
     test_sampler_publishes_latest_counts();
     test_sampler_sums_unique_worktrees();
+    test_list_changes_reports_status_and_numstat();
+    test_list_changes_caps_output_and_reports_true_total();
+    test_list_changes_rejects_non_repo();
     return failures ? 1 : 0;
 }

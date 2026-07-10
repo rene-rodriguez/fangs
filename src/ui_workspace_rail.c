@@ -31,6 +31,18 @@
 #define PORT_CHIP_PAD 6
 #define PORT_CHIP_R 3
 
+const char *WORKSPACE_RAIL_COLOR_TAG_NAMES[WORKSPACE_RAIL_COLOR_TAG_COUNT] = {
+    "Red", "Orange", "Yellow", "Green", "Blue", "Purple",
+};
+const UiColor WORKSPACE_RAIL_COLOR_TAG_COLORS[WORKSPACE_RAIL_COLOR_TAG_COUNT] = {
+    { 224,  90,  90, 255 },   // Red
+    { 224, 150,  70, 255 },   // Orange
+    { 214, 194,  70, 255 },   // Yellow
+    { 100, 190, 120, 255 },   // Green
+    {  90, 150, 224, 255 },   // Blue
+    { 170, 120, 214, 255 },   // Purple
+};
+
 static Color attention_color(WorkspaceAttention level)
 {
     switch (level) {
@@ -160,10 +172,17 @@ static void draw_row(Font font, const WorkspaceRailView *view,
 {
     int x = view->x, w = view->w;
 
+    Color tag_bar = (row->color_tag > 0 && row->color_tag <= WORKSPACE_RAIL_COLOR_TAG_COUNT)
+        ? UI2RAY(WORKSPACE_RAIL_COLOR_TAG_COLORS[row->color_tag - 1])
+        : UI2RAY(g_ui_theme.accent);
     if (row->active) {
         DrawRectangle(x, row->y, w, row->h,
                       with_alpha(UI2RAY(g_ui_theme.selection), 60));
-        DrawRectangle(x, row->y, ACTIVE_BAR_W, row->h, UI2RAY(g_ui_theme.accent));
+        DrawRectangle(x, row->y, ACTIVE_BAR_W, row->h, tag_bar);
+    } else if (row->color_tag > 0) {
+        // Not the active row, but tagged: show the group color regardless,
+        // so tagged workspaces stay identifiable at a glance.
+        DrawRectangle(x, row->y, ACTIVE_BAR_W, row->h, tag_bar);
     } else if (hovered) {
         DrawRectangle(x, row->y, w, row->h,
                       with_alpha(UI2RAY(g_ui_theme.selection), 28));
@@ -240,17 +259,15 @@ static void draw_row(Font font, const WorkspaceRailView *view,
         text_right = ix - 8;
     }
 
+    // Rect comes from the model (workspace_rail_layout), same as port chips —
+    // drawing and hit-testing read the same numbers so they can't drift apart.
     char git_badge[16] = "";
-    int git_badge_x = 0;
-    int git_badge_y = 0;
-    int git_badge_w = 0;
-    int git_badge_h = PORT_CHIP_H;
-    if (row->git_changed_count > 0) {
+    int git_badge_x = row->git_badge_x;
+    int git_badge_y = row->git_badge_y;
+    int git_badge_w = row->git_badge_w;
+    int git_badge_h = row->git_badge_h;
+    if (git_badge_w > 0) {
         git_badge_label(row->git_changed_count, git_badge, sizeof(git_badge));
-        Vector2 gsz = MeasureTextEx(font, git_badge, FS_SUB, 0);
-        git_badge_w = (int)gsz.x + PORT_CHIP_PAD + 2;
-        git_badge_x = (int)text_right - git_badge_w;
-        git_badge_y = row->y + row->h - git_badge_h - 4;
         if (git_badge_x >= x + ROW_TEXT_X) {
             text_right = (float)(git_badge_x - 6);
         } else {

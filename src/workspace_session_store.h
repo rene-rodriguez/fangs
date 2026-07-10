@@ -14,6 +14,7 @@
 typedef struct {
     char cwd[WORKSPACE_SESSION_CWD_MAX];
     char name[WORKSPACE_SESSION_NAME_MAX];
+    int  color_tag;   // 0 = none; absent in old files, defaults to 0
 } WorkspaceSessionTab;
 
 typedef struct {

@@ -214,6 +214,183 @@ int workspace_git_status_count_path(const char *cwd)
     return count;
 }
 
+// Parses the same porcelain -z stream as count_porcelain_z, but captures the
+// status code and path per entry instead of just counting them.
+static int list_porcelain_z(const char *buf, size_t len,
+                            WorkspaceGitFileChange *out, int max_out,
+                            int *out_total)
+{
+    int total = 0;
+    int n = 0;
+    size_t i = 0;
+
+    while (i + 3 <= len) {
+        char x = buf[i];
+        char y = buf[i + 1];
+        if (buf[i + 2] != ' ')
+            break;
+
+        bool has_second_path = (x == 'R' || x == 'C' || y == 'R' || y == 'C');
+        i += 3;
+        size_t path_start = i;
+        while (i < len && buf[i] != '\0')
+            i++;
+        size_t path_len = i - path_start;
+        if (i < len)
+            i++;
+
+        if (n < max_out) {
+            WorkspaceGitFileChange *e = &out[n];
+            e->status[0] = x;
+            e->status[1] = y;
+            e->status[2] = '\0';
+            size_t copy_len = path_len;
+            if (copy_len >= sizeof(e->path))
+                copy_len = sizeof(e->path) - 1;
+            memcpy(e->path, buf + path_start, copy_len);
+            e->path[copy_len] = '\0';
+            e->insertions = -1;
+            e->deletions = -1;
+            n++;
+        }
+        total++;
+
+        if (has_second_path) {
+            while (i < len && buf[i] != '\0')
+                i++;
+            if (i < len)
+                i++;
+        }
+    }
+
+    if (out_total)
+        *out_total = total;
+    return n;
+}
+
+// Parses one "<ins>\t<del>\t<path>\n" line (git diff --numstat format,
+// '-' for either count means binary/unknown). Returns the byte offset just
+// past the parsed line's terminating newline (or `len` at end of buffer).
+static size_t parse_numstat_line(const char *buf, size_t len, size_t start,
+                                 int *ins, int *del, const char **path,
+                                 size_t *path_len)
+{
+    size_t i = start;
+    while (i < len && buf[i] != '\n')
+        i++;
+    size_t line_len = i - start;
+    size_t next = (i < len) ? i + 1 : len;
+
+    const char *line = buf + start;
+    size_t p = 0;
+    *ins = -1;
+    *del = -1;
+
+    if (p < line_len && line[p] == '-') {
+        p++;
+    } else {
+        int v = 0;
+        bool any = false;
+        while (p < line_len && line[p] >= '0' && line[p] <= '9') {
+            v = v * 10 + (line[p] - '0');
+            p++;
+            any = true;
+        }
+        if (any)
+            *ins = v;
+    }
+    if (p < line_len && line[p] == '\t')
+        p++;
+
+    if (p < line_len && line[p] == '-') {
+        p++;
+    } else {
+        int v = 0;
+        bool any = false;
+        while (p < line_len && line[p] >= '0' && line[p] <= '9') {
+            v = v * 10 + (line[p] - '0');
+            p++;
+            any = true;
+        }
+        if (any)
+            *del = v;
+    }
+    if (p < line_len && line[p] == '\t')
+        p++;
+
+    *path = line + p;
+    *path_len = line_len - p;
+    return next;
+}
+
+// Runs `git <argv> --numstat` and merges insertion/deletion counts into
+// matching entries of `out` by exact path match. Paths that git quotes
+// (rare -- non-ASCII/special characters without `-z`) simply won't match and
+// keep their -1/-1 counts; acceptable for a read-only summary popover.
+static void merge_numstat(const char *root, const char *const argv[4],
+                          WorkspaceGitFileChange *out, int n)
+{
+    if (n <= 0)
+        return;
+
+    char *buf = NULL;
+    size_t len = 0;
+    if (git_capture_raw_args(root, argv, &buf, &len) != 0)
+        return;
+
+    size_t i = 0;
+    while (i < len) {
+        int ins, del;
+        const char *path;
+        size_t path_len;
+        i = parse_numstat_line(buf, len, i, &ins, &del, &path, &path_len);
+        if (path_len == 0)
+            continue;
+
+        for (int j = 0; j < n; j++) {
+            size_t elen = strlen(out[j].path);
+            if (elen == path_len && strncmp(out[j].path, path, path_len) == 0) {
+                if (ins >= 0)
+                    out[j].insertions = ins;
+                if (del >= 0)
+                    out[j].deletions = del;
+                break;
+            }
+        }
+    }
+
+    free(buf);
+}
+
+int workspace_git_status_list_changes(const char *cwd,
+                                      WorkspaceGitFileChange *out, int max_out,
+                                      int *out_total)
+{
+    if (out_total)
+        *out_total = 0;
+    if (!cwd || !cwd[0] || !out || max_out <= 0)
+        return 0;
+
+    char root[WORKSPACE_GIT_STATUS_PATH_MAX];
+    if (!workspace_git_status_root_path(cwd, root, sizeof(root)))
+        return 0;
+
+    char *buf = NULL;
+    size_t len = 0;
+    if (git_capture_status(root, &buf, &len) != 0)
+        return 0;
+
+    int n = list_porcelain_z(buf, len, out, max_out, out_total);
+    free(buf);
+
+    const char *argv_unstaged[4] = { "diff", "--numstat", NULL, NULL };
+    const char *argv_staged[4]   = { "diff", "--cached", "--numstat", NULL };
+    merge_numstat(root, argv_unstaged, out, n);
+    merge_numstat(root, argv_staged, out, n);
+
+    return n;
+}
+
 static bool targets_equal(const WorkspaceGitStatusSampler *sampler,
                           const WorkspaceGitStatusTarget *targets,
                           int target_count)

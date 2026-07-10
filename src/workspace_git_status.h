@@ -11,11 +11,19 @@
 #define WORKSPACE_GIT_STATUS_MAX_TARGETS 64
 #define WORKSPACE_GIT_STATUS_PATH_MAX 4096
 #define WORKSPACE_GIT_STATUS_INTERVAL_MS 2000
+#define WORKSPACE_GIT_STATUS_MAX_FILES 24
 
 typedef struct {
     uint64_t pane_id;
     char cwd[WORKSPACE_GIT_STATUS_PATH_MAX];
 } WorkspaceGitStatusTarget;
+
+typedef struct {
+    char path[WORKSPACE_GIT_STATUS_PATH_MAX];
+    char status[3];     // e.g. "M ", "A ", "D ", "??", "R "
+    int  insertions;    // -1 if unknown (untracked / binary)
+    int  deletions;     // -1 if unknown
+} WorkspaceGitFileChange;
 
 typedef struct WorkspaceGitStatusSampler WorkspaceGitStatusSampler;
 
@@ -41,5 +49,17 @@ int workspace_git_status_count_for(WorkspaceGitStatusSampler *sampler,
 int workspace_git_status_sum_unique_for(WorkspaceGitStatusSampler *sampler,
                                         const uint64_t *pane_ids,
                                         int pane_count);
+
+// One-shot, foreground call — NOT sampled/threaded. Lists changed files
+// (status + insertion/deletion counts where known) for cwd's git worktree.
+// Callers must only invoke this in response to an explicit user action
+// (e.g. a rail badge/menu click), never per-frame or per-keystroke, matching
+// the same performance guardrail as the cross-workspace scrollback search.
+// Returns the number of entries written to `out` (<= max_out); the true
+// total (which may exceed max_out) is written to *out_total when non-NULL.
+// Returns 0 (and *out_total = 0) when cwd is not in a git worktree or clean.
+int workspace_git_status_list_changes(const char *cwd,
+                                      WorkspaceGitFileChange *out, int max_out,
+                                      int *out_total);
 
 #endif // FANGS_WORKSPACE_GIT_STATUS_H

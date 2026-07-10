@@ -79,6 +79,7 @@ typedef struct {
     PaneNode *root;
     PaneNode *focused;
     char name[64];   // user-set workspace name ("" = automatic rail label)
+    int  color_tag;  // 0 = none, 1..WORKSPACE_RAIL_COLOR_TAG_COUNT = palette index
 } Tab;
 
 // App: the whole terminal window.
@@ -124,6 +125,15 @@ static UiMenu g_rail_menu = {0};
 static uint64_t g_armed_pane_id = 0;
 static uint64_t g_armed_deadline_ms = 0;
 
+// Hover-preview dwell state: which rail row (tab/pane id) the mouse has been
+// resting on and since when. The preview text itself is computed once (not
+// every frame) after the dwell threshold passes — see the draw-time block
+// near ui_workspace_rail_draw()'s call site.
+static uint64_t g_hover_row_id = 0;
+static uint64_t g_hover_since_ms = 0;
+static char     g_hover_preview[256] = "";
+#define FANGS_HOVER_DWELL_MS 500
+
 // Set on any tab-list mutation (add/close/rename/reorder); the per-frame
 // loop saves the session state and clears it when set, so writes happen at
 // most once per frame and only when something actually changed.
@@ -152,7 +162,13 @@ static bool g_rail_context_is_pane = false;
 #define RAIL_MENU_CLEANUP_CONFIRM 105
 #define RAIL_MENU_PR_CREATE   106
 #define RAIL_MENU_PR_DIFF     107
+#define RAIL_MENU_COLOR       108   // opens the color-tag submenu
+#define RAIL_MENU_DIFF        109   // opens the changed-files popover
 // History event tags start at 200 (tag = 200 + event_index).
+// Color-tag submenu tags start at 350 (tag = RAIL_MENU_COLOR_BASE + choice;
+// choice 0 = "None", 1..WORKSPACE_RAIL_COLOR_TAG_COUNT = palette index).
+// Reuses g_rail_context_tab to remember which tab the submenu applies to.
+#define RAIL_MENU_COLOR_BASE  350
 
 // History event cache: snapshot taken when the notification popover opens.
 #define HISTORY_EVENT_CACHE 32
@@ -164,6 +180,21 @@ static int g_history_event_count = 0;
 #define RAIL_MENU_INBOX_BASE 300
 static uint64_t g_inbox_pane_cache[WORKSPACE_RAIL_MAX_TABS];
 static int g_inbox_pane_count = 0;
+
+// Cross-workspace search results: one entry per tab with a match, snapshot
+// taken when the results popover opens (tag = RAIL_MENU_SEARCH_BASE + index).
+#define RAIL_MENU_SEARCH_BASE 400
+static uint64_t g_search_result_pane_cache[WORKSPACE_RAIL_MAX_TABS];
+static int g_search_result_count = 0;
+
+// Diff-review popover: one entry per changed file, snapshot taken when the
+// popover opens (tag = RAIL_MENU_DIFF_BASE + index). Clicking an entry copies
+// its path to the clipboard rather than jumping anywhere, so this caches
+// paths instead of pane ids.
+#define RAIL_MENU_DIFF_BASE 500
+#define RAIL_MENU_DIFF_PATH_CACHE_MAX 256
+static char g_diff_result_path_cache[WORKSPACE_GIT_STATUS_MAX_FILES][RAIL_MENU_DIFF_PATH_CACHE_MAX];
+static int g_diff_result_count = 0;
 
 // Worktree cleanup: candidates snapshot taken when the confirm popover
 // opens; acted on only if RAIL_MENU_CLEANUP_CONFIRM is selected.
@@ -218,6 +249,30 @@ static uint64_t pane_id_for_session(const Session *s)
 {
     // Use the session pointer value directly — it's stable within a process.
     return (uint64_t)(uintptr_t)s;
+}
+
+// Resolve a pane_id back to its live Session, or NULL if it no longer
+// exists (pane closed since the id was captured). Walks every tab's pane
+// tree, mirroring the jump-to-pane resolution loop later in the frame.
+static Session *session_for_pane_id(uint64_t target)
+{
+    if (target == 0)
+        return NULL;
+    for (int ti = 0; ti < app.n_tabs; ti++) {
+        Tab *tt = &app.tabs[ti];
+        if (!tt->root)
+            continue;
+        PaneNode *leaves[WORKSPACE_RAIL_MAX_PANES];
+        int n = 0;
+        pane_collect_leaves(tt->root, leaves, WORKSPACE_RAIL_MAX_PANES, &n);
+        for (int i = 0; i < n; i++) {
+            if (leaves[i]->kind != PANE_LEAF)
+                continue;
+            if (pane_id_for_session(leaves[i]->leaf.session) == target)
+                return leaves[i]->leaf.session;
+        }
+    }
+    return NULL;
 }
 
 // Find or create the seen-sequence slot for a pane. Returns -1 when full.
@@ -452,6 +507,7 @@ static void collect_rail_inputs(uint64_t now_ms)
                               (int)sizeof(ri->tab_branches[i]), now_ms);
 
         ri->tabs[i].id = tab_attention_id(tt);
+        ri->tabs[i].color_tag = tt->color_tag;
         ri->tabs[i].label = ri->tab_labels[i];
         ri->tabs[i].branch = ri->tab_branches[i];
         ri->tabs[i].title = rep
@@ -534,6 +590,7 @@ static void collect_rail_inputs(uint64_t now_ms)
 
             uint64_t pid = pane_id_for_session(ps);
             ri->panes[i].id = pid;
+            ri->panes[i].color_tag = atab->color_tag;
             ri->panes[i].label = ri->pane_labels[i];
             ri->panes[i].branch = ri->pane_branches[i];
             ri->panes[i].title = cmdblocks_title((CmdBlocks *)session_cmdblocks(ps));
@@ -1933,6 +1990,153 @@ static int col_of_byte(int row, int off)
     return g_row_cols[row] > 0 ? g_row_cols[row] - 1 : 0;
 }
 
+// One-shot, explicit (Enter-triggered — never per-frame/per-keystroke) scan
+// of every open session's full screen+scrollback text for `query`, grouped
+// one result per tab. Opens a results popover (mirrors the Attention Inbox
+// pattern: tag = RAIL_MENU_SEARCH_BASE + index, pane id cached in parallel).
+static void perform_cross_workspace_search(const char *query)
+{
+    if (!query || !query[0])
+        return;
+    int qlen = (int)strlen(query);
+    const char *home = getenv("HOME");
+
+    UiMenuItem sitems[WORKSPACE_RAIL_MAX_TABS];
+    memset(sitems, 0, sizeof(sitems));
+    g_search_result_count = 0;
+
+    for (int ti = 0; ti < app.n_tabs && g_search_result_count < WORKSPACE_RAIL_MAX_TABS; ti++) {
+        Tab *tt = &app.tabs[ti];
+        if (!tt->root)
+            continue;
+        PaneNode *leaves[WORKSPACE_RAIL_MAX_PANES];
+        int n = 0;
+        pane_collect_leaves(tt->root, leaves, WORKSPACE_RAIL_MAX_PANES, &n);
+
+        uint64_t match_pane_id = 0;
+        char snippet[160] = "";
+        for (int pi = 0; pi < n && match_pane_id == 0; pi++) {
+            if (leaves[pi]->kind != PANE_LEAF)
+                continue;
+            Session *ss = leaves[pi]->leaf.session;
+            if (!ss)
+                continue;
+            char *dump = term_engine_dump_text((TermEngine *)session_engine(ss));
+            if (!dump)
+                continue;
+            int dlen = (int)strlen(dump);
+            int pos = ci_find(dump, dlen, query, qlen, 0);
+            if (pos >= 0) {
+                // Extract the containing line and redact it — a match
+                // snippet could sit right next to a secret in the output,
+                // same security boundary as the AI context/hover preview.
+                int ls = pos;
+                while (ls > 0 && dump[ls - 1] != '\n') ls--;
+                int le = pos;
+                while (le < dlen && dump[le] != '\n') le++;
+                int llen = le - ls;
+                if (llen > 140) llen = 140;
+                char raw_line[160];
+                snprintf(raw_line, sizeof(raw_line), "%.*s", llen, dump + ls);
+                char *redacted = redact_secrets(raw_line);
+                snprintf(snippet, sizeof(snippet), "%s", redacted ? redacted : raw_line);
+                free(redacted);
+                match_pane_id = pane_id_for_session(ss);
+            }
+            free(dump);
+        }
+
+        if (match_pane_id != 0) {
+            char label[64];
+            if (tt->name[0]) {
+                snprintf(label, sizeof(label), "%s", tt->name);
+            } else {
+                Session *rep = tt->focused ? tt->focused->leaf.session : tab_first_leaf_session(tt);
+                const char *title = rep ? cmdblocks_title((CmdBlocks *)session_cmdblocks(rep)) : NULL;
+                if (title && title[0])
+                    snprintf(label, sizeof(label), "%s", title);
+                else
+                    workspace_cwd_label(rep ? session_cwd(rep) : "",
+                                        home ? home : "", label, sizeof(label));
+            }
+            int idx = g_search_result_count;
+            snprintf(sitems[idx].label, sizeof(sitems[idx].label), "%s: %s", label, snippet);
+            sitems[idx].tag = RAIL_MENU_SEARCH_BASE + idx;
+            sitems[idx].tint = UI_COLOR_TEXT;
+            g_search_result_pane_cache[idx] = match_pane_id;
+            g_search_result_count++;
+        }
+    }
+
+    if (g_search_result_count == 0) {
+        toast_push(TOAST_INFO, "No matches found");
+        return;
+    }
+
+    int mx = GetScreenWidth() / 2;
+    int my = GetScreenHeight() / 2;
+    ui_menu_open(&g_rail_menu, sitems, g_search_result_count, mx, my);
+    ui_menu_layout(&g_rail_menu, GetScreenWidth(), GetScreenHeight());
+}
+
+// Show a popover listing the changed files in cwd's git worktree, so an
+// agent's progress can be reviewed without switching to its pane. One-shot,
+// foreground call — only invoked from an explicit menu/badge click, never
+// per-frame, matching the same guardrail as perform_cross_workspace_search.
+static void perform_view_changes(const char *cwd)
+{
+    if (!cwd || !cwd[0]) {
+        toast_push(TOAST_INFO, "No changes to show.");
+        return;
+    }
+
+    WorkspaceGitFileChange changes[WORKSPACE_GIT_STATUS_MAX_FILES];
+    int total = 0;
+    int n = workspace_git_status_list_changes(cwd, changes,
+                                              WORKSPACE_GIT_STATUS_MAX_FILES, &total);
+    if (n == 0) {
+        toast_push(TOAST_INFO, "No changes to show.");
+        return;
+    }
+
+    UiMenuItem ditems[WORKSPACE_GIT_STATUS_MAX_FILES + 1];
+    memset(ditems, 0, sizeof(ditems));
+    g_diff_result_count = 0;
+
+    for (int i = 0; i < n; i++) {
+        int idx = g_diff_result_count;
+        char stat_suffix[24] = "";
+        if (changes[i].insertions >= 0 || changes[i].deletions >= 0) {
+            snprintf(stat_suffix, sizeof(stat_suffix), " (+%d/-%d)",
+                    changes[i].insertions >= 0 ? changes[i].insertions : 0,
+                    changes[i].deletions >= 0 ? changes[i].deletions : 0);
+        }
+        snprintf(ditems[idx].label, sizeof(ditems[idx].label), "%s %s%s",
+                changes[i].status, changes[i].path, stat_suffix);
+        ditems[idx].tag = RAIL_MENU_DIFF_BASE + idx;
+        ditems[idx].tint = (changes[i].status[0] == 'D' || changes[i].status[1] == 'D')
+            ? UI_COLOR_INLINE_ERROR : UI_COLOR_TEXT;
+        ditems[idx].separator = false;
+        snprintf(g_diff_result_path_cache[idx], sizeof(g_diff_result_path_cache[idx]),
+                "%s", changes[i].path);
+        g_diff_result_count++;
+    }
+
+    if (total > n) {
+        int idx = g_diff_result_count++;
+        snprintf(ditems[idx].label, sizeof(ditems[idx].label),
+                "+%d more changed", total - n);
+        ditems[idx].tag = -1; // informational only, not clickable
+        ditems[idx].tint = UI_COLOR_SUBTITLE;
+        ditems[idx].separator = false;
+    }
+
+    int mx = GetScreenWidth() / 2;
+    int my = GetScreenHeight() / 2;
+    ui_menu_open(&g_rail_menu, ditems, g_diff_result_count, mx, my);
+    ui_menu_layout(&g_rail_menu, GetScreenWidth(), GetScreenHeight());
+}
+
 // Highlight every visible occurrence of the query; returns the match count.
 static int draw_search_highlights(int origin_x, int origin_y,
                                   int pad, int cell_width, int cell_height)
@@ -1991,6 +2195,11 @@ static void draw_search_box(Font font, int term_origin_x, int term_area_w, int m
     Vector2 cs = MeasureTextEx(font, cnt, 14.0f, 0);
     DrawTextEx(font, cnt, (Vector2){(float)x + w - cs.x - 10, (float)y + 10}, 14.0f, 0,
                UI2RAY(g_ui_theme.search_count));
+    if (g_search_query[0]) {
+        DrawTextEx(font, "Enter: search all workspaces",
+                  (Vector2){(float)x + 10, (float)(y + h + 4)}, 11.0f, 0,
+                  UI2RAY(g_ui_theme.search_count));
+    }
 }
 
 static void render_terminal(GhosttyRenderState render_state,
@@ -2847,6 +3056,7 @@ static void persist_session_if_dirty(const AppConfig *cfg)
         const char *cwd = rep ? session_cwd(rep) : "";
         snprintf(state.tabs[i].cwd, sizeof(state.tabs[i].cwd), "%s", cwd ? cwd : "");
         snprintf(state.tabs[i].name, sizeof(state.tabs[i].name), "%s", tt->name);
+        state.tabs[i].color_tag = tt->color_tag;
     }
 
     char session_path[4096];
@@ -3968,6 +4178,8 @@ int main(int argc, char **argv)
     register_session_effects(s);
     if (restore_valid_count > 0 && restore_valid[0].name[0])
         snprintf(app.tabs[0].name, sizeof(app.tabs[0].name), "%s", restore_valid[0].name);
+    if (restore_valid_count > 0)
+        app.tabs[0].color_tag = restore_valid[0].color_tag;
     // Cover the case where the whole session is just this one tab and the
     // user never adds/closes/renames another: still capture its final cwd
     // (which may drift via `cd`) on exit instead of only persisting on
@@ -3992,6 +4204,8 @@ int main(int argc, char **argv)
         if (rs && restore_valid[i].name[0])
             snprintf(app.tabs[app.n_tabs - 1].name,
                     sizeof(app.tabs[app.n_tabs - 1].name), "%s", restore_valid[i].name);
+        if (rs)
+            app.tabs[app.n_tabs - 1].color_tag = restore_valid[i].color_tag;
     }
     if (restore_valid_count > 1) {
         int want_active = (restore_active >= 0 && restore_active < app.n_tabs) ? restore_active : 0;
@@ -4310,7 +4524,13 @@ int main(int argc, char **argv)
         }
         if (g_search_active) {
             if (IsKeyPressed(KEY_ESCAPE)) { g_search_active = false; g_search_query[0] = '\0'; }
-            else search_input();
+            else {
+                search_input();
+                // Explicit, one-shot cross-workspace scan — never run this
+                // per-keystroke/per-frame, only on an intentional Enter.
+                if (IsKeyPressed(KEY_ENTER) && g_search_query[0] != '\0')
+                    perform_cross_workspace_search(g_search_query);
+            }
         }
 
         // Font zoom: Ctrl/Cmd + '='/'+' grows, '-' shrinks, '0' resets to the
@@ -5179,6 +5399,11 @@ int main(int argc, char **argv)
             case WORKSPACE_RAIL_ACTION_JUMP_ATTENTION:
                 g_jump_request = act.pane_id;
                 break;
+            case WORKSPACE_RAIL_ACTION_VIEW_DIFF: {
+                Session *rep = session_for_pane_id(act.pane_id);
+                perform_view_changes(rep ? session_cwd(rep) : NULL);
+                break;
+            }
             case WORKSPACE_RAIL_ACTION_HISTORY: {
                 // Snapshot events for the popover before opening.
                 g_history_event_count = workspace_status_events(
@@ -5310,6 +5535,20 @@ int main(int argc, char **argv)
                     mc++;
                 }
 
+                snprintf(mitems[mc].label, sizeof(mitems[mc].label), "Color...");
+                mitems[mc].tag = RAIL_MENU_COLOR;
+                mitems[mc].tint = UI_COLOR_TEXT;
+                mitems[mc].separator = false;
+                mc++;
+
+                if (g_rail_view.tabs[hit_tab].git_changed_count > 0) {
+                    snprintf(mitems[mc].label, sizeof(mitems[mc].label), "View Changes...");
+                    mitems[mc].tag = RAIL_MENU_DIFF;
+                    mitems[mc].tint = UI_COLOR_TEXT;
+                    mitems[mc].separator = false;
+                    mc++;
+                }
+
                 snprintf(mitems[mc].label, sizeof(mitems[mc].label), "Close Workspace");
                 mitems[mc].tag = RAIL_MENU_CLOSE;
                 mitems[mc].tint = UI_COLOR_INLINE_ERROR;
@@ -5323,6 +5562,13 @@ int main(int argc, char **argv)
                 mitems[mc].tint = UI_COLOR_TEXT;
                 mitems[mc].separator = false;
                 mc++;
+                if (g_rail_view.panes[hit_pane].git_changed_count > 0) {
+                    snprintf(mitems[mc].label, sizeof(mitems[mc].label), "View Changes...");
+                    mitems[mc].tag = RAIL_MENU_DIFF;
+                    mitems[mc].tint = UI_COLOR_TEXT;
+                    mitems[mc].separator = false;
+                    mc++;
+                }
                 snprintf(mitems[mc].label, sizeof(mitems[mc].label), "Close Pane");
                 mitems[mc].tag = RAIL_MENU_CLOSE;
                 mitems[mc].tint = UI_COLOR_INLINE_ERROR;
@@ -5592,7 +5838,43 @@ int main(int argc, char **argv)
                         toast_push(removed > 0 ? TOAST_INFO : TOAST_WARN, msg);
                         break;
                     }
+                    case RAIL_MENU_COLOR: {
+                        if (g_rail_context_tab < 0 || g_rail_context_tab >= app.n_tabs)
+                            break;
+                        UiMenuItem citems[WORKSPACE_RAIL_COLOR_TAG_COUNT + 1];
+                        memset(citems, 0, sizeof(citems));
+                        snprintf(citems[0].label, sizeof(citems[0].label), "None");
+                        citems[0].tag = RAIL_MENU_COLOR_BASE;
+                        citems[0].tint = UI_COLOR_SUBTITLE;
+                        for (int ci = 0; ci < WORKSPACE_RAIL_COLOR_TAG_COUNT; ci++) {
+                            snprintf(citems[ci + 1].label, sizeof(citems[ci + 1].label),
+                                    "%s", WORKSPACE_RAIL_COLOR_TAG_NAMES[ci]);
+                            citems[ci + 1].tag = RAIL_MENU_COLOR_BASE + ci + 1;
+                            citems[ci + 1].tint = WORKSPACE_RAIL_COLOR_TAG_COLORS[ci];
+                        }
+                        ui_menu_open(&g_rail_menu, citems, WORKSPACE_RAIL_COLOR_TAG_COUNT + 1,
+                                    GetMouseX(), GetMouseY());
+                        ui_menu_layout(&g_rail_menu, GetScreenWidth(), GetScreenHeight());
+                        break;
+                    }
+                    case RAIL_MENU_DIFF: {
+                        Session *rep = g_rail_context_is_pane
+                            ? session_for_pane_id(g_rail_context_pane)
+                            : (g_rail_context_tab >= 0 && g_rail_context_tab < app.n_tabs
+                               ? tab_first_leaf_session(&app.tabs[g_rail_context_tab])
+                               : NULL);
+                        perform_view_changes(rep ? session_cwd(rep) : NULL);
+                        break;
+                    }
                     default:
+                        // Color-tag submenu choice (tag = RAIL_MENU_COLOR_BASE
+                        // + choice; 0 = None, 1..COUNT = palette index).
+                        if (tag >= RAIL_MENU_COLOR_BASE
+                            && tag <= RAIL_MENU_COLOR_BASE + WORKSPACE_RAIL_COLOR_TAG_COUNT
+                            && g_rail_context_tab >= 0 && g_rail_context_tab < app.n_tabs) {
+                            app.tabs[g_rail_context_tab].color_tag = tag - RAIL_MENU_COLOR_BASE;
+                            g_session_dirty = true;
+                        }
                         // History event jump (tag = 200 + event_index).
                         if (tag >= 200 && tag < 200 + g_history_event_count) {
                             int ei = tag - 200;
@@ -5610,6 +5892,27 @@ int main(int argc, char **argv)
                                 uint64_t target = g_inbox_pane_cache[ii];
                                 if (target != 0)
                                     g_jump_request = target;
+                            }
+                        }
+                        // Cross-workspace search result jump
+                        // (tag = RAIL_MENU_SEARCH_BASE + index).
+                        if (tag >= RAIL_MENU_SEARCH_BASE
+                            && tag < RAIL_MENU_SEARCH_BASE + g_search_result_count) {
+                            int si = tag - RAIL_MENU_SEARCH_BASE;
+                            if (si >= 0 && si < g_search_result_count) {
+                                uint64_t target = g_search_result_pane_cache[si];
+                                if (target != 0)
+                                    g_jump_request = target;
+                            }
+                        }
+                        // Diff-review result click: copy the file's path
+                        // (tag = RAIL_MENU_DIFF_BASE + index).
+                        if (tag >= RAIL_MENU_DIFF_BASE
+                            && tag < RAIL_MENU_DIFF_BASE + g_diff_result_count) {
+                            int di = tag - RAIL_MENU_DIFF_BASE;
+                            if (di >= 0 && di < g_diff_result_count) {
+                                SetClipboardText(g_diff_result_path_cache[di]);
+                                toast_push(TOAST_INFO, "Copied path to clipboard");
                             }
                         }
                         break;
@@ -5667,6 +5970,65 @@ int main(int argc, char **argv)
             build_rail_view(&lo, now_ms);
             ui_workspace_rail_draw(mono_font, &g_rail_view,
                                    GetMouseX(), GetMouseY());
+
+            // Hover-preview dwell tracking: which row (if any) the mouse is
+            // resting over, and for how long.
+            bool hov_is_pane = false;
+            int hov_idx = workspace_rail_row_at(&g_rail_view, GetMouseX(), GetMouseY(),
+                                                &hov_is_pane);
+            uint64_t hov_id = (hov_idx >= 0)
+                ? (hov_is_pane ? g_rail_view.panes[hov_idx].id : g_rail_view.tabs[hov_idx].id)
+                : 0;
+
+            if (hov_id != g_hover_row_id) {
+                g_hover_row_id = hov_id;
+                g_hover_since_ms = now_ms;
+                g_hover_preview[0] = '\0';
+            }
+
+            if (hov_id != 0 && (now_ms - g_hover_since_ms) >= FANGS_HOVER_DWELL_MS) {
+                // Compute the preview text once per hover-in, not every
+                // frame — a full scrollback dump isn't free.
+                if (g_hover_preview[0] == '\0') {
+                    Session *hs = session_for_pane_id(hov_id);
+                    char *preview = hs
+                        ? context_build((TermEngine *)session_engine(hs), 3, 200)
+                        : NULL;
+                    if (preview && preview[0]) {
+                        snprintf(g_hover_preview, sizeof(g_hover_preview), "%s", preview);
+                    } else {
+                        // Mark "computed, nothing to show" so we don't retry
+                        // context_build() every frame while still hovering.
+                        snprintf(g_hover_preview, sizeof(g_hover_preview), " ");
+                    }
+                    free(preview);
+                }
+
+                const WorkspaceRailRow *hrow = hov_is_pane
+                    ? &g_rail_view.panes[hov_idx] : &g_rail_view.tabs[hov_idx];
+                int hpx = lo.rail.x + lo.rail.w + 8;
+                int hpw = 280;
+                if (hpx + hpw > GetScreenWidth() - 4)
+                    hpx = GetScreenWidth() - hpw - 4;
+                int hpy = hrow->y;
+                bool has_preview = g_hover_preview[0] != '\0' && g_hover_preview[0] != ' ';
+                int hph = has_preview ? 78 : 40;
+                if (hpy + hph > GetScreenHeight() - 4)
+                    hpy = GetScreenHeight() - hph - 4;
+
+                DrawRectangle(hpx, hpy, hpw, hph, UI2RAY(g_ui_theme.inline_bg));
+                DrawRectangleLines(hpx, hpy, hpw, hph, UI2RAY(g_ui_theme.panel_border));
+                char hline[160];
+                snprintf(hline, sizeof(hline), "%s%s%s", hrow->label,
+                        hrow->branch[0] ? "  " : "", hrow->branch);
+                DrawTextEx(mono_font, hline, (Vector2){(float)hpx + 8, (float)hpy + 6},
+                          14.0f, 0, UI2RAY(g_ui_theme.text));
+                if (has_preview) {
+                    DrawTextEx(mono_font, g_hover_preview,
+                              (Vector2){(float)hpx + 8, (float)hpy + 26},
+                              12.0f, 0, UI2RAY(g_ui_theme.subtitle));
+                }
+            }
         }
 
         Tab *tab = &app.tabs[app.active];

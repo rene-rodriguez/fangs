@@ -77,11 +77,14 @@ bool workspace_session_load(const char *path, WorkspaceSessionState *out)
                 continue;
             cJSON *cwd = cJSON_GetObjectItem(item, "cwd");
             cJSON *name = cJSON_GetObjectItem(item, "name");
+            cJSON *color = cJSON_GetObjectItem(item, "color");
             if (!cwd || !cJSON_IsString(cwd) || cwd->valuestring[0] == '\0')
                 continue;
             snprintf(out->tabs[i].cwd, sizeof(out->tabs[i].cwd), "%s", cwd->valuestring);
             if (name && cJSON_IsString(name))
                 snprintf(out->tabs[i].name, sizeof(out->tabs[i].name), "%s", name->valuestring);
+            out->tabs[i].color_tag = (color && cJSON_IsNumber(color))
+                ? (int)color->valuedouble : 0;
             i++;
         }
         out->count = i;
@@ -120,6 +123,7 @@ bool workspace_session_save(const char *path, const WorkspaceSessionState *state
         cJSON *item = cJSON_CreateObject();
         cJSON_AddStringToObject(item, "cwd", state->tabs[i].cwd);
         cJSON_AddStringToObject(item, "name", state->tabs[i].name);
+        cJSON_AddNumberToObject(item, "color", state->tabs[i].color_tag);
         cJSON_AddItemToArray(tabs, item);
     }
     cJSON_AddItemToObject(root, "tabs", tabs);

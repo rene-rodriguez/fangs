@@ -8,11 +8,22 @@
 #define FANGS_UI_WORKSPACE_RAIL_H
 
 #include "raylib.h"
+#include "ui_theme.h"
 #include "ui_workspace_rail_model.h"
 
 // Draw the workspace rail. workspace_rail_layout() must have run on the view.
 // The mouse position drives hover feedback only.
 void ui_workspace_rail_draw(Font font, const WorkspaceRailView *view,
                             int mouse_x, int mouse_y);
+
+// Fixed color-tag palette for grouping related workspaces at a glance.
+// Deliberately NOT theme-derived (unlike ui_theme's semantic colors) so tags
+// stay recognizable across theme switches. WorkspaceRailRow.color_tag is a
+// 1-based index into these arrays (0 = untagged). UiColor (not raylib Color)
+// so callers building UiMenuItem.tint (e.g. the color-picker submenu in
+// main.c) can use these directly; ui_workspace_rail.c wraps with UI2RAY().
+#define WORKSPACE_RAIL_COLOR_TAG_COUNT 6
+extern const char   *WORKSPACE_RAIL_COLOR_TAG_NAMES[WORKSPACE_RAIL_COLOR_TAG_COUNT];
+extern const UiColor WORKSPACE_RAIL_COLOR_TAG_COLORS[WORKSPACE_RAIL_COLOR_TAG_COUNT];
 
 #endif // FANGS_UI_WORKSPACE_RAIL_H
