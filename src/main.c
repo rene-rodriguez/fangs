@@ -136,6 +136,10 @@ static uint64_t g_hover_row_id = 0;
 static uint64_t g_hover_since_ms = 0;
 static char     g_hover_preview[256] = "";
 #define FANGS_HOVER_DWELL_MS 500
+// Below this many non-whitespace characters, the scrollback tail is just an
+// idle prompt (e.g. "~" or a bare shell glyph) — not worth popping up a
+// preview for, so the whole popup is skipped rather than shown near-empty.
+#define FANGS_HOVER_PREVIEW_MIN_CHARS 12
 
 // Set on any tab-list mutation (add/close/rename/reorder); the per-frame
 // loop saves the session state and clears it when set, so writes happen at
@@ -6178,26 +6182,34 @@ int main(int argc, char **argv)
                     free(preview);
                 }
 
-                const WorkspaceRailRow *hrow = hov_is_pane
-                    ? &g_rail_view.panes[hov_idx] : &g_rail_view.tabs[hov_idx];
-                int hpx = lo.rail.x + lo.rail.w + 8;
-                int hpw = 280;
-                if (hpx + hpw > GetScreenWidth() - 4)
-                    hpx = GetScreenWidth() - hpw - 4;
-                int hpy = hrow->y;
-                bool has_preview = g_hover_preview[0] != '\0' && g_hover_preview[0] != ' ';
-                int hph = has_preview ? 78 : 40;
-                if (hpy + hph > GetScreenHeight() - 4)
-                    hpy = GetScreenHeight() - hph - 4;
+                // An idle prompt's scrollback tail is mostly whitespace/prompt
+                // glyphs — skip the popup entirely rather than show a near-
+                // empty box for it.
+                int preview_nonspace = 0;
+                for (const char *p = g_hover_preview; *p; p++) {
+                    if (!isspace((unsigned char)*p)) preview_nonspace++;
+                }
+                bool has_preview = preview_nonspace >= FANGS_HOVER_PREVIEW_MIN_CHARS;
 
-                DrawRectangle(hpx, hpy, hpw, hph, UI2RAY(g_ui_theme.inline_bg));
-                DrawRectangleLines(hpx, hpy, hpw, hph, UI2RAY(g_ui_theme.panel_border));
-                char hline[160];
-                snprintf(hline, sizeof(hline), "%s%s%s", hrow->label,
-                        hrow->branch[0] ? "  " : "", hrow->branch);
-                DrawTextEx(mono_font, hline, (Vector2){(float)hpx + 8, (float)hpy + 6},
-                          14.0f, 0, UI2RAY(g_ui_theme.text));
                 if (has_preview) {
+                    const WorkspaceRailRow *hrow = hov_is_pane
+                        ? &g_rail_view.panes[hov_idx] : &g_rail_view.tabs[hov_idx];
+                    int hpx = lo.rail.x + lo.rail.w + 8;
+                    int hpw = 280;
+                    if (hpx + hpw > GetScreenWidth() - 4)
+                        hpx = GetScreenWidth() - hpw - 4;
+                    int hpy = hrow->y;
+                    int hph = 78;
+                    if (hpy + hph > GetScreenHeight() - 4)
+                        hpy = GetScreenHeight() - hph - 4;
+
+                    DrawRectangle(hpx, hpy, hpw, hph, UI2RAY(g_ui_theme.inline_bg));
+                    DrawRectangleLines(hpx, hpy, hpw, hph, UI2RAY(g_ui_theme.panel_border));
+                    char hline[160];
+                    snprintf(hline, sizeof(hline), "%s%s%s", hrow->label,
+                            hrow->branch[0] ? "  " : "", hrow->branch);
+                    DrawTextEx(mono_font, hline, (Vector2){(float)hpx + 8, (float)hpy + 6},
+                              14.0f, 0, UI2RAY(g_ui_theme.text));
                     DrawTextEx(mono_font, g_hover_preview,
                               (Vector2){(float)hpx + 8, (float)hpy + 26},
                               12.0f, 0, UI2RAY(g_ui_theme.subtitle));
