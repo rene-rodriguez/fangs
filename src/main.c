@@ -42,6 +42,7 @@
 #include "ui_broadcast_prompt.h"
 #include "workspace_info.h"
 #include "workspace_session_store.h"
+#include "crash_log.h"
 #include "workspace_git_status.h"
 #include "workspace_status.h"
 #include "workspace_worktree.h"
@@ -3891,12 +3892,23 @@ int main(int argc, char **argv)
 {
     log_build_info();
 
+    // Tier 1 of docs/crash-resilience-plan.md: log a marker + backtrace on
+    // crash so "does Fangs actually crash in daily use" is data, not a
+    // guess. Diagnostic only -- doesn't change how the process terminates.
+    {
+        char crash_log_path[1024];
+        snprintf(crash_log_path, sizeof(crash_log_path), "%s/crash.log",
+                 config_default_app_dir());
+        crash_log_install(crash_log_path);
+    }
+
     AppConfig cfg;
     const char *config_path = config_default_path();
     if (!config_load(&cfg, config_path)) {
         fprintf(stderr, "warning: failed to load config at %s; using defaults\n", config_path);
         toast_push(TOAST_WARN, "Failed to load config; using defaults.");
     }
+    pty_set_tmux_wrap(cfg.tmux_wrap);
 
     // ---- CLI mode: "fangs ctl <subcommand> [args]" --------------------------
     if (argc >= 3 && strcmp(argv[1], "ctl") == 0) {

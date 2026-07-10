@@ -4,6 +4,7 @@
 #ifndef FANGS_PTY_H
 #define FANGS_PTY_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
@@ -13,6 +14,15 @@ typedef enum {
     PTY_READ_EOF,    // child closed its end
     PTY_READ_ERROR,  // real read error
 } PtyReadResult;
+
+// Tier 2 of docs/crash-resilience-plan.md: when enabled, new shells are
+// spawned inside a named `tmux new-session -A` instead of directly, so a
+// Fangs crash (which SIGHUPs the shell same as any terminal) no longer kills
+// the wrapped shell/agent -- it keeps running in tmux's own server and can
+// be reattached to (`tmux attach -t <name>`) after Fangs restarts. Off by
+// default; falls back to a plain shell if `tmux` isn't on PATH. Call once at
+// startup from the loaded config -- affects every pty_spawn() call after it.
+void pty_set_tmux_wrap(bool enabled);
 
 // Receives bytes drained from the pty master fd.
 typedef void (*PtySink)(void *userdata, const uint8_t *data, size_t len);

@@ -301,6 +301,34 @@ static void test_workspace_ops_parse_and_round_trip(void)
     free(path);
 }
 
+static void test_tmux_wrap_defaults_false(void)
+{
+    AppConfig cfg;
+    config_defaults(&cfg);
+    EXPECT_TRUE(!cfg.tmux_wrap);
+}
+
+static void test_tmux_wrap_parse_and_round_trip(void)
+{
+    char *path = temp_config_path();
+    write_file(path,
+        "[terminal]\n"
+        "tmux_wrap = true\n");
+
+    AppConfig cfg;
+    EXPECT_TRUE(config_load(&cfg, path));
+    EXPECT_TRUE(cfg.tmux_wrap);
+
+    cfg.tmux_wrap = false;
+    EXPECT_TRUE(config_save(&cfg, path));
+
+    AppConfig loaded;
+    EXPECT_TRUE(config_load(&loaded, path));
+    EXPECT_TRUE(!loaded.tmux_wrap);
+
+    free(path);
+}
+
 int main(void)
 {
     test_defaults();
@@ -312,6 +340,8 @@ int main(void)
     test_remote_api_parse_and_round_trip();
     test_workspace_ops_defaults();
     test_workspace_ops_parse_and_round_trip();
+    test_tmux_wrap_defaults_false();
+    test_tmux_wrap_parse_and_round_trip();
 
     if (failures != 0) {
         fprintf(stderr, "%d config test failure(s)\n", failures);

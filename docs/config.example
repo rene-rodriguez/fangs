@@ -20,6 +20,12 @@ kitty_images = true
 kitty_image_storage_mb = 64
 cursor_style = 0      ;; 0=block, 1=bar, 2=underline
 cursor_blink = true
+;; Tier 2 of docs/crash-resilience-plan.md: wrap new shells in a named tmux
+;; session ("tmux new-session -A -s fangs-<cwd>-<pid>") so a Fangs crash
+;; doesn't kill them too -- they keep running in tmux's own server and are
+;; reattachable (`tmux ls`, `tmux attach -t <name>`) after Fangs restarts.
+;; Falls back to a plain shell if tmux isn't installed. Off by default.
+tmux_wrap = false
 
 [ui]
 workspace_rail = true  ;; left-side tabs, panes, and notification rings

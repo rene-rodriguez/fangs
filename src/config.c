@@ -110,6 +110,10 @@ static void apply_key_value(AppConfig *c, const char *section,
             bool parsed = false;
             if (parse_bool_value(value, &parsed))
                 c->cursor_blink = parsed;
+        } else if (strcmp(key, "tmux_wrap") == 0) {
+            bool parsed = false;
+            if (parse_bool_value(value, &parsed))
+                c->tmux_wrap = parsed;
         }
     } else if (strcmp(section, "window") == 0) {
         if (strcmp(key, "width") == 0) {
@@ -201,6 +205,7 @@ void config_defaults(AppConfig *c)
 
     c->cursor_style = 0;    // block
     c->cursor_blink  = true;
+    c->tmux_wrap = false;
 
     c->workspace_rail = true;
     c->remote_api = false;
@@ -319,6 +324,7 @@ bool config_save(const AppConfig *c, const char *path)
         "kitty_image_storage_mb = %d\n"
         "cursor_style = %d\n"
         "cursor_blink = %s\n"
+        "tmux_wrap = %s\n"
         "\n"
         "[window]\n"
         "width = %d\n"
@@ -352,6 +358,7 @@ bool config_save(const AppConfig *c, const char *path)
         c->kitty_image_storage_mb,
         c->cursor_style,
         c->cursor_blink ? "true" : "false",
+        c->tmux_wrap ? "true" : "false",
         c->window_width,
         c->window_height,
         c->window_x,

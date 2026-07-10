@@ -25,3 +25,6 @@ compile_commands.json
 .cache/
 # Serena MCP project metadata/cache (local only)
 .serena/
+
+# CTest log output (created at repo root when ctest is run from source dir)
+/Testing/

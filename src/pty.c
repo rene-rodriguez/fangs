@@ -1,5 +1,6 @@
 #include "pty.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +21,41 @@
 extern int forkpty(int *__amaster, char *__name,
                    const struct termios *__termp, const struct winsize *__winp);
 #endif
+
+static bool g_tmux_wrap = false;
+
+void pty_set_tmux_wrap(bool enabled)
+{
+    g_tmux_wrap = enabled;
+}
+
+// Builds a tmux session name from cwd's last path component, sanitized to
+// the character set tmux session names tolerate everywhere, plus the
+// spawning pid for uniqueness (multiple panes can share a cwd). Purely for
+// human recognizability when running `tmux ls` later -- Fangs never
+// auto-reattaches by this name.
+static void tmux_session_name(const char *cwd, pid_t pid, char *out, size_t out_size)
+{
+    const char *base = "fangs";
+    if (cwd && cwd[0]) {
+        const char *slash = strrchr(cwd, '/');
+        base = slash ? slash + 1 : cwd;
+        if (base[0] == '\0')
+            base = "fangs";
+    }
+
+    char safe[64];
+    size_t si = 0;
+    for (size_t i = 0; base[i] != '\0' && si + 1 < sizeof(safe); i++) {
+        unsigned char ch = (unsigned char)base[i];
+        safe[si++] = (isalnum(ch) || ch == '-' || ch == '_') ? (char)ch : '-';
+    }
+    safe[si] = '\0';
+    if (safe[0] == '\0')
+        snprintf(safe, sizeof(safe), "fangs");
+
+    snprintf(out, out_size, "fangs-%s-%d", safe, (int)pid);
+}
 
 int pty_spawn(pid_t *child_out, uint16_t cols, uint16_t rows,
               int cell_width, int cell_height, const char *cwd)
@@ -66,6 +102,24 @@ int pty_spawn(pid_t *child_out, uint16_t cols, uint16_t rows,
             (void)(chdir(cwd) == 0);
 
         setenv("TERM", "xterm-256color", 1);
+
+        if (g_tmux_wrap) {
+            char session_name[128];
+            tmux_session_name(cwd, getpid(), session_name, sizeof(session_name));
+
+            // "-l" asks the shell for login behavior the same way the
+            // leading '-' in login_argv0 does above (tmux runs this string
+            // as a shell command, not exec's argv[0], so the '-' convention
+            // doesn't apply here).
+            char login_cmd[512];
+            snprintf(login_cmd, sizeof(login_cmd), "%s -l", shell);
+
+            execlp("tmux", "tmux", "new-session", "-A", "-s", session_name,
+                  login_cmd, (char *)NULL);
+            // tmux isn't installed (or exec failed for some other reason) --
+            // fall through to the plain shell below.
+        }
+
         execl(shell, login_argv0, (char *)NULL);
         _exit(127); // execl only returns on error
     }

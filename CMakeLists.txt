@@ -122,6 +122,7 @@ add_executable(fangs
   src/ui_menu.c
   src/workspace_ports.c
   src/workspace_session_store.c
+  src/crash_log.c
   "${FONT_HEADER}"
   "${FONT_BOLD_HEADER}")
 target_compile_features(fangs PRIVATE c_std_11)
@@ -188,6 +189,23 @@ target_compile_features(workspace_git_status_tests PRIVATE c_std_11)
 target_include_directories(workspace_git_status_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(workspace_git_status_tests Threads::Threads)
 add_test(NAME workspace_git_status_tests COMMAND workspace_git_status_tests)
+
+add_executable(crash_log_tests
+  tests/crash_log_tests.c
+  src/crash_log.c)
+target_compile_features(crash_log_tests PRIVATE c_std_11)
+target_include_directories(crash_log_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+add_test(NAME crash_log_tests COMMAND crash_log_tests)
+
+add_executable(pty_tmux_wrap_tests
+  tests/pty_tmux_wrap_tests.c
+  src/pty.c)
+target_compile_features(pty_tmux_wrap_tests PRIVATE c_std_11)
+target_include_directories(pty_tmux_wrap_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+if (UNIX AND NOT APPLE)
+  target_link_libraries(pty_tmux_wrap_tests util)
+endif()
+add_test(NAME pty_tmux_wrap_tests COMMAND pty_tmux_wrap_tests)
 
 add_executable(desktop_notify_tests
   tests/desktop_notify_tests.c
