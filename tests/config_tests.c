@@ -79,6 +79,7 @@ static void test_defaults(void)
     EXPECT_INT(cfg.scrollback, 1000);
     EXPECT_TRUE(cfg.kitty_images);
     EXPECT_INT(cfg.kitty_image_storage_mb, 64);
+    EXPECT_INT(cfg.workspace_rail_width, 260);
     EXPECT_STR(cfg.provider, "openai");
     EXPECT_STR(cfg.endpoint, "https://api.openai.com/v1/chat/completions");
     EXPECT_STR(cfg.model, "gpt-4o-mini");
@@ -176,6 +177,48 @@ static void test_load_clamps_kitty_image_storage(void)
 
     EXPECT_TRUE(config_load(&cfg, path));
     EXPECT_INT(cfg.kitty_image_storage_mb, 0);
+
+    free(path);
+}
+
+static void test_load_clamps_workspace_rail_width(void)
+{
+    char *path = temp_config_path();
+    write_file(path,
+        "[ui]\n"
+        "workspace_rail_width = 9999\n");
+
+    AppConfig cfg;
+    EXPECT_TRUE(config_load(&cfg, path));
+    EXPECT_INT(cfg.workspace_rail_width, WORKSPACE_RAIL_MAX_WIDTH);
+
+    write_file(path,
+        "[ui]\n"
+        "workspace_rail_width = 10\n");
+
+    EXPECT_TRUE(config_load(&cfg, path));
+    EXPECT_INT(cfg.workspace_rail_width, WORKSPACE_RAIL_MIN_WIDTH);
+
+    free(path);
+}
+
+static void test_workspace_rail_width_parse_and_round_trip(void)
+{
+    char *path = temp_config_path();
+    write_file(path,
+        "[ui]\n"
+        "workspace_rail_width = 320\n");
+
+    AppConfig cfg;
+    EXPECT_TRUE(config_load(&cfg, path));
+    EXPECT_INT(cfg.workspace_rail_width, 320);
+
+    cfg.workspace_rail_width = 220;
+    EXPECT_TRUE(config_save(&cfg, path));
+
+    AppConfig loaded;
+    EXPECT_TRUE(config_load(&loaded, path));
+    EXPECT_INT(loaded.workspace_rail_width, 220);
 
     free(path);
 }
@@ -335,6 +378,8 @@ int main(void)
     test_load_missing_file_creates_defaults();
     test_load_parses_ini_sections();
     test_load_clamps_kitty_image_storage();
+    test_load_clamps_workspace_rail_width();
+    test_workspace_rail_width_parse_and_round_trip();
     test_save_round_trips_app_config();
     test_remote_api_defaults_false();
     test_remote_api_parse_and_round_trip();

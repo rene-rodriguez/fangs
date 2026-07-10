@@ -3,6 +3,11 @@
 
 #include <stdbool.h>
 
+// Workspace rail width bounds (px) — shared by config parsing (clamps on
+// load/save) and the rail's drag-to-resize handle in main.c.
+#define WORKSPACE_RAIL_MIN_WIDTH 180
+#define WORKSPACE_RAIL_MAX_WIDTH 480
+
 typedef struct {
     char font_family[128];
     int font_size;
@@ -34,6 +39,7 @@ typedef struct {
 
     // Workspace rail (left-side vertical tabs and panes).
     bool workspace_rail;
+    int workspace_rail_width;  // px; user-resizable via the rail's edge handle
 
     // Remote control API (Unix socket JSON protocol).
     bool remote_api;       // enables the socket + read-only/benign commands

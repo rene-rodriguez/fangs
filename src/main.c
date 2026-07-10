@@ -148,6 +148,19 @@ static int g_drag_slot = -1;        // insertion slot
 static int g_drag_candidate = -1;   // tab index of the initial left-press
 static int g_drag_press_y = 0;      // Y position of the initial left-press
 
+// Rail resize-handle drag state: dragging the rail's right edge resizes it;
+// releasing below WORKSPACE_RAIL_HIDE_THRESHOLD soft-collapses the rail to a
+// thin WORKSPACE_RAIL_COLLAPSED_WIDTH sliver rather than hiding it outright,
+// so the handle stays grabbable and the rail can always be dragged back open
+// (mirrors VS Code/cmux's sidebar collapse gesture). The hard on/off toggle
+// (Cmd+Shift+E / workspace.toggle_rail) is unaffected and clears this.
+static bool g_rail_resizing = false;
+static bool g_rail_collapsed = false;
+static int  g_rail_drag_width = 0;  // live width (px) while dragging, pre-commit
+#define WORKSPACE_RAIL_HIDE_THRESHOLD 120
+#define WORKSPACE_RAIL_COLLAPSED_WIDTH 8
+#define RAIL_RESIZE_HANDLE_PAD 4
+
 // Last-seen event count for the bell badge (set when history popover opens).
 static int g_history_last_seen = 0;
 
@@ -3441,6 +3454,7 @@ static void execute_host_action(FangsActionId action,
         break;
     case FANGS_ACTION_TOGGLE_WORKSPACE_RAIL:
         cfg->workspace_rail = !cfg->workspace_rail;
+        g_rail_collapsed = false;
         config_save(cfg, config_path);
         if (prev_term_area_w)
             *prev_term_area_w = -1;
@@ -4209,7 +4223,7 @@ int main(int argc, char **argv)
     const int min_terminal_w = 320;  // (crispness comes from the 2x font texture)
 
     Layout lo = layout_compute_with_rail(GetScreenWidth(), GetScreenHeight(),
-                                         cfg.workspace_rail, 260, 56,
+                                         cfg.workspace_rail, cfg.workspace_rail_width, 56,
                                          ui_sidebar_visible(), sidebar_width,
                                          pad, min_terminal_w);
     int term_area_w = lo.terminal.w;
@@ -4530,8 +4544,16 @@ int main(int argc, char **argv)
             drain_char_queue();
         }
 
+        bool over_rail_resize_handle = g_rail_resizing
+            || (lo.rail_visible && !ui_menu_active(&g_rail_menu) && g_drag_from < 0
+                && GetMouseX() >= lo.rail.x + lo.rail.w - RAIL_RESIZE_HANDLE_PAD
+                && GetMouseX() <= lo.rail.x + lo.rail.w + RAIL_RESIZE_HANDLE_PAD
+                && GetMouseY() >= lo.rail.y && GetMouseY() < lo.rail.y + lo.rail.h);
+
         int mouse_cursor = MOUSE_CURSOR_DEFAULT;
-        if (!ui_settings_open() && !ui_inline_active() && !ui_palette_is_open()
+        if (over_rail_resize_handle) {
+            mouse_cursor = MOUSE_CURSOR_RESIZE_EW;
+        } else if (!ui_settings_open() && !ui_inline_active() && !ui_palette_is_open()
             && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)
             && GetMouseX() >= lo.terminal.x && GetMouseX() < lo.terminal.x + term_area_w
             && GetMouseY() >= lo.terminal.y && GetMouseY() < lo.terminal.y + lo.terminal.h) {
@@ -4782,6 +4804,7 @@ int main(int argc, char **argv)
             // --- Toggle workspace rail: Cmd+Shift+E (Ctrl+Shift+E on Linux) ---
             if (shift_down && IsKeyPressed(KEY_E)) {
                 cfg.workspace_rail = !cfg.workspace_rail;
+                g_rail_collapsed = false;
                 config_save(&cfg, config_path);
                 prev_term_area_w = -1;
                 drain_char_queue();
@@ -4839,7 +4862,9 @@ int main(int argc, char **argv)
             }
         }
 
-        lo = layout_compute_with_rail(w, h, cfg.workspace_rail, 260, 56,
+        int base_rail_width = g_rail_collapsed ? WORKSPACE_RAIL_COLLAPSED_WIDTH : cfg.workspace_rail_width;
+        int effective_rail_width = g_rail_resizing ? g_rail_drag_width : base_rail_width;
+        lo = layout_compute_with_rail(w, h, cfg.workspace_rail, effective_rail_width, 56,
                                       ui_sidebar_visible(), sidebar_width,
                                       pad, min_terminal_w);
         term_area_w = lo.terminal.w;
@@ -5286,12 +5311,61 @@ int main(int argc, char **argv)
             scrollbar_ptr = &scrollbar;
 
         // ----------------------------------------------------------------
+        // Workspace rail resize-handle drag. Runs before the drag-to-reorder
+        // and click blocks below and sets g_rail_resizing so they never also
+        // interpret the same press as a tab switch. Dragging the handle past
+        // WORKSPACE_RAIL_HIDE_THRESHOLD and releasing soft-collapses the rail
+        // to a thin WORKSPACE_RAIL_COLLAPSED_WIDTH sliver — never a literal
+        // zero-width/hidden rail — so the handle is always still there to
+        // drag back open (VS Code/cmux-style sidebar collapse).
+        // ----------------------------------------------------------------
+        if (lo.rail_visible && !ui_menu_active(&g_rail_menu) && g_drag_from < 0
+            && !g_rail_resizing) {
+            int handle_x = lo.rail.x + lo.rail.w;
+            bool over_handle = GetMouseX() >= handle_x - RAIL_RESIZE_HANDLE_PAD
+                             && GetMouseX() <= handle_x + RAIL_RESIZE_HANDLE_PAD
+                             && GetMouseY() >= lo.rail.y && GetMouseY() < lo.rail.y + lo.rail.h;
+            if (over_handle && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                g_rail_resizing = true;
+                g_rail_drag_width = lo.rail.w;
+            }
+        }
+
+        if (g_rail_resizing) {
+            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+                int candidate = GetMouseX() - lo.rail.x;
+                if (candidate < WORKSPACE_RAIL_COLLAPSED_WIDTH) candidate = WORKSPACE_RAIL_COLLAPSED_WIDTH;
+                if (candidate > WORKSPACE_RAIL_MAX_WIDTH) candidate = WORKSPACE_RAIL_MAX_WIDTH;
+                if (candidate != g_rail_drag_width) {
+                    g_rail_drag_width = candidate;
+                    prev_term_area_w = -1;   // live reflow while dragging
+                }
+            } else {
+                // Left button released (or its state was otherwise lost, e.g.
+                // focus loss mid-drag) — commit the resize or soft-collapse.
+                if (g_rail_drag_width < WORKSPACE_RAIL_HIDE_THRESHOLD) {
+                    g_rail_collapsed = true;
+                } else {
+                    int committed = g_rail_drag_width;
+                    if (committed < WORKSPACE_RAIL_MIN_WIDTH) committed = WORKSPACE_RAIL_MIN_WIDTH;
+                    if (committed > WORKSPACE_RAIL_MAX_WIDTH) committed = WORKSPACE_RAIL_MAX_WIDTH;
+                    cfg.workspace_rail_width = committed;
+                    g_rail_collapsed = false;
+                    config_save(&cfg, config_path);
+                }
+                g_rail_resizing = false;
+                prev_term_area_w = -1;
+                drain_char_queue();
+            }
+        }
+
+        // ----------------------------------------------------------------
         // Drag-to-reorder tracking (runs every frame the rail is visible).
         // Monitors left-press on tab rows, vertical movement to enter drag
         // mode, and release to complete the reorder.  The actual drag-state
         // globals are propagated into the rail view for drawing below.
         // ----------------------------------------------------------------
-        if (lo.rail_visible && !ui_menu_active(&g_rail_menu)) {
+        if (lo.rail_visible && !ui_menu_active(&g_rail_menu) && !g_rail_resizing) {
             int rail_mx = GetMouseX();
             int rail_my = GetMouseY();
             bool in_rail = (rail_mx >= lo.rail.x && rail_mx < lo.rail.x + lo.rail.w
@@ -5387,7 +5461,7 @@ int main(int argc, char **argv)
         // from what's on screen. Clicks inside the rail never reach the
         // terminal: pane rects start to the right of the rail.
         // ----------------------------------------------------------------
-        if (lo.rail_visible && g_drag_from < 0
+        if (lo.rail_visible && g_drag_from < 0 && !g_rail_resizing
             && !ui_menu_active(&g_rail_menu)
             && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
             && GetMouseX() >= lo.rail.x && GetMouseX() < lo.rail.x + lo.rail.w
@@ -5569,7 +5643,7 @@ int main(int argc, char **argv)
         // Right-click context menu on the workspace rail.
         // Opens a popover with actions for the clicked row.
         // ----------------------------------------------------------------
-        if (lo.rail_visible && g_drag_from < 0
+        if (lo.rail_visible && g_drag_from < 0 && !g_rail_resizing
             && !ui_menu_active(&g_rail_menu)
             && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)
             && GetMouseX() >= lo.rail.x && GetMouseX() < lo.rail.x + lo.rail.w
@@ -5686,7 +5760,7 @@ int main(int argc, char **argv)
         // First middle-click on a tab row arms it for 2 s; a second
         // middle-click within the window closes the tab.
         // ----------------------------------------------------------------
-        if (lo.rail_visible && g_drag_from < 0
+        if (lo.rail_visible && g_drag_from < 0 && !g_rail_resizing
             && !ui_menu_active(&g_rail_menu)
             && IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE)
             && GetMouseX() >= lo.rail.x && GetMouseX() < lo.rail.x + lo.rail.w

@@ -138,6 +138,10 @@ static void apply_key_value(AppConfig *c, const char *section,
             bool parsed = false;
             if (parse_bool_value(value, &parsed))
                 c->workspace_rail = parsed;
+        } else if (strcmp(key, "workspace_rail_width") == 0) {
+            int parsed = 0;
+            if (parse_int_value(value, &parsed))
+                c->workspace_rail_width = clamp_int(parsed, WORKSPACE_RAIL_MIN_WIDTH, WORKSPACE_RAIL_MAX_WIDTH);
         }
     } else if (strcmp(section, "remote") == 0) {
         if (strcmp(key, "remote_api") == 0) {
@@ -208,6 +212,7 @@ void config_defaults(AppConfig *c)
     c->tmux_wrap = false;
 
     c->workspace_rail = true;
+    c->workspace_rail_width = 260;
     c->remote_api = false;
     c->remote_api_send = false;
 
@@ -334,6 +339,7 @@ bool config_save(const AppConfig *c, const char *path)
         "\n"
         "[ui]\n"
         "workspace_rail = %s\n"
+        "workspace_rail_width = %d\n"
         "\n"
         "[remote]\n"
         "remote_api = %s\n"
@@ -364,6 +370,7 @@ bool config_save(const AppConfig *c, const char *path)
         c->window_x,
         c->window_y,
         c->workspace_rail ? "true" : "false",
+        c->workspace_rail_width,
         c->remote_api ? "true" : "false",
         c->remote_api_send ? "true" : "false",
         c->workspace_command,
