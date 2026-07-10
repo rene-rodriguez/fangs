@@ -2,8 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <ctype.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -1934,6 +1936,78 @@ static bool url_at(int row, int col, char *out, int out_size)
             memcpy(out, line + i, (size_t)m);
             out[m] = '\0';
             return true;
+        }
+        i = j;
+    }
+    return false;
+}
+
+static bool path_tok_char(unsigned char c)
+{
+    return (c >= '!' && c <= '~') && c != '"' && c != '\'' && c != '`'
+        && c != '(' && c != ')' && c != '[' && c != ']' && c != '{' && c != '}'
+        && c != '<' && c != '>' && c != '|' && c != '\\' && c != '^'
+        && c != ',' && c != ';';
+}
+
+// If (row,col) sits on a file-path-like token — optionally suffixed with
+// :line or :line:col, e.g. "src/main.c:1919" (this repo's own reference
+// convention) — that resolves to a real file relative to `cwd`, copy the
+// resolved absolute path to `out` and return true. Existence is checked via
+// stat() so plain prose ("e.g.", "etc.") never lights up as clickable.
+static bool file_ref_at(int row, int col, const char *cwd, char *out, int out_size)
+{
+    if (row < 0 || row >= g_rows_captured || col < 0 || col >= g_row_cols[row])
+        return false;
+    const char *line = g_row_text[row];
+    int len = g_row_len[row];
+    int click = g_row_off[row][col];
+    int i = 0;
+    while (i < len) {
+        if (!path_tok_char((unsigned char)line[i])) { i++; continue; }
+        int j = i;
+        while (j < len && path_tok_char((unsigned char)line[j])) j++;
+        int tok_end = j;
+        while (tok_end > i && strchr(".,;:!?)]}'", line[tok_end - 1])) tok_end--;
+        if (click >= i && click < tok_end) {
+            char tok[1024];
+            int m = tok_end - i;
+            if (m >= (int)sizeof(tok)) m = (int)sizeof(tok) - 1;
+            memcpy(tok, line + i, (size_t)m);
+            tok[m] = '\0';
+
+            // Peel up to two trailing :<digits> groups (line, then col).
+            for (int k = 0; k < 2; k++) {
+                char *colon = strrchr(tok, ':');
+                if (!colon || !*(colon + 1)) break;
+                bool all_digit = true;
+                for (char *q = colon + 1; *q; q++)
+                    if (!isdigit((unsigned char)*q)) { all_digit = false; break; }
+                if (!all_digit) break;
+                *colon = '\0';
+            }
+
+            bool has_slash = strchr(tok, '/') != NULL;
+            bool has_home = tok[0] == '~';
+            const char *dot = strrchr(tok, '.');
+            bool has_ext = dot && dot != tok && *(dot + 1);
+            if (tok[0] && (has_slash || has_home || has_ext)) {
+                char resolved[2048];
+                resolved[0] = '\0';
+                if (tok[0] == '/') {
+                    snprintf(resolved, sizeof(resolved), "%s", tok);
+                } else if (tok[0] == '~') {
+                    const char *home = getenv("HOME");
+                    snprintf(resolved, sizeof(resolved), "%s%s", home ? home : "", tok + 1);
+                } else if (cwd && cwd[0]) {
+                    snprintf(resolved, sizeof(resolved), "%s/%s", cwd, tok);
+                }
+                struct stat st;
+                if (resolved[0] && stat(resolved, &st) == 0) {
+                    snprintf(out, (size_t)out_size, "%s", resolved);
+                    return true;
+                }
+            }
         }
         i = j;
     }
@@ -4463,8 +4537,15 @@ int main(int argc, char **argv)
             && GetMouseY() >= lo.terminal.y && GetMouseY() < lo.terminal.y + lo.terminal.h) {
             int ucc = (GetMouseX() - lo.terminal.x - pad) / cell_width;
             int ucr = (GetMouseY() - lo.terminal.y - pad) / cell_height;
+            Session *ref_session = NULL;
+            if (app.n_tabs > 0) {
+                PaneNode *fl = app.tabs[app.active].focused;
+                if (fl && fl->kind == PANE_LEAF) ref_session = fl->leaf.session;
+            }
+            const char *ref_cwd = ref_session ? session_cwd(ref_session) : NULL;
             char hover_url[2048];
-            mouse_cursor = url_at(ucr, ucc, hover_url, (int)sizeof(hover_url))
+            mouse_cursor = (url_at(ucr, ucc, hover_url, (int)sizeof(hover_url))
+                            || file_ref_at(ucr, ucc, ref_cwd, hover_url, (int)sizeof(hover_url)))
                 ? MOUSE_CURSOR_POINTING_HAND
                 : MOUSE_CURSOR_IBEAM;
         }
@@ -5048,8 +5129,15 @@ int main(int argc, char **argv)
             && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             int ucc = (GetMouseX() - focused_pane_rect.x - pad) / cell_width;
             int ucr = (GetMouseY() - focused_pane_rect.y - pad) / cell_height;
+            Session *ref_session = NULL;
+            if (app.n_tabs > 0) {
+                PaneNode *fl = app.tabs[app.active].focused;
+                if (fl && fl->kind == PANE_LEAF) ref_session = fl->leaf.session;
+            }
+            const char *ref_cwd = ref_session ? session_cwd(ref_session) : NULL;
             char url[2048];
-            if (url_at(ucr, ucc, url, (int)sizeof(url))) {
+            if (url_at(ucr, ucc, url, (int)sizeof(url))
+                || file_ref_at(ucr, ucc, ref_cwd, url, (int)sizeof(url))) {
                 open_url(url);
                 selection_consumed = true;
             }
