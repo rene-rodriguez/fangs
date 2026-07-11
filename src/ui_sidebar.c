@@ -634,7 +634,7 @@ const char *ui_sidebar_text(int index)
 }
 
 bool ui_sidebar_draw(Font font, Rect bounds, char *out_prompt, int out_prompt_size,
-                     char *out_run, int out_run_size, float scale)
+                     char *out_run, int out_run_size, float scale, float dt)
 {
     if (out_prompt && out_prompt_size > 0)
         out_prompt[0] = '\0';
@@ -702,7 +702,7 @@ bool ui_sidebar_draw(Font font, Rect bounds, char *out_prompt, int out_prompt_si
     }
     scroll_offset = ui_sidebar_smooth_follow_scroll(scroll_offset, max_scroll,
                                                     user_scrolled_up,
-                                                    GetFrameTime());
+                                                    dt);
 
     bool run_clicked = false;
     char run_cmd[COMMAND_SIZE] = "";

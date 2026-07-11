@@ -14,6 +14,15 @@
 #include "raygui.h"
 #include <ghostty/vt.h>
 
+// GLFW is statically linked in via raylib (PLATFORM_DESKTOP always builds it
+// in), but raylib doesn't expose glfw3.h through its public target, and
+// including it directly risks colliding with raylib.h's own identifiers.
+// glfwWaitEventsTimeout() is the one function we need for event-driven frame
+// pacing (see FANGS_IDLE_FPS/FANGS_ACTIVE_FPS below) and GLFW's C ABI is stable, so a bare
+// extern is safer than pulling in the whole header. Event waiting is process-
+// global in GLFW, not per-window, hence no GLFWwindow* parameter.
+extern void glfwWaitEventsTimeout(double timeout_seconds);
+
 #include "ai_block.h"
 #include "ai_provider.h"
 #include "cmdblocks.h"
@@ -75,7 +84,20 @@
 // and snap back to full FPS on any activity. See the idle-tracking block
 // at the end of the main loop, right before EndDrawing().
 #define FANGS_IDLE_TIMEOUT_MS 2000   // ms of no activity before throttling FPS
-#define FANGS_IDLE_FPS        15     // FPS floor while idle
+// Redraw-rate caps used by the event-driven pacing at the end of the main
+// loop (glfwWaitEventsTimeout()). These bound staleness of PTY output/
+// animations (cursor blink, toast fade) and idle CPU use — they are NOT what
+// makes clicks reliable, since glfwWaitEventsTimeout() wakes on the actual
+// input event rather than napping through a fixed window regardless of either
+// value. (An earlier version of this fix instead raised FANGS_IDLE_FPS alone,
+// on the theory that a smaller blind-sleep window would be safe enough — but
+// SetTargetFPS()'s WaitTime() sleeps blindly no matter what it's set to, so a
+// fast enough click could still land its press+release inside *any* fixed
+// window and get coalesced away by GLFW's mouse-button callback, which just
+// overwrites currentButtonState per event as it's processed. That's why
+// SetTargetFPS is left uncapped entirely now — see InitWindow above.)
+#define FANGS_IDLE_FPS         15
+#define FANGS_ACTIVE_FPS       60
 
 // Tab structure: owns a pane tree of terminal sessions.
 typedef struct {
@@ -161,9 +183,12 @@ static int g_drag_press_y = 0;      // Y position of the initial left-press
 static bool g_rail_resizing = false;
 static bool g_rail_collapsed = false;
 static int  g_rail_drag_width = 0;  // live width (px) while dragging, pre-commit
+static bool g_rail_was_collapsed_on_press = false; // rail state at gesture start
+static int  g_rail_resize_press_x = 0;             // GetMouseX() at gesture start
 #define WORKSPACE_RAIL_HIDE_THRESHOLD 120
 #define WORKSPACE_RAIL_COLLAPSED_WIDTH 8
 #define RAIL_RESIZE_HANDLE_PAD 4
+#define RAIL_RESIZE_CLICK_SLOP_PX 6   // press->release delta below this = "just a click"
 
 // Last-seen event count for the bell badge (set when history popover opens).
 static int g_history_last_seen = 0;
@@ -4155,7 +4180,14 @@ int main(int argc, char **argv)
     // Disable the exit key so the loop only ends on the window close button.
     SetExitKey(KEY_NULL);
     SetWindowState(FLAG_WINDOW_RESIZABLE);
-    SetTargetFPS(60);
+    // Left uncapped: raylib's own SetTargetFPS pacing sleeps blindly via
+    // WaitTime() (clock-based, no idea whether input arrived mid-sleep), which
+    // is what let a fast click's press+release land in the same sleep and get
+    // coalesced away by GLFW's mouse-button callback. All frame pacing is done
+    // by us instead, via the glfwWaitEventsTimeout() call at the end of the
+    // main loop, which waits for a real event (waking near-instantly on input)
+    // or a bounded timeout — see FANGS_IDLE_FPS/FANGS_ACTIVE_FPS.
+    SetTargetFPS(0);
 
     // Start the remote API server if enabled in config.
     if (cfg.remote_api) {
@@ -4385,6 +4417,12 @@ int main(int argc, char **argv)
     int  kitty_smoke_frames = 0;
     int frame_count = 0;
     uint64_t last_activity_ms = 0;   // set on the first frame, below
+    // SetTargetFPS is uncapped (see InitWindow above), so raylib's own
+    // GetFrameTime()/CORE.Time.frame no longer includes any pacing wait and
+    // reads near-zero every frame — wrong delta for time-based animation
+    // (toast fade, sidebar scroll-follow). Track wall-clock time ourselves
+    // instead and pass that to anything that used to call GetFrameTime().
+    double last_frame_sec = 0.0;   // set on the first frame, below
     WorkflowRegistry palette_workflows;
     workflows_init(&palette_workflows);
     ui_palette_set_workflows(&palette_workflows);
@@ -4397,7 +4435,10 @@ int main(int argc, char **argv)
         struct timespec _now_ts;
         clock_gettime(CLOCK_MONOTONIC, &_now_ts);
         uint64_t now_ms = (uint64_t)_now_ts.tv_sec * 1000 + (uint64_t)_now_ts.tv_nsec / 1000000;
-        if (frame_count == 1) last_activity_ms = now_ms;
+        double now_sec = (double)_now_ts.tv_sec + (double)_now_ts.tv_nsec / 1.0e9;
+        if (frame_count == 1) { last_activity_ms = now_ms; last_frame_sec = now_sec; }
+        double frame_dt_sec = now_sec - last_frame_sec;
+        last_frame_sec = now_sec;
 
         sync_active_runtime(&te, &pty_fd, &child, &child_exited,
                             &terminal, &render_state, &row_iter, &row_cells,
@@ -5332,6 +5373,8 @@ int main(int argc, char **argv)
             if (over_handle && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 g_rail_resizing = true;
                 g_rail_drag_width = lo.rail.w;
+                g_rail_was_collapsed_on_press = g_rail_collapsed;
+                g_rail_resize_press_x = GetMouseX();
             }
         }
 
@@ -5347,7 +5390,13 @@ int main(int argc, char **argv)
             } else {
                 // Left button released (or its state was otherwise lost, e.g.
                 // focus loss mid-drag) — commit the resize or soft-collapse.
-                if (g_rail_drag_width < WORKSPACE_RAIL_HIDE_THRESHOLD) {
+                bool no_real_drag = abs(GetMouseX() - g_rail_resize_press_x)
+                                   < RAIL_RESIZE_CLICK_SLOP_PX;
+                if (g_rail_was_collapsed_on_press && no_real_drag) {
+                    // Plain click on the collapsed sliver: reopen instead of
+                    // re-collapsing (which was otherwise a silent no-op).
+                    g_rail_collapsed = false;
+                } else if (g_rail_drag_width < WORKSPACE_RAIL_HIDE_THRESHOLD) {
                     g_rail_collapsed = true;
                 } else {
                     int committed = g_rail_drag_width;
@@ -5635,6 +5684,33 @@ int main(int argc, char **argv)
                 int bell_y = GetMouseY();
                 ui_menu_open(&g_rail_menu, hitems, hc, bell_x, bell_y);
                 ui_menu_layout(&g_rail_menu, GetScreenWidth(), GetScreenHeight());
+                break;
+            }
+            case WORKSPACE_RAIL_ACTION_COLLAPSE_RAIL:
+                g_rail_collapsed = true;
+                prev_term_area_w = -1;
+                drain_char_queue();
+                break;
+            case WORKSPACE_RAIL_ACTION_SPLIT_RIGHT:
+            case WORKSPACE_RAIL_ACTION_SPLIT_DOWN: {
+                Session *cur = sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                                       &terminal, &render_state, &row_iter,
+                                                       &row_cells, &placement_iter,
+                                                       &key_encoder, &key_event,
+                                                       &mouse_encoder, &mouse_event);
+                app_split_focused(act.type == WORKSPACE_RAIL_ACTION_SPLIT_DOWN
+                                  ? PANE_VSPLIT : PANE_HSPLIT,
+                                  term_cols, term_rows, cell_width, cell_height,
+                                  cfg.scrollback, session_cwd(cur),
+                                  cfg.kitty_images, cfg.kitty_image_storage_mb,
+                                  &te, &pty_fd, &child, &child_exited);
+                sync_runtime_for_action(&te, &pty_fd, &child, &child_exited,
+                                        &terminal, &render_state, &row_iter,
+                                        &row_cells, &placement_iter,
+                                        &key_encoder, &key_event,
+                                        &mouse_encoder, &mouse_event);
+                prev_term_area_w = -1;
+                drain_char_queue();
                 break;
             }
             case WORKSPACE_RAIL_ACTION_NONE:
@@ -6342,7 +6418,7 @@ int main(int argc, char **argv)
             // The UI renders in logical space (crispness from the 2x font
             // texture), so widgets size at scale 1.0 to match the terminal.
             if (ui_sidebar_draw(mono_font, lo.sidebar, submitted, (int)sizeof(submitted),
-                                run_cmd, (int)sizeof(run_cmd), 1.0f)) {
+                                run_cmd, (int)sizeof(run_cmd), 1.0f, (float)frame_dt_sec)) {
                 // A new question interrupts any in-flight stream.
                 if (active_stream) {
                     ai_stream_cancel(active_stream);
@@ -6414,7 +6490,7 @@ int main(int argc, char **argv)
         }
 
         // Advance toast timers each frame.
-        toast_tick(GetFrameTime());
+        toast_tick(frame_dt_sec);
 
         // Flush the session-state file if the tab list changed this frame.
         persist_session_if_dirty(&cfg);
@@ -6536,11 +6612,6 @@ int main(int argc, char **argv)
             || g_drag_from >= 0 || toast_count() > 0) {
             last_activity_ms = now_ms;
         }
-        if (!phase3_smoke && !blocks_smoke && !kitty_smoke) {
-            bool idle = (now_ms - last_activity_ms) >= FANGS_IDLE_TIMEOUT_MS;
-            SetTargetFPS(idle ? FANGS_IDLE_FPS : 60);
-        }
-
         EndDrawing();
 
         // Opt-in frame-timing diagnostic: FANGS_PERF=1 logs REAL wall-clock fps.
@@ -6612,6 +6683,22 @@ int main(int argc, char **argv)
                 prev_height = GetScreenHeight();
                 prev_term_area_w = term_area_w;
             }
+        }
+
+        // All frame pacing lives here now (SetTargetFPS is uncapped — see
+        // InitWindow above): block until GLFW actually has an event to
+        // deliver, waking near-instantly on real input, or after the target
+        // interval elapses, to bound staleness of PTY output/animations.
+        // This runs every frame, not just while idle — raylib's own
+        // SetTargetFPS pacing sleeps blindly via WaitTime() regardless of the
+        // target value, so even the normal 60fps gap (16.7ms) was wide enough
+        // to occasionally coalesce a fast click's press+release together;
+        // only waking on the actual event (rather than napping through any
+        // fixed window) closes that race for good. Skipped during headless
+        // smoke runs, matching every other pacing check in this loop.
+        if (!phase3_smoke && !blocks_smoke && !kitty_smoke) {
+            bool idle = (now_ms - last_activity_ms) >= FANGS_IDLE_TIMEOUT_MS;
+            glfwWaitEventsTimeout(idle ? (1.0 / FANGS_IDLE_FPS) : (1.0 / FANGS_ACTIVE_FPS));
         }
     }
 

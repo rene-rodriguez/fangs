@@ -38,8 +38,12 @@ const char *ui_sidebar_text(int index);
 // (empty otherwise) — the host injects it into the PTY, staged (no newline).
 // scale: HiDPI content scale; widget/text sizes are multiplied by it to match
 // the (scaled) terminal font.
+// dt: seconds since the last frame, used for the scroll-follow ease — pass
+// real wall-clock elapsed time, not GetFrameTime() (the host's main loop may
+// run with an uncapped/event-driven target FPS, which makes GetFrameTime()
+// unreliable as a delta).
 bool ui_sidebar_draw(Font font, Rect bounds, char *out_prompt, int out_prompt_size,
-                     char *out_run, int out_run_size, float scale);
+                     char *out_run, int out_run_size, float scale, float dt);
 
 // --- E1 (§15): Block-to-sidebar integration -----------------------------------
 
