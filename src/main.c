@@ -4913,7 +4913,17 @@ int main(int argc, char **argv)
                                       ui_sidebar_visible(), sidebar_width,
                                       pad, min_terminal_w);
         term_area_w = lo.terminal.w;
-        if (w != prev_width || h != prev_height || term_area_w != prev_term_area_w) {
+        // While the rail's resize handle is held, only the *visual* rect
+        // above (lo.terminal, which the mouse drives live) tracks the drag —
+        // the terminal engine/pty grid is deliberately left alone until the
+        // drag commits (g_rail_resizing goes false, below). Re-flowing the
+        // real grid on every intermediate frame is what made any
+        // already-wrapped long line walk the prompt further down the screen
+        // with each pixel of drag: each resize's reflow is individually
+        // correct, but firing it dozens of times per gesture made even a
+        // modest final width change look like a runaway one.
+        if (!g_rail_resizing
+            && (w != prev_width || h != prev_height || term_area_w != prev_term_area_w)) {
             last_activity_ms = now_ms;   // resize counts as activity
             // Fallback/default grid (whole-area size) — used for sizing brand
             // new tabs/sessions elsewhere and as the value if the active tab
@@ -5385,7 +5395,9 @@ int main(int argc, char **argv)
                 if (candidate > WORKSPACE_RAIL_MAX_WIDTH) candidate = WORKSPACE_RAIL_MAX_WIDTH;
                 if (candidate != g_rail_drag_width) {
                     g_rail_drag_width = candidate;
-                    prev_term_area_w = -1;   // live reflow while dragging
+                    // Note: no prev_term_area_w reset here — the terminal
+                    // grid/pty resize is gated on !g_rail_resizing above and
+                    // only fires once, after the drag commits below.
                 }
             } else {
                 // Left button released (or its state was otherwise lost, e.g.
