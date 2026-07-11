@@ -71,9 +71,15 @@ package() {
 	ln -s libghostty-vt.so.0.1.0 "$pkgdir/usr/lib/libghostty-vt.so.0"
 	ln -s libghostty-vt.so.0.1.0 "$pkgdir/usr/lib/libghostty-vt.so"
 
-	# Desktop entry.
+	# Desktop entry + icon. Installed to both the hicolor theme (matching the
+	# source PNG's actual 1024x1024 size) and the untheme-aware pixmaps
+	# fallback, so it resolves even without hicolor-icon-theme's index.theme.
 	install -Dm644 "$srcdir/fangs.desktop" \
 		"$pkgdir/usr/share/applications/fangs.desktop"
+	install -Dm644 assets/fangs-icon.png \
+		"$pkgdir/usr/share/icons/hicolor/1024x1024/apps/fangs.png"
+	install -Dm644 assets/fangs-icon.png \
+		"$pkgdir/usr/share/pixmaps/fangs.png"
 
 	# License of the bundled font (project license itself is still TBD).
 	install -Dm644 assets/OFL-JetBrainsMono.txt \

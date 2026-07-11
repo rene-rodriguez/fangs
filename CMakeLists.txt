@@ -75,6 +75,21 @@ add_custom_command(
   DEPENDS "${FONT_BOLD_INPUT}" "${CMAKE_SOURCE_DIR}/cmake/bin2header.cmake"
   COMMENT "Generating font_jetbrains_mono_bold.h")
 
+# App icon, embedded the same way: Linux has no bundle/.icns equivalent, so
+# main.c loads this at runtime and calls SetWindowIcon() for the
+# taskbar/alt-tab icon (see set_linux_window_icon()).
+set(ICON_INPUT  "${CMAKE_SOURCE_DIR}/assets/fangs-icon.png")
+set(ICON_HEADER "${CMAKE_BINARY_DIR}/icon_fangs.h")
+add_custom_command(
+  OUTPUT "${ICON_HEADER}"
+  COMMAND ${CMAKE_COMMAND}
+    -DINPUT=${ICON_INPUT}
+    -DOUTPUT=${ICON_HEADER}
+    -DARRAY_NAME=icon_fangs_png
+    -P ${CMAKE_SOURCE_DIR}/cmake/bin2header.cmake
+  DEPENDS "${ICON_INPUT}" "${CMAKE_SOURCE_DIR}/cmake/bin2header.cmake"
+  COMMENT "Generating icon_fangs.h")
+
 # --- fangs ----------------------------------------------------------------
 add_executable(fangs
   src/main.c
@@ -124,7 +139,8 @@ add_executable(fangs
   src/workspace_session_store.c
   src/crash_log.c
   "${FONT_HEADER}"
-  "${FONT_BOLD_HEADER}")
+  "${FONT_BOLD_HEADER}"
+  "${ICON_HEADER}")
 target_compile_features(fangs PRIVATE c_std_11)
 target_include_directories(fangs PRIVATE
   "${CMAKE_BINARY_DIR}"          # generated font header

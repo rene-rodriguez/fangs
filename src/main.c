@@ -68,6 +68,10 @@ extern void glfwWaitEventsTimeout(double timeout_seconds);
 #include "font_jetbrains_mono.h"
 #include "font_jetbrains_mono_bold.h"
 
+// App icon (CMake bin2header from assets/fangs-icon.png). Linux-only: macOS
+// gets its icon from the .app bundle's Info.plist/.icns instead.
+#include "icon_fangs.h"
+
 // Font-zoom (Ctrl +/-/0) bounds. Default matches config_defaults().
 #define FANGS_DEFAULT_FONT_SIZE 16
 #define FANGS_MIN_FONT_SIZE     6
@@ -1255,6 +1259,21 @@ static void restore_window_position_if_visible(const AppConfig *cfg)
     if (window_rect_visible_on_any_monitor(cfg->window_x, cfg->window_y, w, h))
         SetWindowPosition(cfg->window_x, cfg->window_y);
 }
+
+#ifndef __APPLE__
+// Sets the taskbar/alt-tab icon on Linux (X11 and Wayland via GLFW). macOS
+// skips this — it gets its icon from the .app bundle instead, and would
+// otherwise briefly flash this one over the bundle's dock icon.
+static void set_linux_window_icon(void)
+{
+    Image icon = LoadImageFromMemory(".png", icon_fangs_png, (int)sizeof(icon_fangs_png));
+    if (icon.data == NULL)
+        return;
+    ImageFormat(&icon, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    SetWindowIcon(icon);
+    UnloadImage(icon);
+}
+#endif
 
 static bool save_window_geometry(AppConfig *cfg, const char *config_path)
 {
@@ -4173,6 +4192,9 @@ int main(int argc, char **argv)
     // Initialize window
     InitWindow(initial_window_w, initial_window_h, "Fangs");
     restore_window_position_if_visible(&cfg);
+#ifndef __APPLE__
+    set_linux_window_icon();
+#endif
     desktop_notify_startup();
     // raylib's default exit key is ESC. A terminal must pass ESC straight
     // through to the child (vim normal mode, cancelling prompts, every TUI),

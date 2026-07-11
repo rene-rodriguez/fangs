@@ -1,17 +1,18 @@
-// desktop_notify — macOS desktop notification helper for agent rings.
+// desktop_notify — desktop notification helper for agent rings.
 //
-// On macOS, fires a notification via forked osascript.  On other platforms
-// the notification function compiles to a no-op that returns false.
+// On macOS, fires a notification via UNUserNotificationCenter (falling back to
+// forked osascript). On Linux, fires via forked notify-send (libnotify),
+// exec'd directly with no shell involved. On any other platform, or if the
+// platform notifier binary/API is unavailable, this is a harmless no-op.
 #include "desktop_notify.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #ifdef __APPLE__
-#include <stdlib.h>
-
 // Implemented in desktop_notify_mac.m. UNUserNotificationCenter posts under
 // Fangs' own bundle identity, so a click activates Fangs instead of Script
 // Editor (osascript's `display notification` is permanently misattributed to
@@ -51,24 +52,20 @@ bool desktop_notify_escape_applescript(const char *input, char *out, int out_siz
 
 bool desktop_notify_agent_ring(const char *workspace, const char *message)
 {
-#ifndef __APPLE__
-    (void)workspace;
-    (void)message;
-    return false;
-#else
     // Tests link this file directly and call this function with real
-    // messages; without this guard every ctest run pops real Notification
-    // Center banners since nothing here is mocked.
+    // messages; without this guard every ctest run pops a real notification
+    // since nothing here is mocked.
     if (getenv("FANGS_TEST_NO_NOTIFY"))
-        return true;
-
-    if (desktop_notify_native_ring(workspace, message))
         return true;
 
     if (!message || !message[0])
         message = "needs attention";
     if (!workspace || !workspace[0])
         workspace = "shell";
+
+#ifdef __APPLE__
+    if (desktop_notify_native_ring(workspace, message))
+        return true;
 
     char esc_workspace[256];
     char esc_message[1024];
@@ -85,6 +82,12 @@ bool desktop_notify_agent_ring(const char *workspace, const char *message)
         esc_message, esc_workspace);
     if (n < 0 || (size_t)n >= sizeof(script))
         return false;
+#else
+    // notify-send takes the title/body as separate argv entries (no shell in
+    // between), so no AppleScript-style escaping is needed here.
+    char title[300];
+    snprintf(title, sizeof(title), "Fangs \xe2\x80\x94 %s", workspace);
+#endif
 
     // Double-fork so the child is reparented to init and we don't block.
     pid_t pid1 = fork();
@@ -103,7 +106,7 @@ bool desktop_notify_agent_ring(const char *workspace, const char *message)
     if (pid2 > 0)
         _exit(0);
 
-    // Second child (reparented to init): exec osascript.
+    // Second child (reparented to init): exec the platform notifier.
     // Restore default signal handling, close unnecessary fds.
     setsid();
 
@@ -114,9 +117,16 @@ bool desktop_notify_agent_ring(const char *workspace, const char *message)
         fclose(null_in);
     }
 
+#ifdef __APPLE__
     execlp("osascript", "osascript", "-e", script, (char *)NULL);
-    _exit(127);
+#else
+    // Silently no-ops (via the exec failure path below) if notify-send isn't
+    // installed — not every Linux setup has libnotify or a notification
+    // daemon running.
+    execlp("notify-send", "notify-send", "-a", "Fangs", "-i", "utilities-terminal",
+          title, message, (char *)NULL);
 #endif
+    _exit(127);
 }
 
 void desktop_notify_startup(void)
