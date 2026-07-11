@@ -101,8 +101,9 @@ curl -fsSL https://raw.githubusercontent.com/rene-rodriguez/fangs/main/install.s
 Detects your OS and CPU, downloads the matching asset from the
 [latest release](https://github.com/rene-rodriguez/fangs/releases/latest), and installs the
 native launch target for your platform. macOS installs `Fangs.app` under `~/Applications`;
-Linux installs the CLI under `~/.local` (`bin/fangs` plus the bundled `libghostty-vt`,
-resolved via a relative RPATH).
+Linux installs the CLI under `~/.local` (`bin/fangs` plus the bundled `libghostty-vt`, resolved
+via a relative RPATH) along with a desktop entry + icon, so it also shows up in your app
+launcher and taskbar/alt-tab, not just on `PATH`.
 
 | Option | How |
 |---|---|
@@ -143,8 +144,12 @@ bash scripts/macos-build.sh
 Rebuilds are incremental and fast: `cmake --build build` (after the first scripted build, the
 vendored Zig and the FetchContent deps are cached).
 
+- **Linux (any distro):** `scripts/linux-install.sh` builds (if needed) and installs Fangs under
+  `~/.local` (or `$FANGS_PREFIX`) with a desktop entry + icon, so it shows up correctly in your
+  app launcher and taskbar/alt-tab instead of just a bare binary on `PATH`.
 - **Arch / CachyOS:** build a package straight from `packaging/aur/` (`makepkg -si`) — it fetches the
-  pinned Zig for you. See [`packaging/aur/README.md`](packaging/aur/README.md).
+  pinned Zig for you and installs the same desktop entry + icon system-wide. See
+  [`packaging/aur/README.md`](packaging/aur/README.md).
 - **macOS:** `scripts/macos-bundle.sh` produces a relocatable, self-contained `Fangs.app`
   (plus a distributable zip); a Homebrew **cask** lives in `packaging/macos/`. See
   [`packaging/macos/README.md`](packaging/macos/README.md).

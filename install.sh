@@ -149,6 +149,23 @@ install_cli() {
     # Bundled libghostty-vt (resolved via the binary's relative RPATH -> ../lib).
     cp -P "$src/lib/"libghostty-vt.* "$PREFIX/lib/" 2>/dev/null || true
 
+    # Desktop entry + icon (Linux only — older release assets may predate
+    # these, and macOS has no freedesktop desktop-entry/icon-theme concept),
+    # so Fangs shows up correctly in the app launcher/taskbar, not just PATH.
+    if [ "$plat" = "linux" ] && [ -f "$src/share/applications/fangs.desktop" ]; then
+        mkdir -p "$PREFIX/share/applications" \
+                 "$PREFIX/share/icons/hicolor/1024x1024/apps" \
+                 "$PREFIX/share/pixmaps"
+        sed "s|^Exec=fangs|Exec=$PREFIX/bin/fangs|" \
+            "$src/share/applications/fangs.desktop" \
+            > "$PREFIX/share/applications/fangs.desktop"
+        cp "$src/share/icons/hicolor/1024x1024/apps/fangs.png" \
+           "$PREFIX/share/icons/hicolor/1024x1024/apps/fangs.png" 2>/dev/null || true
+        cp "$src/share/pixmaps/fangs.png" "$PREFIX/share/pixmaps/fangs.png" 2>/dev/null || true
+        command -v update-desktop-database >/dev/null && \
+            update-desktop-database "$PREFIX/share/applications" 2>/dev/null || true
+    fi
+
     printf 'Installed: %s/bin/fangs\n' "$PREFIX"
 
     case ":$PATH:" in

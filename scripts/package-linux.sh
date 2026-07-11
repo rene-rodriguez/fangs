@@ -6,6 +6,9 @@
 #   fangs-linux-<arch>/
 #     bin/fangs              (RPATH = $ORIGIN/../lib)
 #     lib/libghostty-vt.so.0.1.0     (+ .so.0, .so symlinks)
+#     share/applications/fangs.desktop   (Exec=fangs — installer rewrites it)
+#     share/icons/hicolor/1024x1024/apps/fangs.png
+#     share/pixmaps/fangs.png             (untheme-aware fallback)
 #     LICENSE                        (MIT — Fangs's own license)
 #     LICENSE-OFL-JetBrainsMono.txt
 #     README.md
@@ -43,6 +46,16 @@ ln -sf libghostty-vt.so.0.1.0 "$STAGE/lib/libghostty-vt.so"
 # Resolve the bundled lib relative to the binary, so the tarball runs from
 # anywhere (and `install.sh` can drop bin/ + lib/ under any prefix).
 patchelf --set-rpath '$ORIGIN/../lib' "$STAGE/bin/fangs"
+
+# Desktop entry + icon, so an install under any prefix gets launcher/taskbar
+# integration (installers rewrite Exec= to the installed binary's absolute
+# path, since the desktop environment's launch PATH may not include it).
+mkdir -p "$STAGE/share/applications" \
+         "$STAGE/share/icons/hicolor/1024x1024/apps" \
+         "$STAGE/share/pixmaps"
+cp "$ROOT/packaging/aur/fangs.desktop" "$STAGE/share/applications/fangs.desktop"
+cp "$ROOT/assets/fangs-icon.png" "$STAGE/share/icons/hicolor/1024x1024/apps/fangs.png"
+cp "$ROOT/assets/fangs-icon.png" "$STAGE/share/pixmaps/fangs.png"
 
 cp "$ROOT/LICENSE" "$STAGE/LICENSE" 2>/dev/null || true
 cp "$ROOT/assets/OFL-JetBrainsMono.txt" "$STAGE/LICENSE-OFL-JetBrainsMono.txt" 2>/dev/null || true
