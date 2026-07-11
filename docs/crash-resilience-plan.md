@@ -1,10 +1,11 @@
 # Crash / agent-process resilience — options
 
 > **Status:** Tier 1 (crash telemetry) and Tier 2 (opt-in tmux wrapping) are both
-> implemented. Tier 3 remains an option, not built. Written 2026-07-09 alongside the
-> rail diff-review popover, after flagging that a Fangs crash today kills whatever's
-> running inside it (including a long-running coding agent task). Read this before
-> picking a further tier to act on.
+> implemented. Tier 3 is now fully specced and planned but **not built** — see
+> `docs/crash-resilience-tier3-spec.md` and `docs/crash-resilience-tier3-plan.md`.
+> Written 2026-07-09 alongside the rail diff-review popover, after flagging that a
+> Fangs crash today kills whatever's running inside it (including a long-running
+> coding agent task). Read this before picking a further tier to act on.
 
 ## Root cause, confirmed in code
 
@@ -52,19 +53,30 @@ state, not the shape of your workspace — that part is already solved.
   reconnect (that's Tier 3's job). Tested in `tests/pty_tmux_wrap_tests.c` (skips its
   tmux-specific assertions if `tmux` isn't installed) and `tests/config_tests.c`.
 
-- **Tier 3 — the real fix (large — a genuine architecture project, not polish).** Split
-  Fangs into a thin GUI client plus a persistent background server that owns the PTYs
-  (the `forkpty` call moves server-side) and survives GUI crashes or restarts, with the
-  GUI reattaching to live sessions over IPC on relaunch. The existing `fangs ctl`
-  remote-control socket is a relevant foundation for that IPC layer, but this still
-  needs: a session-reattachment protocol, orphan/lifecycle detection for the server
-  process, and new UI for "reconnect to running session" vs. "start fresh." This is the
-  tmux-equivalent rewrite. It deserves its own dedicated planning session — task-by-task,
-  the way `docs/workspace-rail-plan.md` was — gated on Tier 1 actually showing it's
-  warranted, not something to scope line-by-line here.
+- **Tier 3 — the real fix (large — a genuine architecture project, not polish). SPECCED,
+  not built.** Split Fangs into a thin GUI client plus a persistent background daemon
+  (`fangsd`) that owns the PTYs (the `forkpty` call moves server-side) and survives GUI
+  crashes or restarts, with the GUI reattaching to live sessions over IPC on relaunch.
+  The dedicated planning session this needed now exists:
+  - **`docs/crash-resilience-tier3-spec.md`** — architecture, the core decision (a
+    PTY-only daemon with byte-replay reattach, so libghostty-vt stays client-side),
+    process/lifecycle model, wire protocol, reattachment flow, security, failure modes,
+    config gating (`session_server`, default off), and open questions.
+  - **`docs/crash-resilience-tier3-plan.md`** — the task-by-task, phase-by-phase build
+    sequence (headless daemon core first, GUI coupling last), in the same shape as
+    `docs/workspace-rail-plan.md`, with a testing strategy and a hard rule that Tier 0
+    (today's monolith) never regresses.
+
+  The design reuses the existing `fangs ctl` socket vocabulary (`remote_proto`) as the
+  control-channel foundation and degrades gracefully to today's in-process `forkpty` if
+  the daemon is unavailable. Building it remains gated on Tier 1 telemetry (or a real
+  incident) actually showing the multi-week investment is warranted.
 
 ## Recommendation
 
-Tiers 1 and 2 are done and shipping now. Treat Tier 3 as a separate future conversation,
-started only once Tier 1's data (or a real incident) says it's worth the multi-week
-investment.
+Tiers 1 and 2 are done and shipping now. Tier 3 is now fully specced and planned
+(`docs/crash-resilience-tier3-spec.md`, `docs/crash-resilience-tier3-plan.md`) but not
+built — start the build only once Tier 1's data (or a real incident) says it's worth the
+multi-week investment. Phase 0 of the Tier 3 plan (the `SessionBackend` client seam) is a
+safe, self-contained refactor that could land ahead of that decision if desired, since it
+changes no behavior.
