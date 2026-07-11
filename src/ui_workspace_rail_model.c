@@ -270,6 +270,34 @@ void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h)
         view->bell_w = 0;
         view->bell_h = 0;
     }
+
+    // Header icon cluster (full mode only): rail-collapse toggle, then the
+    // two split-direction buttons, positioned left of the bell/plus cluster
+    // using the same "subtract from the current leftmost edge" pattern
+    // already used above for bell_x relative to plus_x.
+    if (!view->compact) {
+        int cluster_left = (view->bell_w > 0) ? view->bell_x : view->plus_x;
+
+        view->split_down_w = 22;
+        view->split_down_h = 22;
+        view->split_down_y = cur + (view->header_h - view->split_down_h) / 2;
+        view->split_down_x = cluster_left - view->split_down_w - 6;
+
+        view->split_right_w = 22;
+        view->split_right_h = 22;
+        view->split_right_y = cur + (view->header_h - view->split_right_h) / 2;
+        view->split_right_x = view->split_down_x - view->split_right_w - 6;
+
+        view->toggle_w = 22;
+        view->toggle_h = 22;
+        view->toggle_y = cur + (view->header_h - view->toggle_h) / 2;
+        view->toggle_x = view->split_right_x - view->toggle_w - 6;
+    } else {
+        view->toggle_x = view->toggle_y = view->toggle_w = view->toggle_h = 0;
+        view->split_right_x = view->split_right_y = view->split_right_w = view->split_right_h = 0;
+        view->split_down_x = view->split_down_y = view->split_down_w = view->split_down_h = 0;
+    }
+
     cur += view->header_h;
 
     // Notification strip (full mode, only when there is something to say).
@@ -380,6 +408,24 @@ WorkspaceRailAction workspace_rail_hit(const WorkspaceRailView *view,
         && hit_rect(mx, my, view->bell_x, view->bell_y,
                     view->bell_w, view->bell_h)) {
         a.type = WORKSPACE_RAIL_ACTION_HISTORY;
+        return a;
+    }
+
+    if (view->toggle_w > 0 && hit_rect(mx, my, view->toggle_x, view->toggle_y,
+                                       view->toggle_w, view->toggle_h)) {
+        a.type = WORKSPACE_RAIL_ACTION_COLLAPSE_RAIL;
+        return a;
+    }
+
+    if (view->split_right_w > 0 && hit_rect(mx, my, view->split_right_x, view->split_right_y,
+                                            view->split_right_w, view->split_right_h)) {
+        a.type = WORKSPACE_RAIL_ACTION_SPLIT_RIGHT;
+        return a;
+    }
+
+    if (view->split_down_w > 0 && hit_rect(mx, my, view->split_down_x, view->split_down_y,
+                                           view->split_down_w, view->split_down_h)) {
+        a.type = WORKSPACE_RAIL_ACTION_SPLIT_DOWN;
         return a;
     }
 

@@ -810,6 +810,68 @@ static void test_bell_button_hit(void)
     EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_HISTORY);
 }
 
+// --- Header icon cluster: rail-collapse toggle + split-right/split-down ---
+
+static void test_header_icon_layout(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "a", .branch = NULL, .active = 1 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    EXPECT_TRUE(view.toggle_w > 0 && view.toggle_h > 0);
+    EXPECT_TRUE(view.split_right_w > 0 && view.split_right_h > 0);
+    EXPECT_TRUE(view.split_down_w > 0 && view.split_down_h > 0);
+    // Left-to-right, non-overlapping, ending left of "+" (bell hidden here).
+    EXPECT_TRUE(view.toggle_x + view.toggle_w <= view.split_right_x);
+    EXPECT_TRUE(view.split_right_x + view.split_right_w <= view.split_down_x);
+    EXPECT_TRUE(view.split_down_x + view.split_down_w <= view.plus_x);
+}
+
+static void test_header_icons_hidden_in_compact_mode(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "a", .branch = NULL, .active = 1 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 1);   // compact = 1
+    workspace_rail_layout(&view, 0, 0, 56, 800);
+
+    EXPECT_INT(view.toggle_w, 0);
+    EXPECT_INT(view.split_right_w, 0);
+    EXPECT_INT(view.split_down_w, 0);
+}
+
+static void test_header_icon_hit(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "a", .branch = NULL, .active = 1 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800);
+
+    WorkspaceRailAction act = workspace_rail_hit(&view, view.toggle_x + 1, view.toggle_y + 1);
+    EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_COLLAPSE_RAIL);
+
+    act = workspace_rail_hit(&view, view.split_right_x + 1, view.split_right_y + 1);
+    EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_SPLIT_RIGHT);
+
+    act = workspace_rail_hit(&view, view.split_down_x + 1, view.split_down_y + 1);
+    EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_SPLIT_DOWN);
+}
+
 int main(void)
 {
     test_row_ordering();
@@ -847,5 +909,8 @@ int main(void)
     test_bell_button_hidden_when_no_unseen();
     test_bell_button_visible_when_unseen();
     test_bell_button_hit();
+    test_header_icon_layout();
+    test_header_icons_hidden_in_compact_mode();
+    test_header_icon_hit();
     return failures ? 1 : 0;
 }

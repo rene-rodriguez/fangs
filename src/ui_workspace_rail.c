@@ -106,11 +106,11 @@ static bool in_rect(int mx, int my, int x, int y, int w, int h)
 // Draw text left-anchored at (x, y), clipped to max_w with a trailing "..",
 // never cutting a UTF-8 sequence in half.
 static void draw_text_clipped(Font font, const char *text, float x, float y,
-                              float size, Color color, float max_w)
+                              float size, float spacing, Color color, float max_w)
 {
     if (max_w <= 0) return;
-    if (MeasureTextEx(font, text, size, 0).x <= max_w) {
-        DrawTextEx(font, text, (Vector2){ x, y }, size, 0, color);
+    if (MeasureTextEx(font, text, size, spacing).x <= max_w) {
+        DrawTextEx(font, text, (Vector2){ x, y }, size, spacing, color);
         return;
     }
     char buf[160];
@@ -123,10 +123,41 @@ static void draw_text_clipped(Font font, const char *text, float x, float y,
         buf[len] = '\0';
         char tmp[168];
         snprintf(tmp, sizeof(tmp), "%s..", buf);
-        if (MeasureTextEx(font, tmp, size, 0).x <= max_w || len == 0) {
-            DrawTextEx(font, tmp, (Vector2){ x, y }, size, 0, color);
+        if (MeasureTextEx(font, tmp, size, spacing).x <= max_w || len == 0) {
+            DrawTextEx(font, tmp, (Vector2){ x, y }, size, spacing, color);
             return;
         }
+    }
+}
+
+// Draw a small "panel" glyph: a rounded-rect outline split by one divider
+// line. Used for the rail-collapse ("sidebar"), split-right (two columns),
+// and split-down (two rows) header icons — mirrors cmux's toolbar
+// iconography. `vertical` selects a vertical divider (columns) vs
+// horizontal (rows); `frac` is the divider's position as a fraction of the
+// glyph's width/height; `fill_first` lightly fills the region before the
+// divider (used only by the sidebar-toggle glyph, per its "left segment
+// filled" spec).
+static void draw_panel_glyph(int bx, int by, int bw, int bh, Color fg,
+                             bool vertical, float frac, bool fill_first)
+{
+    Rectangle g = { (float)(bx + 4), (float)(by + 4),
+                    (float)(bw - 8), (float)(bh - 8) };
+    DrawRectangleRoundedLines(g, 0.2f, 3, fg);
+    if (vertical) {
+        int div_x = (int)(g.x + g.width * frac);
+        if (fill_first)
+            DrawRectangle((int)g.x + 1, (int)g.y + 1,
+                         div_x - (int)g.x - 1, (int)g.height - 2,
+                         with_alpha(fg, 70));
+        DrawRectangle(div_x, (int)g.y, 1, (int)g.height, fg);
+    } else {
+        int div_y = (int)(g.y + g.height * frac);
+        if (fill_first)
+            DrawRectangle((int)g.x + 1, (int)g.y + 1,
+                         (int)g.width - 2, div_y - (int)g.y - 1,
+                         with_alpha(fg, 70));
+        DrawRectangle((int)g.x, div_y, (int)g.width, 1, fg);
     }
 }
 
@@ -282,21 +313,21 @@ static void draw_row(Font font, const WorkspaceRailView *view,
     Color primary_col = row->active ? UI2RAY(g_ui_theme.text)
                                     : with_alpha(UI2RAY(g_ui_theme.text), 215);
     draw_text_clipped(font, primary, (float)(x + ROW_TEXT_X),
-                      (float)(row->y + 7), FS_PRIMARY, primary_col, max_w);
+                      (float)(row->y + 7), FS_PRIMARY, 0.0f, primary_col, max_w);
 
     // Secondary line: closing text (warn tint), attention text, or branch.
     if (row->closing) {
         // Warn tint for armed-close "click again to close".
         Color warn = UI2RAY(g_ui_theme.inline_error);
         draw_text_clipped(font, row->text, (float)(x + ROW_TEXT_X),
-                          (float)(row->y + 25), FS_SUB, warn, max_w);
+                          (float)(row->y + 25), FS_SUB, 0.0f, warn, max_w);
     } else if (row->text[0] && row->attention != WORKSPACE_ATTENTION_NONE) {
         draw_text_clipped(font, row->text, (float)(x + ROW_TEXT_X),
-                          (float)(row->y + 25), FS_SUB,
+                          (float)(row->y + 25), FS_SUB, 0.0f,
                           attention_color(row->attention), max_w);
     } else if (row->branch[0]) {
         draw_text_clipped(font, row->branch, (float)(x + ROW_TEXT_X),
-                          (float)(row->y + 25), FS_SUB,
+                          (float)(row->y + 25), FS_SUB, 0.0f,
                           UI2RAY(g_ui_theme.subtitle), max_w);
     }
 
@@ -324,12 +355,12 @@ void ui_workspace_rail_draw(Font font, const WorkspaceRailView *view,
     DrawRectangle(x, y, w, h, UI2RAY(g_ui_theme.panel_bg));
     DrawRectangle(x + w - 1, y, 1, h, UI2RAY(g_ui_theme.sidebar_separator));
 
-    // --- Header: WORKSPACES + [+] + bell ---
+    // --- Header: WORKSPACES + [toggle] [split-right] [split-down] + [+] + bell ---
     if (!view->compact) {
-        DrawTextEx(font, "WORKSPACES",
-                   (Vector2){ (float)(x + PAD_X),
-                              (float)(view->header_y + (view->header_h - FS_HEADER) / 2 - 1) },
-                   FS_HEADER, 1.5f, UI2RAY(g_ui_theme.subtitle));
+        float label_max_w = (float)(view->toggle_x - 6 - (x + PAD_X));
+        draw_text_clipped(font, "WORKSPACES", (float)(x + PAD_X),
+                          (float)(view->header_y + (view->header_h - FS_HEADER) / 2 - 1),
+                          FS_HEADER, 1.5f, UI2RAY(g_ui_theme.subtitle), label_max_w);
     }
 
     // Bell button (notification history).
@@ -350,6 +381,45 @@ void ui_workspace_rail_draw(Font font, const WorkspaceRailView *view,
                    (Vector2){ (float)(view->bell_x + (view->bell_w - (int)bsz.x) / 2),
                               (float)(view->bell_y + (view->bell_h - (int)bsz.y) / 2) },
                    FS_SUB, 0, bfg);
+    }
+
+    // Rail-collapse ("sidebar") toggle button.
+    if (view->toggle_w > 0) {
+        bool hov = in_rect(mouse_x, mouse_y, view->toggle_x, view->toggle_y,
+                           view->toggle_w, view->toggle_h);
+        if (hov)
+            DrawRectangleRounded((Rectangle){ (float)view->toggle_x, (float)view->toggle_y,
+                                              (float)view->toggle_w, (float)view->toggle_h },
+                                 0.3f, 4, with_alpha(UI2RAY(g_ui_theme.accent), 50));
+        Color fg = hov ? UI2RAY(g_ui_theme.text) : UI2RAY(g_ui_theme.subtitle);
+        draw_panel_glyph(view->toggle_x, view->toggle_y, view->toggle_w, view->toggle_h,
+                         fg, true, 0.4f, true);
+    }
+
+    // Split-right ("two columns") button.
+    if (view->split_right_w > 0) {
+        bool hov = in_rect(mouse_x, mouse_y, view->split_right_x, view->split_right_y,
+                           view->split_right_w, view->split_right_h);
+        if (hov)
+            DrawRectangleRounded((Rectangle){ (float)view->split_right_x, (float)view->split_right_y,
+                                              (float)view->split_right_w, (float)view->split_right_h },
+                                 0.3f, 4, with_alpha(UI2RAY(g_ui_theme.accent), 50));
+        Color fg = hov ? UI2RAY(g_ui_theme.text) : UI2RAY(g_ui_theme.subtitle);
+        draw_panel_glyph(view->split_right_x, view->split_right_y,
+                         view->split_right_w, view->split_right_h, fg, true, 0.5f, false);
+    }
+
+    // Split-down ("two rows") button.
+    if (view->split_down_w > 0) {
+        bool hov = in_rect(mouse_x, mouse_y, view->split_down_x, view->split_down_y,
+                           view->split_down_w, view->split_down_h);
+        if (hov)
+            DrawRectangleRounded((Rectangle){ (float)view->split_down_x, (float)view->split_down_y,
+                                              (float)view->split_down_w, (float)view->split_down_h },
+                                 0.3f, 4, with_alpha(UI2RAY(g_ui_theme.accent), 50));
+        Color fg = hov ? UI2RAY(g_ui_theme.text) : UI2RAY(g_ui_theme.subtitle);
+        draw_panel_glyph(view->split_down_x, view->split_down_y,
+                         view->split_down_w, view->split_down_h, fg, false, 0.5f, false);
     }
 
     // "+" new-workspace button.
@@ -379,7 +449,7 @@ void ui_workspace_rail_draw(Font font, const WorkspaceRailView *view,
         DrawRectangle(x, view->notif_y, ACTIVE_BAR_W, view->notif_h, sev);
         draw_text_clipped(font, view->notification, (float)(x + PAD_X),
                           (float)(view->notif_y + (view->notif_h - FS_SUB) / 2 - 1),
-                          FS_SUB, UI2RAY(g_ui_theme.text),
+                          FS_SUB, 0.0f, UI2RAY(g_ui_theme.text),
                           (float)(w - PAD_X - 8));
     }
 
@@ -442,7 +512,7 @@ void ui_workspace_rail_draw(Font font, const WorkspaceRailView *view,
 #endif
         draw_text_clipped(font, hints, (float)(x + PAD_X),
                           (float)(view->footer_y + (view->footer_h - FS_HEADER) / 2),
-                          FS_HEADER, with_alpha(UI2RAY(g_ui_theme.subtitle), 200),
+                          FS_HEADER, 0.0f, with_alpha(UI2RAY(g_ui_theme.subtitle), 200),
                           (float)(w - PAD_X * 2));
     }
 }

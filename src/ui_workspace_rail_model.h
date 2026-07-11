@@ -33,6 +33,9 @@ typedef enum {
     WORKSPACE_RAIL_ACTION_OPEN_PORT,      // click a port chip
     WORKSPACE_RAIL_ACTION_HISTORY,        // bell button click
     WORKSPACE_RAIL_ACTION_VIEW_DIFF,      // click a row's git-changed badge
+    WORKSPACE_RAIL_ACTION_COLLAPSE_RAIL,  // rail-toggle icon click (sidebar glyph)
+    WORKSPACE_RAIL_ACTION_SPLIT_RIGHT,    // split-right icon click (two columns)
+    WORKSPACE_RAIL_ACTION_SPLIT_DOWN,     // split-down icon click (two rows)
 } WorkspaceRailActionType;
 
 // Click result — pure data shared by main.c and the raylib layer.
@@ -76,6 +79,13 @@ typedef struct {
     WorkspaceAttention notification_level; // severity of that notification
     int  compact;              // non-zero for compact mode (numeric only)
     int  show_panes;           // pane section visible (active tab has >1 pane)
+
+    // Header icon cluster (full mode only): rail-collapse toggle + the two
+    // split-direction buttons, left of the bell/plus buttons. Hidden (all
+    // dims 0) in compact mode — mirrors how bell_w/h are zeroed when hidden.
+    int toggle_x, toggle_y, toggle_w, toggle_h;
+    int split_right_x, split_right_y, split_right_w, split_right_h;
+    int split_down_x, split_down_y, split_down_w, split_down_h;
 
     // Bell button (notification history). Host sets bell_seen to the count
     // of events at last open; layout computes rect; hidden when bell_unseen
