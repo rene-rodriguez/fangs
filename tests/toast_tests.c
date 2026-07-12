@@ -57,11 +57,12 @@ static void test_ttl_expiry(void)
 static void test_alpha_fade(void)
 {
     toast_push(TOAST_ERROR, "error");
-    // Half TTL
+    // Half TTL: toast_get holds full opacity until the trailing 25% of life,
+    // so alpha should still be ~1.0 here.
     toast_tick(TOAST_TTL_ERROR / 2.0);
     float a;
     ASSERT(toast_get(0, NULL, NULL, &a), "get should succeed");
-    ASSERT_NEAR(a, 0.5f, 0.05f, "alpha should be ~0.5 at half TTL");
+    ASSERT_NEAR(a, 1.0f, 0.05f, "alpha should be ~1.0 at half TTL (hold phase)");
     toast_clear();
 }
 
