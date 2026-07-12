@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <math.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -192,6 +193,13 @@ static int  g_rail_resize_press_x = 0;             // GetMouseX() at gesture sta
 #define WORKSPACE_RAIL_HIDE_THRESHOLD 120
 #define WORKSPACE_RAIL_COLLAPSED_WIDTH 8
 #define RAIL_RESIZE_HANDLE_PAD 4
+
+// Animated (visual-only) rail width for the collapse/expand toggle, so it
+// glides open/closed instead of snapping. Mirrors the drag-resize path below:
+// the terminal grid/pty are only reflowed once the animation settles, since
+// reflowing every intermediate frame makes wrapped lines "walk" the screen.
+static float g_rail_width_anim = -1.0f; // -1 = uninitialized, snaps to target on first frame
+#define RAIL_ANIM_SPEED 14.0f            // higher = snappier
 #define RAIL_RESIZE_CLICK_SLOP_PX 6   // press->release delta below this = "just a click"
 
 // Last-seen event count for the bell badge (set when history popover opens).
@@ -4930,7 +4938,23 @@ int main(int argc, char **argv)
         }
 
         int base_rail_width = g_rail_collapsed ? WORKSPACE_RAIL_COLLAPSED_WIDTH : cfg.workspace_rail_width;
-        int effective_rail_width = g_rail_resizing ? g_rail_drag_width : base_rail_width;
+        bool rail_animating = false;
+        int effective_rail_width;
+        if (g_rail_resizing) {
+            effective_rail_width = g_rail_drag_width;
+            g_rail_width_anim = (float)g_rail_drag_width; // keep in sync so release doesn't jump
+        } else {
+            if (g_rail_width_anim < 0.0f) g_rail_width_anim = (float)base_rail_width; // first frame
+            float target = (float)base_rail_width;
+            if (fabsf(target - g_rail_width_anim) > 0.5f) {
+                g_rail_width_anim += (target - g_rail_width_anim) *
+                    fminf(1.0f, (float)frame_dt_sec * RAIL_ANIM_SPEED);
+                rail_animating = true;
+            } else {
+                g_rail_width_anim = target;
+            }
+            effective_rail_width = (int)(g_rail_width_anim + 0.5f);
+        }
         lo = layout_compute_with_rail(w, h, cfg.workspace_rail, effective_rail_width, 56,
                                       ui_sidebar_visible(), sidebar_width,
                                       pad, min_terminal_w);
@@ -4944,7 +4968,7 @@ int main(int argc, char **argv)
         // with each pixel of drag: each resize's reflow is individually
         // correct, but firing it dozens of times per gesture made even a
         // modest final width change look like a runaway one.
-        if (!g_rail_resizing
+        if (!g_rail_resizing && !rail_animating
             && (w != prev_width || h != prev_height || term_area_w != prev_term_area_w)) {
             last_activity_ms = now_ms;   // resize counts as activity
             // Fallback/default grid (whole-area size) — used for sizing brand
@@ -6612,19 +6636,25 @@ int main(int argc, char **argv)
                 float talpha;
                 if (!toast_get(i, &tl, &tmsg, &talpha)) break;
                 if (talpha <= 0.0f) continue;
-                Color tbg;
+                Color accent;
                 switch (tl) {
-                    case TOAST_ERROR: tbg = (Color){ 180, 50, 50, (unsigned char)(220 * talpha) }; break;
-                    case TOAST_WARN:  tbg = (Color){ 200, 150, 30, (unsigned char)(220 * talpha) }; break;
-                    default:          tbg = (Color){ 60, 60, 60, (unsigned char)(220 * talpha) }; break;
+                    case TOAST_ERROR: accent = (Color){ 220, 80, 80, 255 };  break;
+                    case TOAST_WARN:  accent = (Color){ 230, 180, 60, 255 }; break;
+                    default:          accent = (Color){ 120, 170, 220, 255 }; break;
                 }
+                Color tbg = (Color){ 38, 38, 40, (unsigned char)(230 * talpha) };
                 Vector2 tsz = MeasureTextEx(mono_font, tmsg, font_size, 0);
                 int th = (int)tsz.y + 8;
                 toast_y -= th + 4;
-                DrawRectangle(toast_x, toast_y, toast_w, th, tbg);
-                Color tc = (Color){ 220, 220, 220, (unsigned char)(255 * talpha) };
+                Rectangle trec = { (float)toast_x, (float)toast_y, (float)toast_w, (float)th };
+                DrawRectangleRounded(trec, 0.18f, 6, tbg);
+                // Left accent stripe indicating severity.
+                Color astripe = Fade(accent, talpha);
+                DrawRectangleRounded((Rectangle){ trec.x, trec.y, 4, trec.height },
+                                     0.9f, 6, astripe);
+                Color tc = (Color){ 225, 225, 225, (unsigned char)(255 * talpha) };
                 DrawTextEx(mono_font, tmsg,
-                           (Vector2){ (float)toast_x + 6, (float)toast_y + 4 },
+                           (Vector2){ (float)toast_x + 12, (float)toast_y + 4 },
                            font_size, 0, tc);
             }
         }

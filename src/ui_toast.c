@@ -80,7 +80,16 @@ bool toast_get(int i, ToastLevel *level, const char **msg, float *alpha)
     if (alpha) {
         double remain = g_toast.ring[idx].ttl;
         double max    = g_toast.ring[idx].max_ttl;
-        *alpha = (max > 0.0) ? (float)(remain / max) : 0.0f;
+        // Hold at full opacity, then ease out over the trailing fraction of
+        // the toast's life so it doesn't start dimming the instant it appears.
+        const double fade_frac = 0.25;
+        double fade_window = max * fade_frac;
+        if (fade_window > 0.0 && remain < fade_window) {
+            float t = (float)(remain / fade_window);
+            *alpha = t * t; // ease-out (quadratic)
+        } else {
+            *alpha = 1.0f;
+        }
         if (*alpha < 0.0f) *alpha = 0.0f;
         if (*alpha > 1.0f) *alpha = 1.0f;
     }
