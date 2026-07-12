@@ -84,8 +84,12 @@ drops the rest:
   and lists every open workspace by name/title/directory so you can fuzzy-jump straight to one.
 - **Live configuration** — an INI dotfile is the source of truth, with an in-app settings modal
   (`Ctrl+,`) that round-trips to it and hot-reloads instantly. No restarts.
-- **First-class theming** — One Dark, Dark Modern, GitHub Dark, Gruvbox, Monokai, and light
-  variants. Each themes the full 256-color palette in the engine, so *all* output is colored
+- **First-class theming** — Fangs Dark, One Dark, Dark Modern, GitHub Dark, Gruvbox, Monokai,
+  Dracula, Nord, Kanagawa, Tokyo Night, Everforest, Material Oceanic, Catppuccin Mocha /
+  Frappe, and light variants (Fangs Light, One Light, One Light Pro, GitHub Light,
+  Gruvbox Light, Solarized Light, Catppuccin Latte, Ayu Light, Rose Pine Dawn,
+  Kanagawa Lotus, Dracula Soft, Nord Light, Everforest Light). Every theme colors the
+  full 256-color palette, so *all* output is colored
   (`ls --color`, vim, prompts, 256-color apps), and the UI restyles to match.
 - **Terminal essentials** — mouse selection with copy/paste (bracketed-paste safe),
   `Ctrl`/`Cmd`+click to open URLs, and `Ctrl+F` find-in-view.

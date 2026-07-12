@@ -194,8 +194,11 @@ If either spike fails, we pivot here — having spent days, not weeks. **Both 0a
 >   `cfg.theme` pushes the default fg/bg/cursor **and the complete 256-color palette** into
 >   libghostty-vt via `ghostty_terminal_set(GHOSTTY_TERMINAL_OPT_COLOR_*)`, so *all* output is themed
 >   — `ls --color`, vim, prompts, 256-color apps — applied live on Save. A theme **selector**
->   (`Ctrl+,` → Theme combo box) offers **One Dark, Dark Modern, GitHub Dark, Gruvbox, Monokai** and
->   light themes **One Light, Light Modern, GitHub Light, Gruvbox Light**, backed by a `theme.c`
+>   (`Ctrl+,` → Theme combo box) offers **Fangs Dark, One Dark, Dark Modern, GitHub Dark, Gruvbox,
+>   Monokai, Dracula, Nord, Kanagawa, Tokyo Night, Everforest, Material Oceanic, Catppuccin Mocha /
+>   Frappe, and light variants (Fangs Light, One Light, One Light Pro, GitHub Light, Gruvbox Light,
+>   Solarized Light, Catppuccin Latte, Ayu Light, Rose Pine Dawn, Kanagawa Lotus, Dracula Soft,
+>   Nord Light, Everforest Light)**. Every theme colors the full 256-color palette, backed by a `theme.c`
 >   registry (add a theme = one `static const Theme` + a registry row). The RayGUI in-app UI
 >   (settings modal, sidebar/inline widgets) restyles itself to match the active theme via
 >   `apply_gui_style()`, so it's never a light panel floating over a dark terminal.
