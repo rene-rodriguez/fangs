@@ -364,9 +364,14 @@ add_test(NAME pane_tests COMMAND pane_tests)
 # --- E5 (§18): Toast notifications (pure logic) -------------------------------
 add_executable(toast_tests
   tests/toast_tests.c
-  src/ui_toast.c)
+  src/ui_toast.c
+  src/ui_theme.c
+  src/theme.c)
 target_compile_features(toast_tests PRIVATE c_std_11)
-target_include_directories(toast_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_include_directories(toast_tests PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+  "${raylib_SOURCE_DIR}/src")
+target_link_libraries(toast_tests raylib)
 add_test(NAME toast_tests COMMAND toast_tests)
 
 add_executable(action_registry_tests

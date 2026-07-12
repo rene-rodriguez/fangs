@@ -13,8 +13,13 @@
 
 // Draw the workspace rail. workspace_rail_layout() must have run on the view.
 // The mouse position drives hover feedback only.
-void ui_workspace_rail_draw(Font font, const WorkspaceRailView *view,
-                            int mouse_x, int mouse_y);
+void ui_workspace_rail_draw(Font font, WorkspaceRailView *view,
+                            int mouse_x, int mouse_y, float dt);
+
+static inline void ui_workspace_rail_set_ring_pulse(WorkspaceRailView *view, float v)
+{
+    if (view) view->ring_pulse = v;
+}
 
 // Fixed color-tag palette for grouping related workspaces at a glance.
 // Deliberately NOT theme-derived (unlike ui_theme's semantic colors) so tags

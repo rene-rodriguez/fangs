@@ -4487,10 +4487,17 @@ int main(int argc, char **argv)
                 ui_sidebar_toggle();
             ui_sidebar_push(MSG_USER, "phase3 smoke prompt");
             ui_sidebar_push(MSG_SYSTEM, "(AI not wired yet - Phase 4)");
+            // Visual toast smoke: exercise the polished toast renderer in the
+            // screenshot so placement and styling can be inspected headlessly.
+            toast_push(TOAST_INFO,  "Toast smoke: info notification");
+            toast_push(TOAST_WARN,  "Toast smoke: warning notification");
+            toast_push(TOAST_ERROR, "Toast smoke: error notification");
             // FANGS_SMOKE_FOCUS opens the input in edit mode so the headless
             // smoke can exercise GuiTextBox's edit path — a regression guard for
             // the narrow-sidebar SIGBUS. Default stays unfocused (PTY passthrough).
             ui_sidebar_focus(getenv("FANGS_SMOKE_FOCUS") != NULL);
+            if (getenv("FANGS_SMOKE_SETTINGS") != NULL)
+                ui_settings_toggle();
             phase3_smoke_started = true;
         }
 
@@ -5126,6 +5133,7 @@ int main(int argc, char **argv)
                                 workspace_status_note_notify(&g_workspace_status, pane_id,
                                                              focused,
                                                              cmdblocks_notify_text(cb));
+                                ui_workspace_rail_set_ring_pulse(&g_rail_view, 1.0f);
                                 if (!window_focused_now) {
                                     char ws_label[128];
                                     const char *ctitle = cmdblocks_title(cb);
@@ -6289,7 +6297,8 @@ int main(int argc, char **argv)
         if (lo.rail_visible) {
             build_rail_view(&lo, now_ms);
             ui_workspace_rail_draw(mono_font, &g_rail_view,
-                                   GetMouseX(), GetMouseY());
+                                   GetMouseX(), GetMouseY(),
+                                   (float)frame_dt_sec);
 
             // Hover-preview dwell tracking: which row (if any) the mouse is
             // resting over, and for how long.
@@ -6632,40 +6641,8 @@ int main(int argc, char **argv)
             }
         }
 
-        // Draw toast notifications (fading pills, bottom-right).
-        {
-            int n_toasts = toast_count();
-            int toast_w = 360;
-            int toast_x = GetScreenWidth() - toast_w - 12;
-            int toast_y = GetScreenHeight() - 12;
-            for (int i = 0; i < n_toasts; i++) {
-                ToastLevel tl;
-                const char *tmsg;
-                float talpha;
-                if (!toast_get(i, &tl, &tmsg, &talpha)) break;
-                if (talpha <= 0.0f) continue;
-                Color accent;
-                switch (tl) {
-                    case TOAST_ERROR: accent = (Color){ 220, 80, 80, 255 };  break;
-                    case TOAST_WARN:  accent = (Color){ 230, 180, 60, 255 }; break;
-                    default:          accent = (Color){ 120, 170, 220, 255 }; break;
-                }
-                Color tbg = (Color){ 38, 38, 40, (unsigned char)(230 * talpha) };
-                Vector2 tsz = MeasureTextEx(mono_font, tmsg, font_size, 0);
-                int th = (int)tsz.y + 8;
-                toast_y -= th + 4;
-                Rectangle trec = { (float)toast_x, (float)toast_y, (float)toast_w, (float)th };
-                DrawRectangleRounded(trec, 0.18f, 6, tbg);
-                // Left accent stripe indicating severity.
-                Color astripe = Fade(accent, talpha);
-                DrawRectangleRounded((Rectangle){ trec.x, trec.y, 4, trec.height },
-                                     0.9f, 6, astripe);
-                Color tc = (Color){ 225, 225, 225, (unsigned char)(255 * talpha) };
-                DrawTextEx(mono_font, tmsg,
-                           (Vector2){ (float)toast_x + 12, (float)toast_y + 4 },
-                           font_size, 0, tc);
-            }
-        }
+        // Draw toast notifications (polished rounded cards, top-right).
+        toast_draw(mono_font, applied_scale, frame_dt_sec);
 
         // Draw context menu / history popover on top of everything.
         if (g_rail_menu.open) {

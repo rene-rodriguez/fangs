@@ -20,6 +20,8 @@ typedef struct {
     UiColor reasoning;                    // sidebar "thinking" text
     UiColor run_button, run_button_hover; // sidebar Run button
     UiColor accent;                       // buttons, focus, ⚡ Explain error
+    UiColor warn;                         // toasts / warnings
+    UiColor danger;                       // toasts / errors
     UiColor inline_bg, inline_border;     // Ctrl+Space floating prompt
 
     // Chrome overlays (derived from theme, never hardcoded).

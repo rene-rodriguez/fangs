@@ -87,6 +87,10 @@ UiTheme ui_theme_derive(const Theme *t)
                              ? t->cursor : t->ansi[4];
         u.accent = tc2uic(accent_c, 220);
 
+        // Semantic warning/error tints for toasts.
+        u.warn   = tc2uic(t->ansi[3], 220);  // yellow
+        u.danger = tc2uic(t->ansi[1], 220);  // red
+
         // Sidebar normal text: near-fg on panel_bg.
         u.text        = blend_cc(fg, bg, 40);
         u.subtitle    = blend_cc(fg, bg, 100);
@@ -144,6 +148,10 @@ UiTheme ui_theme_derive(const Theme *t)
         ThemeColor accent_c = (sat_tc(t->cursor) > sat_tc(t->ansi[4]))
                              ? t->cursor : t->ansi[4];
         u.accent = tc2uic(accent_c, 240);
+
+        // Semantic warning/error tints for toasts.
+        u.warn   = tc2uic(t->ansi[3], 240);  // yellow
+        u.danger = tc2uic(t->ansi[1], 240);  // red
 
         // Sidebar normal text: near-fg on panel_bg.
         u.text        = blend_cc(fg, bg, 60);

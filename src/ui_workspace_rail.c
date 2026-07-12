@@ -21,6 +21,8 @@
 #define ACTIVE_BAR_W    3      // accent bar width on the active row
 #define DOT_R           4      // attention dot radius
 
+#define RING_PULSE_DECAY (1.0f / 0.7f) // decay over ~700 ms
+
 // Font sizes (logical px).
 #define FS_HEADER  10
 #define FS_PRIMARY 13
@@ -250,14 +252,44 @@ static void draw_row(Font font, const WorkspaceRailView *view,
         return;
     }
 
+    // Attention dot on the trailing edge reserves label space.
+    Color sev = attention_color(row->attention);
+    if (sev.a == 0) sev = UI2RAY(g_ui_theme.accent);
+
+    // Persistent unread: keep the dot fully opaque and bright.
+    if (row->attention != WORKSPACE_ATTENTION_NONE) {
+        sev.a = 255;
+    }
+
+    float pulse = 0.0f;
+    if (view->ring_pulse > 0.0f && row->attention != WORKSPACE_ATTENTION_NONE) {
+        pulse = view->ring_pulse;
+    }
+
+    float base_r = (float)DOT_R;
+    float dot_r = base_r + base_r * 0.35f * pulse;
+
     // Number column — the row's Cmd/Ctrl+<n> target.
     DrawTextEx(font, num,
                (Vector2){ (float)(x + NUM_X), (float)(row->y + 9) },
                FS_SUB, 0, UI2RAY(g_ui_theme.subtitle));
 
-    // Attention dot on the trailing edge reserves label space.
-    Color dot = attention_color(row->attention);
     float text_right = (float)(x + w - PAD_X);
+
+    // Glow ring behind the attention dot when pulsing.
+    if (pulse > 0.0f) {
+        Color glow = sev;
+        glow.a = (unsigned char)(80 * pulse);
+        DrawCircle((int)(x + w - PAD_X - base_r), row->y + row->h / 2,
+                   dot_r + 5.0f, glow);
+    }
+
+    // Draw attention dot only when there is an attention state.
+    if (row->attention != WORKSPACE_ATTENTION_NONE) {
+        DrawCircle((int)(x + w - PAD_X - base_r), row->y + row->h / 2,
+                   (int)dot_r, sev);
+        text_right -= base_r * 2 + 8;
+    }
 
     // Reserve space for port chips: secondary text ends before the first chip.
     if (row->port_count > 0 && row->port_w[0] > 0) {
@@ -266,14 +298,9 @@ static void draw_row(Font font, const WorkspaceRailView *view,
             text_right = chip_area_left;
     }
 
-    if (dot.a) {
-        DrawCircle(x + w - PAD_X - DOT_R, row->y + row->h / 2, DOT_R, dot);
-        text_right -= DOT_R * 2 + 8;
-    }
-    // Working marker: subtle pulsing dot inside the trailing area.
     if (row->working) {
         Color wc = working_color();
-        float wx = dot.a ? text_right - DOT_R : (float)(x + w - PAD_X - DOT_R);
+        float wx = text_right - DOT_R;
         DrawCircle((int)wx, row->y + row->h / 2, DOT_R, wc);
         text_right -= DOT_R * 2 + 8;
     } else if (row->idle_ms >= 0) {
@@ -346,9 +373,14 @@ static void draw_row(Font font, const WorkspaceRailView *view,
     draw_port_chips(font, row, (int)(x + w - ROW_TEXT_X), mouse_x, mouse_y);
 }
 
-void ui_workspace_rail_draw(Font font, const WorkspaceRailView *view,
-                            int mouse_x, int mouse_y)
+void ui_workspace_rail_draw(Font font, WorkspaceRailView *view,
+                            int mouse_x, int mouse_y, float dt)
 {
+    if (view->ring_pulse > 0.0f) {
+        view->ring_pulse -= dt * RING_PULSE_DECAY;
+        if (view->ring_pulse < 0.0f) view->ring_pulse = 0.0f;
+    }
+
     int x = view->x, y = view->y, w = view->w, h = view->h;
 
     // Background + right separator.

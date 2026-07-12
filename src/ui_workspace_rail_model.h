@@ -107,6 +107,9 @@ typedef struct {
     int notif_y, notif_h;                 // notification strip
     int section_y, section_h;             // "SPLITS" section header
     int footer_y, footer_h;               // shortcut hints
+
+    // Transient animation state set by host on a new notification ring.
+    float ring_pulse;                     // 0..1, decays to 0 over ~700 ms
 } WorkspaceRailView;
 
 // Input descriptor — keeps the builder pure (no App dependency).
