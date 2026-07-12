@@ -19,6 +19,10 @@ typedef enum {
     EDIT_MODEL,
     EDIT_API_KEY,
     EDIT_MAX_TOKENS,
+    EDIT_OLLAMA_NUM_CTX,
+    EDIT_OLLAMA_NUM_GPU,
+    EDIT_OLLAMA_NUM_THREAD,
+    EDIT_OLLAMA_NUM_BATCH,
     EDIT_COUNT
 } EditField;
 
@@ -72,7 +76,7 @@ static void apply_provider_defaults(AppConfig *c, const char *provider)
         snprintf(c->model, sizeof(c->model), "claude-opus-4-8");
     } else if (strcmp(provider, "ollama") == 0) {
         snprintf(c->endpoint, sizeof(c->endpoint),
-                 "http://localhost:11434/v1/chat/completions");
+                 "http://localhost:11434/api/chat");
         snprintf(c->model, sizeof(c->model), "llama3.1");
     } else if (strcmp(provider, "openai") == 0) {
         snprintf(c->endpoint, sizeof(c->endpoint),
@@ -201,8 +205,10 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
     int screen_h = GetScreenHeight();
     DrawRectangle(0, 0, screen_w, screen_h, UI2RAY(g_ui_theme.modal_overlay));
 
+    bool ollama_selected = (provider_index(draft.provider) == 2);
+
     float panel_w = 620.0f * s;
-    float panel_h = 610.0f * s;
+    float panel_h = 610.0f * s + (ollama_selected ? 140.0f * s : 0.0f);
     if (panel_w > screen_w - 32.0f*s) panel_w = (float)screen_w - 32.0f*s;
     if (panel_h > screen_h - 32.0f*s) panel_h = (float)screen_h - 32.0f*s;
     Rectangle panel = {
@@ -286,6 +292,23 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
     draw_labeled_spinner("Max tokens", (Rectangle){x + half_w + col_gap, y, half_w, row_h},
                          &draft.max_tokens, 1, 200000, EDIT_MAX_TOKENS, s);
     y += row_h + gap + 18.0f*s;
+
+    // Ollama-only speed knobs: only the native /api/chat transport (not the
+    // OpenAI-compat endpoints) forwards these, so they're meaningless — and
+    // hidden — for every other provider.
+    if (ollama_selected) {
+        draw_labeled_spinner("Context (0=default)", (Rectangle){x, y, half_w, row_h},
+                             &draft.ollama_num_ctx, 0, 131072, EDIT_OLLAMA_NUM_CTX, s);
+        draw_labeled_spinner("GPU layers (0=CPU, -1=auto)", (Rectangle){x + half_w + col_gap, y, half_w, row_h},
+                             &draft.ollama_num_gpu, -1, 999, EDIT_OLLAMA_NUM_GPU, s);
+        y += row_h + gap + 18.0f*s;
+
+        draw_labeled_spinner("Threads (0=auto)", (Rectangle){x, y, half_w, row_h},
+                             &draft.ollama_num_thread, 0, 128, EDIT_OLLAMA_NUM_THREAD, s);
+        draw_labeled_spinner("Batch (0=default)", (Rectangle){x + half_w + col_gap, y, half_w, row_h},
+                             &draft.ollama_num_batch, 0, 8192, EDIT_OLLAMA_NUM_BATCH, s);
+        y += row_h + gap + 18.0f*s;
+    }
 
     const char *env_key = getenv("FANGS_API_KEY");
     bool key_from_env = env_key && env_key[0] != '\0';

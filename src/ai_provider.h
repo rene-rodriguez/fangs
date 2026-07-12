@@ -1,9 +1,10 @@
 // ai_provider — THE AI SEAM.
 //
 // The single boundary between the host and "talking to a model". Today it's an
-// OpenAI-compatible streaming HTTP client (ai_http.c); swapping providers or
-// transports (Anthropic-native, a local model, a mock) means changing only the
-// implementation behind this header, never the host.
+// OpenAI-compatible streaming HTTP client (ai_http.c) that also speaks two
+// native dialects (Anthropic's /v1/messages, Ollama's /api/chat); swapping
+// providers or transports means changing only the implementation behind this
+// header, never the host.
 //
 // Threading contract (critical): a request runs on a worker thread that touches
 // ONLY this stream's mutex-guarded buffers. The host calls ai_stream_poll()
@@ -20,12 +21,22 @@ typedef struct {
 } AiMessage;
 
 typedef struct {
-    const char *provider;   // "openai" (default/compatible) | "anthropic" (native)
-    const char *endpoint;   // full chat-completions / messages URL
+    const char *provider;   // "openai" (default/compatible) | "anthropic" (native) | "ollama" (native)
+    const char *endpoint;   // full chat-completions / messages / api/chat URL
     const char *model;
     const char *api_key;    // already resolved by the host (env wins over config)
     int         max_tokens;
     bool        stream;     // Phase 4 assumes true (SSE)
+
+    // Ollama-native runtime knobs (only sent when provider=="ollama"). 0/-1
+    // means "unset" -> the field is omitted from the request so Ollama falls
+    // back to its own default / Modelfile value. num_gpu uses -1 as its
+    // sentinel (not 0) because 0 is itself a meaningful choice: force
+    // CPU-only inference.
+    int         ollama_num_ctx;     // 0 = unset
+    int         ollama_num_gpu;     // -1 = unset
+    int         ollama_num_thread;  // 0 = unset
+    int         ollama_num_batch;   // 0 = unset
 } AiConfig;
 
 typedef struct AiStream AiStream;

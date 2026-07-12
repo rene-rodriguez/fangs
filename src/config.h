@@ -23,6 +23,16 @@ typedef struct {
     bool stream;
     int max_tokens;
 
+    // Ollama-native runtime knobs (speed tuning; only applied when
+    // provider=="ollama"). Same sentinel convention as window_x/window_y
+    // below: unset means "don't send it, let Ollama use its own default".
+    // num_gpu uses -1 as its sentinel since 0 is a meaningful choice (force
+    // CPU-only inference), unlike the other three fields where 0 means unset.
+    int ollama_num_ctx;
+    int ollama_num_gpu;
+    int ollama_num_thread;
+    int ollama_num_batch;
+
     // E4: cursor configuration
     int cursor_style;    // 0=block, 1=bar, 2=underline (default 0)
     bool cursor_blink;   // default true

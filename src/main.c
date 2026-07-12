@@ -2985,6 +2985,10 @@ static AiStream *start_ai_request(TermEngine *te, const AppConfig *cfg,
         .api_key = resolve_api_key(cfg),
         .max_tokens = cfg->max_tokens,
         .stream = true,
+        .ollama_num_ctx = cfg->ollama_num_ctx,
+        .ollama_num_gpu = cfg->ollama_num_gpu,
+        .ollama_num_thread = cfg->ollama_num_thread,
+        .ollama_num_batch = cfg->ollama_num_batch,
     };
     AiStream *s = ai_stream_start(&aic, msgs, n);
     free(ctx);
@@ -3020,6 +3024,10 @@ static AiStream *start_inline_request(TermEngine *te, const AppConfig *cfg,
         .api_key = resolve_api_key(cfg),
         .max_tokens = cfg->max_tokens,
         .stream = true,
+        .ollama_num_ctx = cfg->ollama_num_ctx,
+        .ollama_num_gpu = cfg->ollama_num_gpu,
+        .ollama_num_thread = cfg->ollama_num_thread,
+        .ollama_num_batch = cfg->ollama_num_batch,
     };
     AiStream *s = ai_stream_start(&aic, msgs, 2);
     free(ctx);

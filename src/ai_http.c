@@ -1,6 +1,9 @@
-// ai_http — OpenAI-compatible streaming client behind ai_provider.h.
+// ai_http — streaming client behind ai_provider.h.
 //
 // Promoted from spike/ai_stream/stream_window.c (proven live against an OpenAI-compatible endpoint).
+// Speaks three wire dialects, keyed off cfg->provider: OpenAI-compatible
+// (default, also used for "custom"), Anthropic-native (/v1/messages), and
+// Ollama-native (/api/chat, NDJSON instead of SSE — see sse.c's ndjson mode).
 // A worker pthread runs curl_easy_perform; incoming bytes go through the SSE
 // parser; each delta is appended (under lock) to reason/answer buffers. The host
 // drains via ai_stream_poll(). See ai_provider.h for the threading contract.
@@ -32,6 +35,7 @@ struct AiStream {
     char *auth_header;
     char *version_header;  // Anthropic only ("anthropic-version: ..."), else NULL
     long  timeout;
+    bool  ndjson;           // Ollama native /api/chat (NDJSON), not SSE
 
     pthread_t thread;
     int       thread_started;
@@ -104,12 +108,13 @@ static void *worker(void *arg)
 
     struct curl_slist *h = NULL;
     h = curl_slist_append(h, "Content-Type: application/json");
-    h = curl_slist_append(h, "Accept: text/event-stream");
+    if (!s->ndjson)
+        h = curl_slist_append(h, "Accept: text/event-stream");
     h = curl_slist_append(h, s->auth_header);
     if (s->version_header)
         h = curl_slist_append(h, s->version_header);
 
-    SseParser *parser = sse_parser_new();
+    SseParser *parser = s->ndjson ? sse_parser_new_ndjson() : sse_parser_new();
     WorkerCtx ctx = { s, parser };
 
     curl_easy_setopt(curl, CURLOPT_URL, s->url);
@@ -150,6 +155,11 @@ static void *worker(void *arg)
 static bool is_anthropic(const AiConfig *cfg)
 {
     return cfg->provider && strcmp(cfg->provider, "anthropic") == 0;
+}
+
+static bool is_ollama(const AiConfig *cfg)
+{
+    return cfg->provider && strcmp(cfg->provider, "ollama") == 0;
 }
 
 // OpenAI-compatible chat-completions body: system is just another message.
@@ -209,10 +219,60 @@ static char *build_body_anthropic(const AiConfig *cfg, const AiMessage *msgs, in
     return body;
 }
 
+// Ollama native /api/chat body: same messages[] shape as OpenAI-compatible,
+// but runtime knobs go in a top-level `options` object. A field is included
+// only if the user actually set it (sentinel checks below) — an unset field
+// is omitted entirely so Ollama falls back to its own default / Modelfile
+// value rather than being forced to some arbitrary zero.
+static char *build_body_ollama_native(const AiConfig *cfg, const AiMessage *msgs, int n)
+{
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "model", cfg->model ? cfg->model : "");
+    cJSON_AddBoolToObject(req, "stream", cfg->stream ? 1 : 0);
+    cJSON *arr = cJSON_AddArrayToObject(req, "messages");
+    for (int i = 0; i < n; i++) {
+        cJSON *m = cJSON_CreateObject();
+        cJSON_AddStringToObject(m, "role", msgs[i].role ? msgs[i].role : "user");
+        cJSON_AddStringToObject(m, "content", msgs[i].content ? msgs[i].content : "");
+        cJSON_AddItemToArray(arr, m);
+    }
+
+    cJSON *opts = NULL;
+    if (cfg->max_tokens > 0) {
+        if (!opts) opts = cJSON_CreateObject();
+        cJSON_AddNumberToObject(opts, "num_predict", cfg->max_tokens);
+    }
+    if (cfg->ollama_num_ctx > 0) {
+        if (!opts) opts = cJSON_CreateObject();
+        cJSON_AddNumberToObject(opts, "num_ctx", cfg->ollama_num_ctx);
+    }
+    if (cfg->ollama_num_gpu >= 0) {
+        if (!opts) opts = cJSON_CreateObject();
+        cJSON_AddNumberToObject(opts, "num_gpu", cfg->ollama_num_gpu);
+    }
+    if (cfg->ollama_num_thread > 0) {
+        if (!opts) opts = cJSON_CreateObject();
+        cJSON_AddNumberToObject(opts, "num_thread", cfg->ollama_num_thread);
+    }
+    if (cfg->ollama_num_batch > 0) {
+        if (!opts) opts = cJSON_CreateObject();
+        cJSON_AddNumberToObject(opts, "num_batch", cfg->ollama_num_batch);
+    }
+    if (opts)
+        cJSON_AddItemToObject(req, "options", opts);
+
+    char *body = cJSON_PrintUnformatted(req);
+    cJSON_Delete(req);
+    return body;
+}
+
 static char *build_body(const AiConfig *cfg, const AiMessage *msgs, int n)
 {
-    return is_anthropic(cfg) ? build_body_anthropic(cfg, msgs, n)
-                             : build_body_openai(cfg, msgs, n);
+    if (is_anthropic(cfg))
+        return build_body_anthropic(cfg, msgs, n);
+    if (is_ollama(cfg))
+        return build_body_ollama_native(cfg, msgs, n);
+    return build_body_openai(cfg, msgs, n);
 }
 
 // --- public API --------------------------------------------------------------
@@ -231,6 +291,7 @@ AiStream *ai_stream_start(const AiConfig *cfg, const AiMessage *msgs, int n_msgs
     s->url = strdup(cfg->endpoint);
     s->body = build_body(cfg, msgs, n_msgs);
     s->timeout = 90L;
+    s->ndjson = is_ollama(cfg);
 
     // Anthropic authenticates with `x-api-key` + a required API-version header;
     // OpenAI-compatible endpoints use a bearer token.

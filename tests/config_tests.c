@@ -86,6 +86,10 @@ static void test_defaults(void)
     EXPECT_STR(cfg.api_key, "");
     EXPECT_TRUE(cfg.stream);
     EXPECT_INT(cfg.max_tokens, 1024);
+    EXPECT_INT(cfg.ollama_num_ctx, 0);
+    EXPECT_INT(cfg.ollama_num_gpu, -1);
+    EXPECT_INT(cfg.ollama_num_thread, 0);
+    EXPECT_INT(cfg.ollama_num_batch, 0);
     EXPECT_INT(cfg.window_width, 800);
     EXPECT_INT(cfg.window_height, 600);
     EXPECT_INT(cfg.window_x, -1);
@@ -245,6 +249,10 @@ static void test_save_round_trips_app_config(void)
     snprintf(cfg.api_key, sizeof(cfg.api_key), "%s", "saved-secret");
     cfg.stream = false;
     cfg.max_tokens = 4096;
+    cfg.ollama_num_ctx = 8192;
+    cfg.ollama_num_gpu = 0;
+    cfg.ollama_num_thread = 8;
+    cfg.ollama_num_batch = 512;
 
     EXPECT_TRUE(config_save(&cfg, path));
 
@@ -266,6 +274,10 @@ static void test_save_round_trips_app_config(void)
     EXPECT_STR(loaded.api_key, "saved-secret");
     EXPECT_TRUE(!loaded.stream);
     EXPECT_INT(loaded.max_tokens, 4096);
+    EXPECT_INT(loaded.ollama_num_ctx, 8192);
+    EXPECT_INT(loaded.ollama_num_gpu, 0);
+    EXPECT_INT(loaded.ollama_num_thread, 8);
+    EXPECT_INT(loaded.ollama_num_batch, 512);
 
     struct stat st;
     EXPECT_INT(stat(path, &st), 0);

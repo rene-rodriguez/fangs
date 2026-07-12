@@ -178,6 +178,22 @@ static void apply_key_value(AppConfig *c, const char *section,
             int parsed = 0;
             if (parse_int_value(value, &parsed) && parsed > 0)
                 c->max_tokens = parsed;
+        } else if (strcmp(key, "ollama_num_ctx") == 0) {
+            int parsed = 0;
+            if (parse_int_value(value, &parsed) && parsed >= 0)
+                c->ollama_num_ctx = parsed;
+        } else if (strcmp(key, "ollama_num_gpu") == 0) {
+            int parsed = 0;
+            if (parse_int_value(value, &parsed) && parsed >= -1)
+                c->ollama_num_gpu = parsed;
+        } else if (strcmp(key, "ollama_num_thread") == 0) {
+            int parsed = 0;
+            if (parse_int_value(value, &parsed) && parsed >= 0)
+                c->ollama_num_thread = parsed;
+        } else if (strcmp(key, "ollama_num_batch") == 0) {
+            int parsed = 0;
+            if (parse_int_value(value, &parsed) && parsed >= 0)
+                c->ollama_num_batch = parsed;
         }
     }
 }
@@ -206,6 +222,10 @@ void config_defaults(AppConfig *c)
     copy_string(c->api_key, sizeof(c->api_key), "");
     c->stream = true;
     c->max_tokens = 1024;
+    c->ollama_num_ctx = 0;
+    c->ollama_num_gpu = -1;
+    c->ollama_num_thread = 0;
+    c->ollama_num_batch = 0;
 
     c->cursor_style = 0;    // block
     c->cursor_blink  = true;
@@ -355,7 +375,11 @@ bool config_save(const AppConfig *c, const char *path)
         "model = %s\n"
         "api_key = %s\n"
         "stream = %s\n"
-        "max_tokens = %d\n",
+        "max_tokens = %d\n"
+        "ollama_num_ctx = %d\n"
+        "ollama_num_gpu = %d\n"
+        "ollama_num_thread = %d\n"
+        "ollama_num_batch = %d\n",
         c->font_family,
         c->font_size,
         c->theme,
@@ -380,7 +404,11 @@ bool config_save(const AppConfig *c, const char *path)
         c->model,
         c->api_key,
         c->stream ? "true" : "false",
-        c->max_tokens);
+        c->max_tokens,
+        c->ollama_num_ctx,
+        c->ollama_num_gpu,
+        c->ollama_num_thread,
+        c->ollama_num_batch);
 
     bool ok = written >= 0 && fclose(f) == 0;
     return ok;

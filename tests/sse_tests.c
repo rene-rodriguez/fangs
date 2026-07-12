@@ -103,6 +103,52 @@ static void test_anthropic_text_and_thinking(void)
     sse_parser_free(p);
 }
 
+// Ollama native /api/chat stream: NDJSON, each line a full JSON object, no
+// "data: " prefix. The trailing done:true line carries stats and has no
+// `message` key — must be a silent no-op, not a crash or spurious delta.
+static void test_ollama_native_basic(void)
+{
+    Acc a = {{0}, {0}};
+    SseParser *p = sse_parser_new_ndjson();
+    const char *in =
+        "{\"model\":\"llama3.1\",\"message\":{\"role\":\"assistant\",\"content\":\"Hello\"},\"done\":false}\n"
+        "{\"model\":\"llama3.1\",\"message\":{\"role\":\"assistant\",\"content\":\", world\"},\"done\":false}\n"
+        "{\"model\":\"llama3.1\",\"done\":true,\"total_duration\":123}\n";
+    sse_parser_feed(p, in, strlen(in), on_delta, &a);
+    EXPECT_STR(a.answer, "Hello, world");
+    EXPECT_STR(a.reason, "");
+    sse_parser_free(p);
+}
+
+// Newer Ollama versions stream message.thinking for reasoning models,
+// parallel to OpenAI's reasoning_content and Anthropic's thinking_delta.
+static void test_ollama_native_thinking(void)
+{
+    Acc a = {{0}, {0}};
+    SseParser *p = sse_parser_new_ndjson();
+    const char *in =
+        "{\"message\":{\"role\":\"assistant\",\"thinking\":\"hmm\"},\"done\":false}\n"
+        "{\"message\":{\"role\":\"assistant\",\"content\":\"answer\"},\"done\":false}\n";
+    sse_parser_feed(p, in, strlen(in), on_delta, &a);
+    EXPECT_STR(a.reason, "hmm");
+    EXPECT_STR(a.answer, "answer");
+    sse_parser_free(p);
+}
+
+static void test_ollama_native_partial_line_across_feeds(void)
+{
+    Acc a = {{0}, {0}};
+    SseParser *p = sse_parser_new_ndjson();
+    // A single NDJSON line split across two feed() calls (arbitrary byte boundary).
+    const char *c1 = "{\"message\":{\"role\":\"assistant\",\"content\":\"Hel";
+    const char *c2 = "lo\"},\"done\":false}\n";
+    sse_parser_feed(p, c1, strlen(c1), on_delta, &a);
+    EXPECT_STR(a.answer, "");                 // nothing complete yet
+    sse_parser_feed(p, c2, strlen(c2), on_delta, &a);
+    EXPECT_STR(a.answer, "Hello");
+    sse_parser_free(p);
+}
+
 int main(void)
 {
     test_basic_content();
@@ -110,6 +156,9 @@ int main(void)
     test_reasoning_then_content();
     test_ignores_non_data_and_blank();
     test_anthropic_text_and_thinking();
+    test_ollama_native_basic();
+    test_ollama_native_thinking();
+    test_ollama_native_partial_line_across_feeds();
 
     if (failures) {
         fprintf(stderr, "%d sse test failure(s)\n", failures);
