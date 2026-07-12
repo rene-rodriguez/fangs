@@ -338,6 +338,18 @@ static const Theme KANAGAWALOTUS = {
     .is_light = true,
 };
 
+// One Light Pro (brighter, higher-contrast One Light).
+static const Theme ONELIGHTPRO = {
+    .bg = {255, 255, 255}, .fg = { 31,  35,  40}, .cursor = { 36, 114, 200},
+    .ansi = {
+        { 31,  35,  40}, {228,  86,  73}, { 58, 140,  71}, {193, 132,   1},
+        { 36, 114, 200}, {166,  38, 164}, {  9, 151, 179}, {140, 145, 153},
+        {140, 145, 153}, {228,  86,  73}, { 58, 140,  71}, {193, 132,   1},
+        { 36, 114, 200}, {166,  38, 164}, {  9, 151, 179}, { 31,  35,  40},
+    },
+    .is_light = true,
+};
+
 // Catppuccin Frappe.
 static const Theme CATPPUCCINFRAPPE = {
     .bg = { 48,  52,  70}, .fg = {198, 208, 245}, .cursor = {242, 170, 132},
@@ -389,27 +401,39 @@ static const Theme EVERFORESTLIGHTHARD = {
 typedef struct { const char *slug; const char *name; const Theme *theme; } ThemeEntry;
 
 static const ThemeEntry ENTRIES[] = {
-    {"onedark",    "One Dark",    &ONEDARK},
+    // Dark themes
+    {"fangs-dark", "Fangs Dark", &FANGSDARK},
+    {"onedark", "One Dark", &ONEDARK},
     {"darkmodern", "Dark Modern", &DARKMODERN},
     {"githubdark", "GitHub Dark", &GITHUBDARK},
-    {"gruvbox",    "Gruvbox",     &GRUVBOX},
-    {"monokai",     "Monokai",      &MONOKAI},
+    {"gruvbox", "Gruvbox", &GRUVBOX},
+    {"monokai", "Monokai", &MONOKAI},
     {"solarizeddark", "Solarized Dark", &SOLARIZEDDARK},
     {"catppuccinmocha", "Catppuccin Mocha", &CATPPUCCINMOCHA},
-    {"ayumirage", "Ayu Mirage", &AYUMIRAGE},
+    {"catppuccinfrappe", "Catppuccin Frappe", &CATPPUCCINFRAPPE},
     {"tokyonight", "Tokyo Night", &TOKYONIGHT},
-    {"rosepine", "Rose Pine", &ROSEPINE},
-    {"onelight",    "One Light",    &ONELIGHT},
-    {"lightmodern", "Light Modern", &LIGHTMODERN},
+    {"dracula", "Dracula", &DRACULA},
+    {"nord", "Nord", &NORD},
+    {"kanagawa", "Kanagawa", &KANAGAWA},
+    {"everforestdark", "Everforest Dark", &EVERFORESTDARK},
+    {"materialoceanic", "Material Oceanic", &MATERIALOCEANIC},
+
+    // Light themes
+    {"fangs-light", "Fangs Light", &FANGSLIGHT},
+    {"onelight", "One Light", &ONELIGHT},
     {"githublight", "GitHub Light", &GITHUBLIGHT},
-    {"gruvboxlight","Gruvbox Light",&GRUVBOXLIGHT},
+    {"gruvboxlight", "Gruvbox Light", &GRUVBOXLIGHT},
     {"solarizedlight", "Solarized Light", &SOLARIZEDLIGHT},
     {"catppuccinlatte", "Catppuccin Latte", &CATPPUCCINLATTE},
     {"ayulight", "Ayu Light", &AYULIGHT},
-    {"tokyonightday", "Tokyo Night Day", &TOKYONIGHTDAY},
     {"rosepinedawn", "Rose Pine Dawn", &ROSEPINEDAWN},
     {"everforestlight", "Everforest Light", &EVERFORESTLIGHT},
-};
+    {"kanagawalotus", "Kanagawa Lotus", &KANAGAWALOTUS},
+    {"onelightpro", "One Light Pro", &ONELIGHTPRO},
+    {"draculasoft", "Dracula Soft", &DRACULASOFT},
+    {"nordlight", "Nord Light", &NORDLIGHT},
+    {"everforestlighthard", "Everforest Light Hard", &EVERFORESTLIGHTHARD},
+};;
 static const int ENTRY_COUNT = (int)(sizeof(ENTRIES) / sizeof(ENTRIES[0]));
 
 int theme_count(void) { return ENTRY_COUNT; }
