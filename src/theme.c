@@ -359,7 +359,7 @@ static const Theme CATPPUCCINFRAPPE = {
         {115, 121, 148}, {231, 130, 132}, {166, 209, 137}, {229, 200, 144},
         {140, 170, 238}, {244, 184, 228}, {153, 209, 199}, {198, 208, 245},
     },
-    .is_light = true,
+    .is_light = false,
 };
 
 // Dracula Soft (light background variant).
@@ -452,10 +452,10 @@ int theme_index_of(const char *slug)
 {
     if (!slug || !slug[0])
         return 0;
-    if (strcmp(slug, "dark") == 0)        // legacy aliases
-        slug = "onedark";
+    if (strcmp(slug, "dark") == 0)        // legacy aliases -> brand themes
+        slug = "fangs-dark";
     else if (strcmp(slug, "light") == 0)
-        slug = "onelight";
+        slug = "fangs-light";
     for (int i = 0; i < ENTRY_COUNT; i++)
         if (strcmp(slug, ENTRIES[i].slug) == 0)
             return i;
