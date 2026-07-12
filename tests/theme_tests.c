@@ -56,7 +56,7 @@ static void test_palette256(void)
 
 static void test_selector(void)
 {
-    EXPECT_TRUE(theme_count() == 20);
+    EXPECT_TRUE(theme_count() == 29);
 
     int dark_count = 0;
     int light_count = 0;
@@ -67,15 +67,15 @@ static void test_selector(void)
         else
             dark_count++;
     }
-    EXPECT_TRUE(dark_count == 10);
-    EXPECT_TRUE(light_count == 10);
+    EXPECT_TRUE(dark_count == 15);
+    EXPECT_TRUE(light_count == 14);
 
     int gi = theme_index_of("gruvbox");          // slug ↔ index round-trip
     EXPECT_TRUE(strcmp(theme_slug(gi), "gruvbox") == 0);
     EXPECT_TRUE(strcmp(theme_name(gi), "Gruvbox") == 0);
 
-    EXPECT_TRUE(strcmp(theme_slug(theme_index_of("dark")), "onedark") == 0);   // legacy
-    EXPECT_TRUE(strcmp(theme_slug(theme_index_of("light")), "onelight") == 0);
+    EXPECT_TRUE(strcmp(theme_slug(theme_index_of("dark")), "fangs-dark") == 0);   // legacy
+    EXPECT_TRUE(strcmp(theme_slug(theme_index_of("light")), "fangs-light") == 0);
     EXPECT_TRUE(theme_index_of("bogus") == 0);    // unknown → One Dark
 
     EXPECT_TRUE(theme_index_of("darkmodern") > 0);
@@ -83,23 +83,33 @@ static void test_selector(void)
     EXPECT_TRUE(theme_index_of("monokai") > 0);
 
     // Light variants present and flagged light.
-    EXPECT_TRUE(theme_resolve("lightmodern").is_light);
     EXPECT_TRUE(theme_resolve("githublight").is_light);
     EXPECT_TRUE(theme_resolve("gruvboxlight").is_light);
 
     // Expanded balanced catalog.
     EXPECT_TRUE(!theme_resolve("solarizeddark").is_light);
     EXPECT_TRUE(!theme_resolve("catppuccinmocha").is_light);
-    EXPECT_TRUE(!theme_resolve("ayumirage").is_light);
     EXPECT_TRUE(!theme_resolve("tokyonight").is_light);
-    EXPECT_TRUE(!theme_resolve("rosepine").is_light);
 
     EXPECT_TRUE(theme_resolve("solarizedlight").is_light);
     EXPECT_TRUE(theme_resolve("catppuccinlatte").is_light);
     EXPECT_TRUE(theme_resolve("ayulight").is_light);
-    EXPECT_TRUE(theme_resolve("tokyonightday").is_light);
     EXPECT_TRUE(theme_resolve("rosepinedawn").is_light);
-    EXPECT_TRUE(theme_resolve("everforestlight").is_light);
+
+    EXPECT_TRUE(!theme_resolve("fangs-dark").is_light);
+    EXPECT_TRUE(!theme_resolve("dracula").is_light);
+    EXPECT_TRUE(!theme_resolve("nord").is_light);
+    EXPECT_TRUE(!theme_resolve("kanagawa").is_light);
+    EXPECT_TRUE(!theme_resolve("everforestdark").is_light);
+    EXPECT_TRUE(!theme_resolve("materialoceanic").is_light);
+    EXPECT_TRUE(!theme_resolve("catppuccinfrappe").is_light);
+
+    EXPECT_TRUE(theme_resolve("fangs-light").is_light);
+    EXPECT_TRUE(theme_resolve("kanagawalotus").is_light);
+    EXPECT_TRUE(theme_resolve("onelightpro").is_light);
+    EXPECT_TRUE(theme_resolve("draculasoft").is_light);
+    EXPECT_TRUE(theme_resolve("nordlight").is_light);
+    EXPECT_TRUE(theme_resolve("everforestlighthard").is_light);
 }
 
 int main(void)
