@@ -5,6 +5,12 @@
 
 #include <stdbool.h>
 
+// Forward declaration so the draw signature can mention Font without
+// forcing raylib.h on translation units that only need toast logic.
+// Raylib defines Font as `typedef struct Font { ... } Font;`, so this
+// tag-forward is compatible whether raylib.h is included or not.
+typedef struct Font Font;
+
 #define TOAST_MAX_MSG 256
 
 typedef enum {
@@ -26,6 +32,10 @@ int  toast_count(void);
 // Read the i-th newest toast (0 = newest). Returns false if out of range.
 // *alpha is [1.0 .. 0.0] — fade as the toast approaches expiry.
 bool toast_get(int i, ToastLevel *level, const char **msg, float *alpha);
+
+// Draw the current toast stack. Top-right origin, newest at top.
+// `scale` is the HiDPI content scale. `dt` is the wall-clock frame delta.
+void toast_draw(Font font, float scale, double dt);
 
 // Clear all toasts.
 void toast_clear(void);

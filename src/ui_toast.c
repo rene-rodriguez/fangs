@@ -12,6 +12,7 @@ typedef struct {
     char msg[TOAST_MAX_MSG];
     double ttl;       // remaining seconds
     double max_ttl;   // initial TTL (for fade calc)
+    double birth;     // monotonic age in seconds (0 at push, increases via tick)
 } ToastEntry;
 
 static struct {
@@ -41,6 +42,7 @@ void toast_push(ToastLevel level, const char *msg)
     g_toast.ring[idx].level   = level;
     g_toast.ring[idx].ttl     = ttl;
     g_toast.ring[idx].max_ttl = ttl;
+    g_toast.ring[idx].birth   = 0.0;
     snprintf(g_toast.ring[idx].msg, TOAST_MAX_MSG, "%s", msg ? msg : "");
 }
 
@@ -51,6 +53,7 @@ void toast_tick(double dt)
     for (int i = n - 1; i >= 0; i--) {
         int idx = (g_toast.head + i) % TOAST_RING;
         g_toast.ring[idx].ttl -= dt;
+        g_toast.ring[idx].birth += dt;
         if (g_toast.ring[idx].ttl <= 0.0) {
             // Remove this entry: shift remaining forwards.
             for (int j = i; j < g_toast.count - 1; j++) {
