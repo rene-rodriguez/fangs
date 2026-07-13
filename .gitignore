@@ -28,3 +28,6 @@ compile_commands.json
 
 # CTest log output (created at repo root when ctest is run from source dir)
 /Testing/
+
+# Git worktrees
+.worktrees/
