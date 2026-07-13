@@ -113,6 +113,16 @@ UiTheme ui_theme_derive(const Theme *t)
         u.sidebar_separator = blend_cc(bg, fg, 90);
         u.exit_banner_bg  = (UiColor){ bg.r, bg.g, bg.b, 200 };
         u.exit_banner_text = fg;
+
+        // Pane chrome tokens.
+        u.pane_header_bg     = blend_cc(u.panel_bg, fg, 30);
+        u.pane_header_text   = blend_cc(fg, bg, 30);
+        u.pane_header_detail = blend_cc(fg, bg, 90);
+        u.pane_status_running = tc2uic(t->ansi[2], 220);  // green
+        u.pane_status_idle    = tc2uic(t->ansi[3], 220);  // yellow/amber
+        u.pane_status_error   = tc2uic(t->ansi[1], 220);  // red
+        u.shadow              = (UiColor){ 0, 0, 0, 55 };
+        u.gutter_hover        = u.accent;
     } else {
         // ---- Light theme ----
         // Panel bg: pulled slightly darker from terminal bg toward fg.
@@ -175,6 +185,16 @@ UiTheme ui_theme_derive(const Theme *t)
         u.sidebar_separator = blend_cc(bg, fg, 160);
         u.exit_banner_bg  = (UiColor){ 0, 0, 0, 160 };
         u.exit_banner_text = fg;
+
+        // Pane chrome tokens.
+        u.pane_header_bg     = blend_cc(u.panel_bg, fg, 30);
+        u.pane_header_text   = blend_cc(fg, bg, 40);
+        u.pane_header_detail = blend_cc(fg, bg, 110);
+        u.pane_status_running = tc2uic(t->ansi[2], 230);  // green
+        u.pane_status_idle    = tc2uic(t->ansi[3], 230);  // yellow/amber
+        u.pane_status_error   = tc2uic(t->ansi[1], 230);  // red
+        u.shadow              = (UiColor){ 0, 0, 0, 40 };
+        u.gutter_hover        = u.accent;
     }
 
     // Update the global.

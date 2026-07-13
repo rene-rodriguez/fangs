@@ -31,6 +31,15 @@ typedef struct {
     UiColor sidebar_separator;            // vertical divider between grid and sidebar
     UiColor exit_banner_bg;               // process-exit banner background
     UiColor exit_banner_text;             // process-exit banner text
+
+    UiColor pane_header_bg;               // title bar background
+    UiColor pane_header_text;             // session/cwd text
+    UiColor pane_header_detail;           // branch / dim detail
+    UiColor pane_status_running;          // green dot
+    UiColor pane_status_idle;             // amber dot
+    UiColor pane_status_error;            // red dot
+    UiColor shadow;                       // drop shadow fill
+    UiColor gutter_hover;                 // resize hint line
 } UiTheme;
 
 // Convenience: convert UiColor (our struct) to raylib Color.

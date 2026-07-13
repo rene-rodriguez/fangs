@@ -58,6 +58,12 @@ static void test_dark_theme_contrast(void)
     // role tints should all be different from each other
     EXPECT(memcmp(&ui.msg_user, &ui.msg_assistant, sizeof(UiColor)) != 0);
     EXPECT(memcmp(&ui.msg_system, &ui.msg_user, sizeof(UiColor)) != 0);
+
+    // pane chrome contrast
+    EXPECT(memcmp(&ui.pane_header_bg, &ui.panel_bg, sizeof(UiColor)) != 0);
+    EXPECT(rgb_dist(&ui.pane_status_running, &ui.panel_bg) > 0.20f);
+    EXPECT(rgb_dist(&ui.pane_status_idle,    &ui.panel_bg) > 0.20f);
+    EXPECT(rgb_dist(&ui.pane_status_error,   &ui.panel_bg) > 0.20f);
 }
 
 // ---------- One Light (light theme) ----------
@@ -70,6 +76,12 @@ static void test_light_theme_contrast(void)
     EXPECT(rgb_dist(&ui.panel_border, &ui.panel_bg) > 0.02f);
     EXPECT(rgb_dist(&ui.search_hit, &ui.panel_bg) > 0.25f);
     EXPECT(rgb_dist(&ui.accent, &ui.panel_bg) > 0.25f);
+
+    // pane chrome contrast
+    EXPECT(memcmp(&ui.pane_header_bg, &ui.panel_bg, sizeof(UiColor)) != 0);
+    EXPECT(rgb_dist(&ui.pane_status_running, &ui.panel_bg) > 0.20f);
+    EXPECT(rgb_dist(&ui.pane_status_idle,    &ui.panel_bg) > 0.20f);
+    EXPECT(rgb_dist(&ui.pane_status_error,   &ui.panel_bg) > 0.20f);
 }
 
 // ---------- Light flips polarity ----------
