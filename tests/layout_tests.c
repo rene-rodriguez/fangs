@@ -1,6 +1,12 @@
 #include "layout.h"
+#include "pane.h"
+#include "session.h"
 
 #include <stdio.h>
+#include <string.h>
+
+// Stub session_destroy so the layout_test binary links without a full session.o.
+void session_destroy(Session *s) { (void)s; }
 
 static int failures = 0;
 
@@ -20,6 +26,114 @@ static int failures = 0;
         failures++; \
     } \
 } while (0)
+
+
+/* --- Pane gap tests (stack-allocated, no heap) --- */
+
+typedef struct {
+    int x[4], y[4], w[4], h[4];
+    int count;
+} GapRects;
+
+static void gap_test_leaf_rect(const PaneNode *n, int x, int y, int w, int h, void *user)
+{
+    (void)n;
+    GapRects *gr = (GapRects *)user;
+    if (gr->count < 4) {
+        gr->x[gr->count] = x;
+        gr->y[gr->count] = y;
+        gr->w[gr->count] = w;
+        gr->h[gr->count] = h;
+    }
+    gr->count++;
+}
+
+static void setup_gap_tree(PaneKind split_kind, PaneNode *out_left, PaneNode *out_right, PaneNode *out_root)
+{
+    memset(out_left, 0, sizeof(*out_left));
+    memset(out_right, 0, sizeof(*out_right));
+    memset(out_root, 0, sizeof(*out_root));
+
+    out_left->kind = PANE_LEAF;
+    out_left->parent = out_root;
+    out_left->leaf.session = NULL;
+
+    out_right->kind = PANE_LEAF;
+    out_right->parent = out_root;
+    out_right->leaf.session = NULL;
+
+    out_root->kind = split_kind;
+    out_root->parent = NULL;
+    out_root->split.left = out_left;
+    out_root->split.right = out_right;
+    out_root->split.ratio = 0.5f;
+}
+
+static void test_pane_gap_hsplit_reserves_gap(void)
+{
+    PaneNode left, right, root;
+    setup_gap_tree(PANE_HSPLIT, &left, &right, &root);
+    GapRects gr = {0};
+
+    layout_compute_panes(&root, 0, 0, 100, 10, 6, gap_test_leaf_rect, &gr);
+
+    EXPECT_INT(gr.count, 2);
+    EXPECT_INT(gr.x[0], 0);
+    EXPECT_INT(gr.y[0], 0);
+    EXPECT_INT(gr.h[0], 10);
+    EXPECT_INT(gr.y[1], 0);
+    EXPECT_INT(gr.h[1], 10);
+    EXPECT_INT(gr.w[0] + 6 + gr.w[1], 100);
+    EXPECT_INT(gr.x[1], gr.w[0] + 6);
+}
+
+static void test_pane_gap_vsplit_reserves_gap(void)
+{
+    PaneNode left, right, root;
+    setup_gap_tree(PANE_VSPLIT, &left, &right, &root);
+    GapRects gr = {0};
+
+    layout_compute_panes(&root, 0, 0, 10, 100, 6, gap_test_leaf_rect, &gr);
+
+    EXPECT_INT(gr.count, 2);
+    EXPECT_INT(gr.x[0], 0);
+    EXPECT_INT(gr.y[0], 0);
+    EXPECT_INT(gr.w[0], 10);
+    EXPECT_INT(gr.x[1], 0);
+    EXPECT_INT(gr.w[1], 10);
+    EXPECT_INT(gr.h[0] + 6 + gr.h[1], 100);
+    EXPECT_INT(gr.y[1], gr.h[0] + 6);
+}
+
+static void test_pane_gap_zero_takes_full_space(void)
+{
+    PaneNode left, right, root;
+    setup_gap_tree(PANE_HSPLIT, &left, &right, &root);
+    GapRects gr = {0};
+
+    layout_compute_panes(&root, 0, 0, 100, 10, 0, gap_test_leaf_rect, &gr);
+
+    EXPECT_INT(gr.count, 2);
+    EXPECT_INT(gr.w[0] + gr.w[1], 100);
+    EXPECT_INT(gr.x[1] - gr.x[0], gr.w[0]);
+}
+
+static void test_pane_gap_negative_uses_negative_raw_in_layout(void)
+{
+    PaneNode left, right, root;
+    setup_gap_tree(PANE_HSPLIT, &left, &right, &root);
+    GapRects gr = {0};
+
+    /* layout_compute_panes no longer clamps; passing -5 expands the gap by 5px,
+       so the children overlap the bounds by 5px total. This verifies the
+       caller is responsible for clamping. */
+    layout_compute_panes(&root, 0, 0, 100, 10, -5, gap_test_leaf_rect, &gr);
+
+    EXPECT_INT(gr.count, 2);
+    EXPECT_INT(gr.w[0] + gr.w[1], 100 - (-5)); /* 105 */
+    EXPECT_INT(gr.x[1] - gr.x[0], gr.w[0] + (-5));
+}
+
 
 static void test_hidden_sidebar_uses_full_window(void)
 {
@@ -154,6 +268,11 @@ int main(void)
     test_rail_hidden_on_too_narrow_window();
     test_rail_and_sidebar_together();
     test_rail_and_sidebar_preserve_min_terminal();
+
+    test_pane_gap_hsplit_reserves_gap();
+    test_pane_gap_vsplit_reserves_gap();
+    test_pane_gap_zero_takes_full_space();
+    test_pane_gap_negative_uses_negative_raw_in_layout();
 
     if (failures != 0) {
         fprintf(stderr, "%d layout test failure(s)\n", failures);

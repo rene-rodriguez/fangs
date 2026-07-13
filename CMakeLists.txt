@@ -246,7 +246,8 @@ add_test(NAME ui_workspace_rail_model_tests COMMAND ui_workspace_rail_model_test
 
 add_executable(layout_tests
   tests/layout_tests.c
-  src/layout.c)
+  src/layout.c
+  src/pane.c)
 target_compile_features(layout_tests PRIVATE c_std_11)
 target_include_directories(layout_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 add_test(NAME layout_tests COMMAND layout_tests)

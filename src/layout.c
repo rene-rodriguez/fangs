@@ -103,6 +103,7 @@ Layout layout_compute_with_rail(int window_w, int window_h,
 
 static void compute_panes_rec(const PaneNode *n,
                               int x, int y, int w, int h,
+                              int pane_gap,
                               PaneRectFn cb, void *user)
 {
     if (!n) return;
@@ -112,8 +113,8 @@ static void compute_panes_rec(const PaneNode *n,
         return;
     }
 
-    // Internal node — split. Reserve a small gap between children.
-    const int gap = 2; // 2-pixel gutter between panes
+    // Internal node — split. Reserve a configurable gap between children.
+    const int gap = pane_gap;
 
     if (n->kind == PANE_HSPLIT) {
         // Horizontal split: left/right
@@ -122,8 +123,8 @@ static void compute_panes_rec(const PaneNode *n,
         int right_w = w - gap - left_w;
         if (right_w < 1) right_w = 1;
 
-        compute_panes_rec(n->split.left,  x, y, left_w, h, cb, user);
-        compute_panes_rec(n->split.right, x + left_w + gap, y, right_w, h, cb, user);
+        compute_panes_rec(n->split.left,  x, y, left_w, h, pane_gap, cb, user);
+        compute_panes_rec(n->split.right, x + left_w + gap, y, right_w, h, pane_gap, cb, user);
     } else if (n->kind == PANE_VSPLIT) {
         // Vertical split: top/bottom
         int top_h = (int)((float)(h - gap) * n->split.ratio);
@@ -131,14 +132,15 @@ static void compute_panes_rec(const PaneNode *n,
         int bot_h = h - gap - top_h;
         if (bot_h < 1) bot_h = 1;
 
-        compute_panes_rec(n->split.left,  x, y, w, top_h, cb, user);
-        compute_panes_rec(n->split.right, x, y + top_h + gap, w, bot_h, cb, user);
+        compute_panes_rec(n->split.left,  x, y, w, top_h, pane_gap, cb, user);
+        compute_panes_rec(n->split.right, x, y + top_h + gap, w, bot_h, pane_gap, cb, user);
     }
 }
 
 void layout_compute_panes(const PaneNode *root,
                           int term_x, int term_y, int term_w, int term_h,
+                          int pane_gap,
                           PaneRectFn cb, void *user)
 {
-    compute_panes_rec(root, term_x, term_y, term_w, term_h, cb, user);
+    compute_panes_rec(root, term_x, term_y, term_w, term_h, pane_gap, cb, user);
 }

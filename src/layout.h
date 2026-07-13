@@ -38,6 +38,7 @@ typedef void (*PaneRectFn)(const PaneNode *, int x, int y, int w, int h, void *u
 // Root is the current tab's pane tree; x/y/w/h is the terminal area in pixels.
 void layout_compute_panes(const PaneNode *root,
                           int term_x, int term_y, int term_w, int term_h,
+                          int pane_gap,
                           PaneRectFn cb, void *user);
 
 #endif // FANGS_LAYOUT_H

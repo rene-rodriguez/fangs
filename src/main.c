@@ -1180,6 +1180,7 @@ static void compute_pane_grid(int pane_w, int pane_h, int pad,
 static void resize_pane_leaves_to_fit(Tab *tab,
                                       int term_x, int term_y,
                                       int term_w, int term_h,
+                                      int pane_gap,
                                       int pad, int cell_width, int cell_height,
                                       uint16_t *focused_cols_out,
                                       uint16_t *focused_rows_out)
@@ -1190,6 +1191,7 @@ static void resize_pane_leaves_to_fit(Tab *tab,
     PaneRectEntry rects[64];
     PaneRectCollector collector = { .entries = rects, .count = 0, .capacity = 64 };
     layout_compute_panes(tab->root, term_x, term_y, term_w, term_h,
+                         pane_gap,
                          pane_rect_collect_cb, &collector);
 
     for (int i = 0; i < collector.count; i++) {
@@ -4942,6 +4944,9 @@ int main(int argc, char **argv)
         // consistent on-screen size. Scale only drives font-texture resolution;
         // the UI and layout are sized in logical px (see the 1.0f passed below).
         float ui_scale = fangs_content_scale().y;
+        int pane_gap = (int)(6.0f * applied_scale);
+        if (pane_gap < 0) pane_gap = 0;
+        if (pane_gap > 32) pane_gap = 32;
         if (ui_scale != applied_scale) {
             if (rebuild_terminal_font(&mono_font, &bold_font, font_size, &cell_width, &cell_height,
                                       &term_cols, &term_rows, term_area_w, pad, te, pty_fd)) {
@@ -4996,6 +5001,7 @@ int main(int argc, char **argv)
             Tab *tab = &app.tabs[app.active];
             resize_pane_leaves_to_fit(tab, lo.terminal.x, lo.terminal.y,
                                       lo.terminal.w, lo.terminal.h,
+                                      pane_gap,
                                       pad, cell_width, cell_height,
                                       &term_cols, &term_rows);
             prev_width = w;
@@ -5015,6 +5021,7 @@ int main(int argc, char **argv)
             layout_compute_panes(app.tabs[app.active].root,
                                  lo.terminal.x, lo.terminal.y,
                                  lo.terminal.w, lo.terminal.h,
+                                 pane_gap,
                                  pane_rect_collect_cb, &active_pane_collector);
         }
 
@@ -6287,7 +6294,6 @@ int main(int argc, char **argv)
             }
         }
 
-        // Draw every pane in the active tab.
         kitty_image_renderer_begin_frame(kitty_renderer);
 
         BeginDrawing();
@@ -6383,6 +6389,7 @@ int main(int argc, char **argv)
         layout_compute_panes(tab->root,
                              lo.terminal.x, lo.terminal.y,
                              lo.terminal.w, lo.terminal.h,
+                             pane_gap,
                              pane_rect_collect_cb, &collector);
 
         for (int i = 0; i < collector.count; i++) {
