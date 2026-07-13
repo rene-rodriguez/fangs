@@ -1,9 +1,11 @@
 #include "cmdblocks.h"
 #include "cmdblocks_osc.h"
+#include "ui_theme.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <ghostty/vt.h>
 
 // Max command blocks remembered (older ones drop off the top of scrollback
@@ -437,6 +439,30 @@ bool cmdblocks_draw(CmdBlocks *cb, TermEngine *te, Font font, const Theme *th,
 
         bool ai_over = (mouse_x >= ai_btn.x && mouse_x < ai_btn.x + ai_btn.width
                         && mouse_y >= ai_btn.y && mouse_y < ai_btn.y + ai_btn.height);
+
+        // Card-style chrome behind the action buttons.
+        Rectangle card = {
+            ai_btn.x - 4, ai_btn.y - 2,
+            (copy_btn.x + copy_btn.width) - ai_btn.x + 8,
+            btn_h + 4
+        };
+        float card_radius = 6.0f * ((float)font_size / 14.0f);
+        float card_rr = card_radius / fminf(card.width, card.height);
+        DrawRectangleRounded((Rectangle){ card.x, card.y + 2, card.width, card.height },
+                             card_rr, 8,
+                             Fade(UI2RAY(g_ui_theme.shadow), 0.35f));
+        DrawRectangleRounded(card, card_rr, 8,
+                             UI2RAY(g_ui_theme.panel_bg));
+        DrawRectangleRoundedLinesEx(card, card_rr, 8, 1.0f,
+                                    UI2RAY(g_ui_theme.panel_border));
+
+        // Re-draw the copy button on top of the card so both buttons sit above
+        // the border consistently.
+        DrawRectangleRounded(copy_btn, 0.35f, 6, Fade(st, copy_over ? 0.45f : 0.22f));
+        DrawTextEx(font, copy_label,
+                   (Vector2){ copy_btn.x + padx, copy_btn.y + (btn_h - copy_ts.y) / 2 },
+                   (float)btn_fs, 0, tc_color(th->fg, 230));
+
         if (ai_over)
             SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
         DrawRectangleRounded(ai_btn, 0.35f, 6, Fade(st, ai_over ? 0.45f : 0.22f));

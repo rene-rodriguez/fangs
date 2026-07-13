@@ -605,19 +605,7 @@ git commit -m "main: gutter hover resize hints"
 
 - [ ] **Step 1: Wrap the action bar in a rounded bordered panel**
 
-In `cmdblocks_draw`, locate where the action bar background is drawn. Before drawing the copy/AI buttons, draw:
-```c
-    // Card chrome.
-    Rectangle card = { (float)bg_x, (float)bg_y, (float)bg_w, (float)bg_h };
-    float card_radius = 6.0f * ((float)font_size / 14.0f);
-    DrawRectangleRounded((Rectangle){ card.x, card.y + 2, card.width, card.height },
-                         card_radius / fminf(card.width, card.height), 8,
-                         (Color){ 0, 0, 0, 60 });
-    DrawRectangleRounded(card, card_radius / fminf(card.width, card.height), 8,
-                         UI2RAY(g_ui_theme.panel_bg));
-    DrawRectangleRoundedLines(card, card_radius / fminf(card.width, card.height), 8,
-                              1.0f, UI2RAY(g_ui_theme.panel_border));
-```
+In `cmdblocks_draw`, locate where the action bar background is drawn. Before drawing the copy/AI buttons, draw a rounded card background, a 1 px border using the available Raylib rounded-border function (`DrawRectangleRoundedLinesEx` or `DrawRectangleRoundedLines`), and a subtle drop shadow. Use `g_ui_theme.panel_bg`, `g_ui_theme.panel_border`, and a low-alpha shadow derived from `g_ui_theme.shadow`. The card bounds may be derived from the existing button rectangles.
 
 Use existing local variables for `bg_x/bg_y/bg_w/bg_h` if they exist, or compute a bounding box from the existing button rectangles.
 
