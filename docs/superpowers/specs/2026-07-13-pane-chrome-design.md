@@ -32,9 +32,9 @@ Make Fangs' terminal area feel like a modern terminal (Ghostty/Warp/cmux mix) by
    - On hover inside a gutter, draw a 2 px `accent` drag-handle line to hint that the split is resizable.
 
 4. **Block cursor polish**
-   - Add a 1 px outline to the block cursor in `accent` when focused.
-   - Cursor alpha stays theme-driven but defaults to a slightly more visible value.
-   - Bar/underline cursor styles keep the existing shape but get the same outline.
+   - Add a 1 px outline to the block (and block-hollow) cursor in `accent` when focused.
+   - Cursor alpha stays theme-driven.
+   - Bar/underline cursor styles keep the existing shape and do not get the outline.
 
 5. **Scrollbar refresh**
    - Rounded thumb (`DrawRectangleRounded`).
@@ -142,7 +142,7 @@ Global `float g_scrollbar_alpha[64]` indexed by pane, or simpler: store `uint64_
 
 ### 7. Cursor outline
 
-In `render_terminal`, after drawing the block/bar/underline cursor, draw a 1 px outline using `accent` when focused.
+In `render_terminal`, after drawing the block/block-hollow cursor body, draw a 1 px outline using `accent` when focused. Bar and underline styles keep their existing shape.
 
 ### 8. Command block chrome
 

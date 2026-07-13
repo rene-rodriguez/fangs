@@ -2703,6 +2703,13 @@ static void render_terminal(GhosttyRenderState render_state,
                         DrawRectangleLines(cur_x, cur_y, cell_width, cell_height, cur_color);
                         break;
                 }
+
+                // Accent outline around the focused block cursor.
+                Color outline = UI2RAY(g_ui_theme.accent);
+                if (vstyle == GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK ||
+                    vstyle == GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW) {
+                    DrawRectangleLines(cur_x, cur_y, cell_width, cell_height, outline);
+                }
             }
         }
     }
