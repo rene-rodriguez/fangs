@@ -215,10 +215,11 @@ static void settings_draw_tabs(float x, float y, float w, float tab_h,
 
         Color fg = active ? accent : (hovered ? text : subtitle);
         const char *label = settings_tab_label((SettingsTab)i);
-        Vector2 sz = MeasureTextEx(GetFontDefault(), label, 14.0f * s, 0);
+        Font font = GuiGetFont();
+        Vector2 sz = MeasureTextEx(font, label, 14.0f * s, 0);
         float tx = r.x + 14.0f * s;
         float ty = r.y + (r.height - sz.y) * 0.5f;
-        DrawTextEx(GetFontDefault(), label, (Vector2){tx, ty}, 14.0f * s, 0, fg);
+        DrawTextEx(font, label, (Vector2){tx, ty}, 14.0f * s, 0, fg);
 
         if (hovered || active)
             SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);

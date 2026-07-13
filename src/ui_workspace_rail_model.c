@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <string.h>
 
+static float rail_scale(int font_size);
+static int rail_scaled(int value, int font_size);
+
 // Copy printable-ASCII bytes only, collapsing space runs. The UI font atlas
 // carries just basic Latin (plus box drawing), so any other codepoint would
 // render as '?' — agent titles like "✳ fixing tests" degrade to
@@ -164,13 +167,14 @@ static bool hit_rect(int mx, int my, int rx, int ry, int rw, int rh)
 // Compute port chip rects for a single row. Chips are right-aligned inside the
 // row (just left of the right-padding), using estimated font metrics: 8px per
 // char + 6px internal padding, 14px tall, bottom-aligned in the row.
-static void row_layout_port_chips(WorkspaceRailRow *row, int row_w)
+static void row_layout_port_chips(WorkspaceRailRow *row, int row_w,
+                                    int font_size)
 {
-    const int gap = 4;
-    const int chip_h = 14;
-    int cx = row_w - 8; // right padding
+    const int gap = rail_scaled(4, font_size);
+    const int chip_h = rail_scaled(14, font_size);
+    int cx = row_w - rail_scaled(8, font_size); // right padding
 
-    row->port_y = row->y + row->h - chip_h - 4; // bottom of secondary line area
+    row->port_y = row->y + row->h - chip_h - rail_scaled(4, font_size); // bottom of secondary line area
     row->port_h = chip_h;
 
     for (int i = row->port_count - 1; i >= 0; i--) {
@@ -179,8 +183,8 @@ static void row_layout_port_chips(WorkspaceRailRow *row, int row_w)
         int digits = 1;
         if (p >= 10000) digits = 5; else if (p >= 1000) digits = 4;
         else if (p >= 100) digits = 3; else if (p >= 10) digits = 2;
-        // width = ":" prefix + digits, 8px per char, + 6px padding
-        int cw = (digits + 1) * 8 + 6;
+        // width = ":" prefix + digits, scaled 8px per char, + scaled 6px padding
+        int cw = (digits + 1) * rail_scaled(8, font_size) + rail_scaled(6, font_size);
         cx -= cw;
         row->port_x[i] = cx;
         row->port_w[i] = cw;
@@ -194,15 +198,15 @@ static void row_layout_port_chips(WorkspaceRailRow *row, int row_w)
 // (not MeasureTextEx) for the same reason row_layout_port_chips uses them:
 // this module stays Raylib-free. A few px of slack here only shifts the
 // badge's click zone slightly; it doesn't affect what's drawn.
-static int row_estimate_trailing_w(const WorkspaceRailRow *row)
+static int row_estimate_trailing_w(const WorkspaceRailRow *row, int font_size)
 {
     int w = 0;
     if (row->attention != WORKSPACE_ATTENTION_NONE)
-        w += 16; // attention dot + gap
+        w += rail_scaled(16, font_size); // attention dot + gap
     if (row->working)
-        w += 16; // working pulse + gap
+        w += rail_scaled(16, font_size); // working pulse + gap
     else if (row->idle_ms >= 0)
-        w += 36; // idle duration text ("12m", "3h", ...) + gap
+        w += rail_scaled(36, font_size); // idle duration text ("12m", "3h", ...) + gap
     return w;
 }
 
@@ -210,7 +214,8 @@ static int row_estimate_trailing_w(const WorkspaceRailRow *row)
 // row_layout_port_chips' char-width estimate ("+" plus digit count, 8px per
 // char + 6px padding) and must run after that function since the badge sits
 // immediately left of the port chip block when one is present.
-static void row_layout_git_badge(WorkspaceRailRow *row, int row_w)
+static void row_layout_git_badge(WorkspaceRailRow *row, int row_w,
+                                   int font_size)
 {
     if (row->git_changed_count <= 0) {
         row->git_badge_x = 0;
@@ -220,9 +225,9 @@ static void row_layout_git_badge(WorkspaceRailRow *row, int row_w)
         return;
     }
 
-    int right_edge = row_w - 8 - row_estimate_trailing_w(row);
+    int right_edge = row_w - rail_scaled(8, font_size) - row_estimate_trailing_w(row, font_size);
     if (row->port_count > 0 && row->port_w[0] > 0) {
-        int chip_area_left = row->port_x[0] - 6;
+        int chip_area_left = row->port_x[0] - rail_scaled(6, font_size);
         if (chip_area_left < right_edge)
             right_edge = chip_area_left;
     }
@@ -231,39 +236,52 @@ static void row_layout_git_badge(WorkspaceRailRow *row, int row_w)
     int digits = 1;
     if (count >= 10000) digits = 5; else if (count >= 1000) digits = 4;
     else if (count >= 100) digits = 3; else if (count >= 10) digits = 2;
-    int bw = (digits + 1) * 8 + 6; // "+" prefix + digits
+    int bw = (digits + 1) * rail_scaled(8, font_size) + rail_scaled(6, font_size); // "+" prefix + digits
 
-    row->git_badge_h = 14;
-    row->git_badge_y = row->y + row->h - row->git_badge_h - 4;
+    row->git_badge_h = rail_scaled(14, font_size);
+    row->git_badge_y = row->y + row->h - row->git_badge_h - rail_scaled(4, font_size);
     row->git_badge_w = bw;
     row->git_badge_x = right_edge - bw;
 }
 
-void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h)
+static float rail_scale(int font_size)
+{
+    return (float)font_size / (float)WORKSPACE_RAIL_BASE_FONT_SIZE;
+}
+
+static int rail_scaled(int value, int font_size)
+{
+    return (int)(value * rail_scale(font_size) + 0.5f);
+}
+
+void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h,
+                           int font_size)
 {
     view->x = x;
     view->y = y;
     view->w = w;
     view->h = h;
 
-    int row_h = view->compact ? WORKSPACE_RAIL_ROW_H_COMPACT : WORKSPACE_RAIL_ROW_H;
+    int row_h = view->compact
+        ? rail_scaled(WORKSPACE_RAIL_ROW_H_COMPACT, font_size)
+        : rail_scaled(WORKSPACE_RAIL_ROW_H, font_size);
     int cur = y;
 
     // Header with the "+" new-workspace button and bell (history) button.
     view->header_y = cur;
-    view->header_h = WORKSPACE_RAIL_HEADER_H;
-    view->plus_w = 22;
-    view->plus_h = 22;
+    view->header_h = rail_scaled(WORKSPACE_RAIL_HEADER_H, font_size);
+    view->plus_w = rail_scaled(22, font_size);
+    view->plus_h = rail_scaled(22, font_size);
     view->plus_y = cur + (view->header_h - view->plus_h) / 2;
     view->plus_x = view->compact ? x + (w - view->plus_w) / 2
-                                 : x + w - view->plus_w - 8;
+                                 : x + w - view->plus_w - rail_scaled(8, font_size);
     // Bell button: right side of the header, left of "+", only in full mode
     // with unseen events. (The left side belongs to the WORKSPACES title.)
     if (!view->compact && view->bell_unseen > 0) {
-        view->bell_w = 22;
-        view->bell_h = 22;
+        view->bell_w = rail_scaled(22, font_size);
+        view->bell_h = rail_scaled(22, font_size);
         view->bell_y = cur + (view->header_h - view->bell_h) / 2;
-        view->bell_x = view->plus_x - view->bell_w - 6;
+        view->bell_x = view->plus_x - view->bell_w - rail_scaled(6, font_size);
     } else {
         view->bell_x = 0;
         view->bell_y = 0;
@@ -278,20 +296,20 @@ void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h)
     if (!view->compact) {
         int cluster_left = (view->bell_w > 0) ? view->bell_x : view->plus_x;
 
-        view->split_down_w = 22;
-        view->split_down_h = 22;
+        view->split_down_w = rail_scaled(22, font_size);
+        view->split_down_h = rail_scaled(22, font_size);
         view->split_down_y = cur + (view->header_h - view->split_down_h) / 2;
-        view->split_down_x = cluster_left - view->split_down_w - 6;
+        view->split_down_x = cluster_left - view->split_down_w - rail_scaled(6, font_size);
 
-        view->split_right_w = 22;
-        view->split_right_h = 22;
+        view->split_right_w = rail_scaled(22, font_size);
+        view->split_right_h = rail_scaled(22, font_size);
         view->split_right_y = cur + (view->header_h - view->split_right_h) / 2;
-        view->split_right_x = view->split_down_x - view->split_right_w - 6;
+        view->split_right_x = view->split_down_x - view->split_right_w - rail_scaled(6, font_size);
 
-        view->toggle_w = 22;
-        view->toggle_h = 22;
+        view->toggle_w = rail_scaled(22, font_size);
+        view->toggle_h = rail_scaled(22, font_size);
         view->toggle_y = cur + (view->header_h - view->toggle_h) / 2;
-        view->toggle_x = view->split_right_x - view->toggle_w - 6;
+        view->toggle_x = view->split_right_x - view->toggle_w - rail_scaled(6, font_size);
     } else {
         view->toggle_x = view->toggle_y = view->toggle_w = view->toggle_h = 0;
         view->split_right_x = view->split_right_y = view->split_right_w = view->split_right_h = 0;
@@ -303,7 +321,7 @@ void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h)
     // Notification strip (full mode, only when there is something to say).
     if (view->notification[0] != '\0' && !view->compact) {
         view->notif_y = cur;
-        view->notif_h = WORKSPACE_RAIL_NOTIF_H;
+        view->notif_h = rail_scaled(WORKSPACE_RAIL_NOTIF_H, font_size);
         cur += view->notif_h;
     } else {
         view->notif_y = cur;
@@ -320,7 +338,8 @@ void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h)
     // Splits section — only when the active tab actually has splits.
     if (view->show_panes) {
         view->section_y = cur;
-        view->section_h = view->compact ? 9 : WORKSPACE_RAIL_SECTION_H;
+        view->section_h = view->compact ? rail_scaled(9, font_size)
+                                        : rail_scaled(WORKSPACE_RAIL_SECTION_H, font_size);
         cur += view->section_h;
         for (int i = 0; i < view->pane_count; i++) {
             view->panes[i].y = cur;
@@ -337,8 +356,8 @@ void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h)
     }
 
     // Footer hints pinned to the bottom (full mode, when there is room).
-    if (!view->compact && cur + WORKSPACE_RAIL_FOOTER_H <= y + h) {
-        view->footer_h = WORKSPACE_RAIL_FOOTER_H;
+    if (!view->compact && cur + rail_scaled(WORKSPACE_RAIL_FOOTER_H, font_size) <= y + h) {
+        view->footer_h = rail_scaled(WORKSPACE_RAIL_FOOTER_H, font_size);
         view->footer_y = y + h - view->footer_h;
     } else {
         view->footer_y = y + h;
@@ -348,18 +367,18 @@ void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h)
     // Layout port chips for all visible rows.
     if (!view->compact) {
         for (int i = 0; i < view->tab_count; i++)
-            row_layout_port_chips(&view->tabs[i], w);
+            row_layout_port_chips(&view->tabs[i], w, font_size);
         for (int i = 0; i < view->pane_count; i++)
             if (view->panes[i].h > 0)
-                row_layout_port_chips(&view->panes[i], w);
+                row_layout_port_chips(&view->panes[i], w, font_size);
 
         // Git-changed badge rects — depends on port chip rects above, so it
         // must run after the port chip layout loop.
         for (int i = 0; i < view->tab_count; i++)
-            row_layout_git_badge(&view->tabs[i], w);
+            row_layout_git_badge(&view->tabs[i], w, font_size);
         for (int i = 0; i < view->pane_count; i++)
             if (view->panes[i].h > 0)
-                row_layout_git_badge(&view->panes[i], w);
+                row_layout_git_badge(&view->panes[i], w, font_size);
     }
 }
 
@@ -497,11 +516,14 @@ int workspace_rail_row_at(const WorkspaceRailView *view, int mx, int my,
     return -1;
 }
 
-int workspace_rail_drop_index(const WorkspaceRailView *view, int my)
+int workspace_rail_drop_index(const WorkspaceRailView *view, int my,
+                              int font_size)
 {
     if (view->tab_count == 0)
         return 0;
-    int row_h = view->compact ? WORKSPACE_RAIL_ROW_H_COMPACT : WORKSPACE_RAIL_ROW_H;
+    int row_h = view->compact
+        ? rail_scaled(WORKSPACE_RAIL_ROW_H_COMPACT, font_size)
+        : rail_scaled(WORKSPACE_RAIL_ROW_H, font_size);
 
     if (my <= view->tabs[0].y + row_h / 2)
         return 0;

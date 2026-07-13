@@ -229,7 +229,7 @@ static void test_layout_positions(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 2, panes, 2, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     // No notification: tabs start right below the header.
     EXPECT_INT(view.notif_h, 0);
@@ -246,9 +246,30 @@ static void test_layout_positions(void)
     // With an unread event the notification strip pushes rows down.
     workspace_status_note_command(&st, 2, false, 1);
     workspace_rail_build(&view, tabs, 2, panes, 2, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
     EXPECT_INT(view.notif_h, WORKSPACE_RAIL_NOTIF_H);
     EXPECT_INT(view.tabs[0].y, WORKSPACE_RAIL_HEADER_H + WORKSPACE_RAIL_NOTIF_H);
+}
+
+static void test_layout_scales_with_font_size(void)
+{
+    WorkspaceRailInput tabs[1] = {
+        { .id = 1, .label = "a", .branch = NULL, .active = 1 },
+    };
+    WorkspaceStatus st;
+    workspace_status_init(&st);
+
+    WorkspaceRailView view;
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
+    int baseline_header_h = view.header_h;
+    int baseline_row_h = view.tabs[0].h;
+
+    workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 32);
+
+    EXPECT_INT(view.header_h, baseline_header_h * 2);
+    EXPECT_INT(view.tabs[0].h, baseline_row_h * 2);
 }
 
 static void test_hit_targets(void)
@@ -267,7 +288,7 @@ static void test_hit_targets(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 2, panes, 2, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     // Outside the rail.
     WorkspaceRailAction act = workspace_rail_hit(&view, 300, 100);
@@ -311,7 +332,7 @@ static void test_hit_skips_hidden_pane_section(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 1, panes, 1, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     // Where the pane row would be, but the section is hidden.
     WorkspaceRailAction act = workspace_rail_hit(&view, 10,
@@ -334,7 +355,7 @@ static void test_row_at_resolves_hovered_row(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 2, panes, 2, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     bool is_pane = true;
     // Outside the rail entirely.
@@ -394,7 +415,7 @@ static void test_port_chip_layout_computed(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     // Port chips should be positioned inside the row with non-zero size.
     EXPECT_TRUE(view.tabs[0].port_w[0] > 0);
@@ -423,7 +444,7 @@ static void test_port_chip_hit(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 1, panes, 1, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     // Click on the first port chip (3000).
     int cx = view.tabs[0].port_x[0] + 2;
@@ -445,7 +466,7 @@ static void test_row_hit_still_switches_tab_when_ports_present(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     // Click far left of the row (label area) — should switch tab, not open port.
     WorkspaceRailAction act = workspace_rail_hit(&view, 5, view.tabs[0].y + 2);
@@ -463,7 +484,7 @@ static void test_git_badge_layout_computed(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     EXPECT_TRUE(view.tabs[0].git_badge_w > 0);
     EXPECT_TRUE(view.tabs[0].git_badge_h > 0);
@@ -483,7 +504,7 @@ static void test_git_badge_hidden_when_clean(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     EXPECT_INT(view.tabs[0].git_badge_w, 0);
 }
@@ -499,7 +520,7 @@ static void test_git_badge_hit_reports_pane_id(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     int cx = view.tabs[0].git_badge_x + 2;
     int cy = view.tabs[0].git_badge_y + 2;
@@ -523,7 +544,7 @@ static void test_git_badge_hit_works_on_pane_rows(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 1, panes, 2, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     EXPECT_TRUE(view.panes[0].git_badge_w > 0);
     EXPECT_INT(view.panes[1].git_badge_w, 0);
@@ -684,11 +705,11 @@ static void test_drop_index_empty_rail(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 0, NULL, 0, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
-    EXPECT_INT(workspace_rail_drop_index(&view, 0), 0);
-    EXPECT_INT(workspace_rail_drop_index(&view, 100), 0);
-    EXPECT_INT(workspace_rail_drop_index(&view, 800), 0);
+    EXPECT_INT(workspace_rail_drop_index(&view, 0, 16), 0);
+    EXPECT_INT(workspace_rail_drop_index(&view, 100, 16), 0);
+    EXPECT_INT(workspace_rail_drop_index(&view, 800, 16), 0);
 }
 
 static void test_drop_index_above_first_row(void)
@@ -702,10 +723,10 @@ static void test_drop_index_above_first_row(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 2, NULL, 0, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     // Above the first row.
-    int idx = workspace_rail_drop_index(&view, view.tabs[0].y - 5);
+    int idx = workspace_rail_drop_index(&view, view.tabs[0].y - 5, 16);
     EXPECT_INT(idx, 0);
 }
 
@@ -721,16 +742,16 @@ static void test_drop_index_between_rows(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 3, NULL, 0, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     // Between row 0 and row 1 (in the lower half of row 0).
     int mid = view.tabs[0].y + view.tabs[0].h - 2;
-    int idx = workspace_rail_drop_index(&view, mid);
+    int idx = workspace_rail_drop_index(&view, mid, 16);
     EXPECT_INT(idx, 1);
 
     // Between row 1 and row 2.
     mid = view.tabs[1].y + view.tabs[1].h - 2;
-    idx = workspace_rail_drop_index(&view, mid);
+    idx = workspace_rail_drop_index(&view, mid, 16);
     EXPECT_INT(idx, 2);
 }
 
@@ -745,11 +766,11 @@ static void test_drop_index_below_last_row(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 2, NULL, 0, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     // Below the last row.
     int below = view.tabs[1].y + view.tabs[1].h + 5;
-    int idx = workspace_rail_drop_index(&view, below);
+    int idx = workspace_rail_drop_index(&view, below, 16);
     EXPECT_INT(idx, 2);
 }
 
@@ -766,7 +787,7 @@ static void test_bell_button_hidden_when_no_unseen(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     EXPECT_INT(view.bell_w, 0);
     EXPECT_INT(view.bell_h, 0);
@@ -783,7 +804,7 @@ static void test_bell_button_visible_when_unseen(void)
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
     view.bell_unseen = 3;   // host sets this before layout
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     EXPECT_TRUE(view.bell_w > 0);
     EXPECT_TRUE(view.bell_h > 0);
@@ -803,7 +824,7 @@ static void test_bell_button_hit(void)
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
     view.bell_unseen = 3;
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     // Click on the bell button.
     WorkspaceRailAction act = workspace_rail_hit(&view, view.bell_x + 2, view.bell_y + 2);
@@ -822,7 +843,7 @@ static void test_header_icon_layout(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     EXPECT_TRUE(view.toggle_w > 0 && view.toggle_h > 0);
     EXPECT_TRUE(view.split_right_w > 0 && view.split_right_h > 0);
@@ -843,7 +864,7 @@ static void test_header_icons_hidden_in_compact_mode(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 1);   // compact = 1
-    workspace_rail_layout(&view, 0, 0, 56, 800);
+    workspace_rail_layout(&view, 0, 0, 56, 800, 16);
 
     EXPECT_INT(view.toggle_w, 0);
     EXPECT_INT(view.split_right_w, 0);
@@ -860,7 +881,7 @@ static void test_header_icon_hit(void)
 
     WorkspaceRailView view;
     workspace_rail_build(&view, tabs, 1, NULL, 0, &st, 0);
-    workspace_rail_layout(&view, 0, 0, 260, 800);
+    workspace_rail_layout(&view, 0, 0, 260, 800, 16);
 
     WorkspaceRailAction act = workspace_rail_hit(&view, view.toggle_x + 1, view.toggle_y + 1);
     EXPECT_INT(act.type, WORKSPACE_RAIL_ACTION_COLLAPSE_RAIL);

@@ -17,6 +17,8 @@
 #define WORKSPACE_RAIL_MAX_PANES 64
 
 // Section geometry (logical px) — shared by layout, hit-testing, and drawing.
+// These are the baseline dimensions when the terminal font size is 16.
+#define WORKSPACE_RAIL_BASE_FONT_SIZE 16
 #define WORKSPACE_RAIL_HEADER_H       32
 #define WORKSPACE_RAIL_NOTIF_H        26
 #define WORKSPACE_RAIL_SECTION_H      24
@@ -138,7 +140,10 @@ void workspace_rail_build(WorkspaceRailView *view,
                           int compact);
 
 // Assign row and section rectangles inside the given bounds.
-void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h);
+// `font_size` is the configured terminal font size (logical px); geometry is
+// scaled proportionally so the rail stays readable at any font size.
+void workspace_rail_layout(WorkspaceRailView *view, int x, int y, int w, int h,
+                            int font_size);
 
 // Pure click hit test; requires workspace_rail_layout to have run.
 WorkspaceRailAction workspace_rail_hit(const WorkspaceRailView *view,
@@ -147,7 +152,9 @@ WorkspaceRailAction workspace_rail_hit(const WorkspaceRailView *view,
 // Return the drop slot index (0..tab_count) for a vertical position my,
 // relative to the tab rows. Requires workspace_rail_layout to have run.
 // 0 = before the first tab, tab_count = after the last.
-int workspace_rail_drop_index(const WorkspaceRailView *view, int my);
+// `font_size` must match the value passed to workspace_rail_layout.
+int workspace_rail_drop_index(const WorkspaceRailView *view, int my,
+                              int font_size);
 
 // Row (tab or pane) under (mx, my), restricted to row y-ranges only (not
 // header/footer/notification/bell areas) — the pure hover hit test.

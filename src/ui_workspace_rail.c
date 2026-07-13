@@ -33,6 +33,21 @@
 #define PORT_CHIP_PAD 6
 #define PORT_CHIP_R 3
 
+static float rail_scale(int font_size)
+{
+    return (float)font_size / 16.0f;   // baseline is 16
+}
+
+static float rail_scaled_f(int value, int font_size)
+{
+    return (float)value * rail_scale(font_size);
+}
+
+static int rail_scaled(int value, int font_size)
+{
+    return (int)(rail_scaled_f(value, font_size) + 0.5f);
+}
+
 const char *WORKSPACE_RAIL_COLOR_TAG_NAMES[WORKSPACE_RAIL_COLOR_TAG_COUNT] = {
     "Red", "Orange", "Yellow", "Green", "Blue", "Purple",
 };
@@ -141,10 +156,12 @@ static void draw_text_clipped(Font font, const char *text, float x, float y,
 // divider (used only by the sidebar-toggle glyph, per its "left segment
 // filled" spec).
 static void draw_panel_glyph(int bx, int by, int bw, int bh, Color fg,
-                             bool vertical, float frac, bool fill_first)
+                             bool vertical, float frac, bool fill_first,
+                             int font_size)
 {
-    Rectangle g = { (float)(bx + 4), (float)(by + 4),
-                    (float)(bw - 8), (float)(bh - 8) };
+    int inset = rail_scaled(4, font_size);
+    Rectangle g = { (float)(bx + inset), (float)(by + inset),
+                    (float)(bw - inset * 2), (float)(bh - inset * 2) };
     DrawRectangleRoundedLines(g, 0.2f, 3, fg);
     if (vertical) {
         int div_x = (int)(g.x + g.width * frac);
@@ -166,7 +183,7 @@ static void draw_panel_glyph(int bx, int by, int bw, int bh, Color fg,
 // Draw port chips for a row: right-aligned on the secondary line, only in
 // full (non-compact) mode.
 static void draw_port_chips(Font font, const WorkspaceRailRow *row,
-                            int max_w, int mouse_x, int mouse_y)
+                            int max_w, int mouse_x, int mouse_y, int font_size)
 {
     if (row->port_count == 0 || row->port_w[0] <= 0)
         return;
@@ -191,19 +208,28 @@ static void draw_port_chips(Font font, const WorkspaceRailRow *row,
         snprintf(chip_label, sizeof(chip_label), ":%d", row->ports[i]);
         Color chip_fg = hov ? UI2RAY(g_ui_theme.text)
                             : UI2RAY(g_ui_theme.subtitle);
-        Vector2 sz = MeasureTextEx(font, chip_label, FS_SUB, 0);
+        int chip_font = rail_scaled(FS_SUB, font_size);
+        Vector2 sz = MeasureTextEx(font, chip_label, chip_font, 0);
         DrawTextEx(font, chip_label,
                    (Vector2){ (float)(px + (pw - (int)sz.x) / 2),
                               (float)(py + (ph - (int)sz.y) / 2) },
-                   FS_SUB, 0, chip_fg);
+                   chip_font, 0, chip_fg);
     }
 }
 
 static void draw_row(Font font, const WorkspaceRailView *view,
                      const WorkspaceRailRow *row, bool hovered,
-                     int mouse_x, int mouse_y)
+                     int mouse_x, int mouse_y, int font_size)
 {
     int x = view->x, w = view->w;
+    int fs_header = rail_scaled(FS_HEADER, font_size);
+    int fs_primary = rail_scaled(FS_PRIMARY, font_size);
+    int fs_sub = rail_scaled(FS_SUB, font_size);
+    int pad_x = rail_scaled(PAD_X, font_size);
+    int num_x = rail_scaled(NUM_X, font_size);
+    int row_text_x = rail_scaled(ROW_TEXT_X, font_size);
+    int active_bar_w = rail_scaled(ACTIVE_BAR_W, font_size);
+    int dot_r_px = rail_scaled(DOT_R, font_size);
 
     Color tag_bar = (row->color_tag > 0 && row->color_tag <= WORKSPACE_RAIL_COLOR_TAG_COUNT)
         ? UI2RAY(WORKSPACE_RAIL_COLOR_TAG_COLORS[row->color_tag - 1])
@@ -211,11 +237,11 @@ static void draw_row(Font font, const WorkspaceRailView *view,
     if (row->active) {
         DrawRectangle(x, row->y, w, row->h,
                       with_alpha(UI2RAY(g_ui_theme.selection), 60));
-        DrawRectangle(x, row->y, ACTIVE_BAR_W, row->h, tag_bar);
+        DrawRectangle(x, row->y, active_bar_w, row->h, tag_bar);
     } else if (row->color_tag > 0) {
         // Not the active row, but tagged: show the group color regardless,
         // so tagged workspaces stay identifiable at a glance.
-        DrawRectangle(x, row->y, ACTIVE_BAR_W, row->h, tag_bar);
+        DrawRectangle(x, row->y, active_bar_w, row->h, tag_bar);
     } else if (hovered) {
         DrawRectangle(x, row->y, w, row->h,
                       with_alpha(UI2RAY(g_ui_theme.selection), 28));
@@ -226,28 +252,32 @@ static void draw_row(Font font, const WorkspaceRailView *view,
 
     if (view->compact) {
         // Number centered, attention dot in the top-right corner.
-        Vector2 sz = MeasureTextEx(font, num, FS_PRIMARY, 0);
+        Vector2 sz = MeasureTextEx(font, num, fs_primary, 0);
         DrawTextEx(font, num,
                    (Vector2){ x + ((float)w - sz.x) / 2.0f,
                               row->y + ((float)row->h - sz.y) / 2.0f },
-                   FS_PRIMARY, 0,
+                   fs_primary, 0,
                    row->active ? UI2RAY(g_ui_theme.text)
                                : UI2RAY(g_ui_theme.subtitle));
         Color dot = attention_color(row->attention);
         if (dot.a)
-            DrawCircle(x + w - 10, row->y + 10, 3, dot);
+            DrawCircle(x + w - rail_scaled(10, font_size),
+                       row->y + rail_scaled(10, font_size),
+                       rail_scaled(3, font_size), dot);
         if (row->working) {
             Color wc = working_color();
-            DrawCircle(x + w - 10, row->y + row->h - 10, 3, wc);
+            DrawCircle(x + w - rail_scaled(10, font_size),
+                       row->y + row->h - rail_scaled(10, font_size),
+                       rail_scaled(3, font_size), wc);
         }
         if (row->git_changed_count > 0) {
             char dirty[16];
             git_badge_label(row->git_changed_count, dirty, sizeof(dirty));
-            Vector2 dsz = MeasureTextEx(font, dirty, FS_HEADER, 0);
+            Vector2 dsz = MeasureTextEx(font, dirty, fs_header, 0);
             DrawTextEx(font, dirty,
                        (Vector2){ x + ((float)w - dsz.x) / 2.0f,
-                                  (float)(row->y + row->h - 13) },
-                       FS_HEADER, 0, UI2RAY(g_ui_theme.accent));
+                                  (float)(row->y + row->h - rail_scaled(13, font_size)) },
+                       fs_header, 0, UI2RAY(g_ui_theme.accent));
         }
         return;
     }
@@ -266,55 +296,56 @@ static void draw_row(Font font, const WorkspaceRailView *view,
         pulse = view->ring_pulse;
     }
 
-    float base_r = (float)DOT_R;
+    float base_r = (float)dot_r_px;
     float dot_r = base_r + base_r * 0.35f * pulse;
 
     // Number column — the row's Cmd/Ctrl+<n> target.
     DrawTextEx(font, num,
-               (Vector2){ (float)(x + NUM_X), (float)(row->y + 9) },
-               FS_SUB, 0, UI2RAY(g_ui_theme.subtitle));
+               (Vector2){ (float)(x + num_x),
+                          (float)(row->y + rail_scaled(9, font_size)) },
+               fs_sub, 0, UI2RAY(g_ui_theme.subtitle));
 
-    float text_right = (float)(x + w - PAD_X);
+    float text_right = (float)(x + w - pad_x);
 
     // Glow ring behind the attention dot when pulsing.
     if (pulse > 0.0f) {
         Color glow = sev;
         glow.a = (unsigned char)(80 * pulse);
-        DrawCircle((int)(x + w - PAD_X - base_r), row->y + row->h / 2,
-                   dot_r + 5.0f, glow);
+        DrawCircle((int)(x + w - pad_x - base_r), row->y + row->h / 2,
+                   dot_r + rail_scaled_f(5, font_size), glow);
     }
 
     // Draw attention dot only when there is an attention state.
     if (row->attention != WORKSPACE_ATTENTION_NONE) {
-        DrawCircle((int)(x + w - PAD_X - base_r), row->y + row->h / 2,
+        DrawCircle((int)(x + w - pad_x - base_r), row->y + row->h / 2,
                    (int)dot_r, sev);
-        text_right -= base_r * 2 + 8;
+        text_right -= base_r * 2 + rail_scaled(8, font_size);
     }
 
     // Reserve space for port chips: secondary text ends before the first chip.
     if (row->port_count > 0 && row->port_w[0] > 0) {
-        float chip_area_left = (float)(row->port_x[0] - 6);
+        float chip_area_left = (float)(row->port_x[0] - rail_scaled(6, font_size));
         if (chip_area_left < text_right)
             text_right = chip_area_left;
     }
 
     if (row->working) {
         Color wc = working_color();
-        float wx = text_right - DOT_R;
-        DrawCircle((int)wx, row->y + row->h / 2, DOT_R, wc);
-        text_right -= DOT_R * 2 + 8;
+        float wx = text_right - dot_r_px;
+        DrawCircle((int)wx, row->y + row->h / 2, dot_r_px, wc);
+        text_right -= dot_r_px * 2 + rail_scaled(8, font_size);
     } else if (row->idle_ms >= 0) {
         // Not currently working: show how long it's been quiet, so you can
         // triage several running agents at a glance (which one's gone
         // quietest vs. which just finished).
         char idle_label[8];
         format_idle_label(row->idle_ms, idle_label, sizeof(idle_label));
-        Vector2 isz = MeasureTextEx(font, idle_label, FS_SUB, 0);
+        Vector2 isz = MeasureTextEx(font, idle_label, fs_sub, 0);
         float ix = text_right - isz.x;
         DrawTextEx(font, idle_label,
                    (Vector2){ ix, (float)row->y + (float)row->h / 2.0f - isz.y / 2.0f },
-                   FS_SUB, 0, UI2RAY(g_ui_theme.subtitle));
-        text_right = ix - 8;
+                   fs_sub, 0, UI2RAY(g_ui_theme.subtitle));
+        text_right = ix - rail_scaled(8, font_size);
     }
 
     // Rect comes from the model (workspace_rail_layout), same as port chips —
@@ -326,35 +357,39 @@ static void draw_row(Font font, const WorkspaceRailView *view,
     int git_badge_h = row->git_badge_h;
     if (git_badge_w > 0) {
         git_badge_label(row->git_changed_count, git_badge, sizeof(git_badge));
-        if (git_badge_x >= x + ROW_TEXT_X) {
-            text_right = (float)(git_badge_x - 6);
+        if (git_badge_x >= x + row_text_x) {
+            text_right = (float)(git_badge_x - rail_scaled(6, font_size));
         } else {
             git_badge_w = 0;
         }
     }
 
-    float max_w = text_right - (float)(x + ROW_TEXT_X);
+    float max_w = text_right - (float)(x + row_text_x);
 
     // Primary line: agent/window title or cwd label.
     const char *primary = row->label[0] ? row->label : "shell";
     Color primary_col = row->active ? UI2RAY(g_ui_theme.text)
                                     : with_alpha(UI2RAY(g_ui_theme.text), 215);
-    draw_text_clipped(font, primary, (float)(x + ROW_TEXT_X),
-                      (float)(row->y + 7), FS_PRIMARY, 0.0f, primary_col, max_w);
+    draw_text_clipped(font, primary, (float)(x + row_text_x),
+                      (float)(row->y + rail_scaled(7, font_size)),
+                      fs_primary, 0.0f, primary_col, max_w);
 
     // Secondary line: closing text (warn tint), attention text, or branch.
     if (row->closing) {
         // Warn tint for armed-close "click again to close".
         Color warn = UI2RAY(g_ui_theme.inline_error);
-        draw_text_clipped(font, row->text, (float)(x + ROW_TEXT_X),
-                          (float)(row->y + 25), FS_SUB, 0.0f, warn, max_w);
+        draw_text_clipped(font, row->text, (float)(x + row_text_x),
+                          (float)(row->y + rail_scaled(25, font_size)),
+                          fs_sub, 0.0f, warn, max_w);
     } else if (row->text[0] && row->attention != WORKSPACE_ATTENTION_NONE) {
-        draw_text_clipped(font, row->text, (float)(x + ROW_TEXT_X),
-                          (float)(row->y + 25), FS_SUB, 0.0f,
+        draw_text_clipped(font, row->text, (float)(x + row_text_x),
+                          (float)(row->y + rail_scaled(25, font_size)),
+                          fs_sub, 0.0f,
                           attention_color(row->attention), max_w);
     } else if (row->branch[0]) {
-        draw_text_clipped(font, row->branch, (float)(x + ROW_TEXT_X),
-                          (float)(row->y + 25), FS_SUB, 0.0f,
+        draw_text_clipped(font, row->branch, (float)(x + row_text_x),
+                          (float)(row->y + rail_scaled(25, font_size)),
+                          fs_sub, 0.0f,
                           UI2RAY(g_ui_theme.subtitle), max_w);
     }
 
@@ -362,19 +397,19 @@ static void draw_row(Font font, const WorkspaceRailView *view,
         DrawRectangleRounded((Rectangle){ (float)git_badge_x, (float)git_badge_y,
                                           (float)git_badge_w, (float)git_badge_h },
                              0.5f, 4, with_alpha(UI2RAY(g_ui_theme.accent), 38));
-        Vector2 gsz = MeasureTextEx(font, git_badge, FS_SUB, 0);
+        Vector2 gsz = MeasureTextEx(font, git_badge, fs_sub, 0);
         DrawTextEx(font, git_badge,
                    (Vector2){ (float)(git_badge_x + (git_badge_w - (int)gsz.x) / 2),
                               (float)(git_badge_y + (git_badge_h - (int)gsz.y) / 2) },
-                   FS_SUB, 0, UI2RAY(g_ui_theme.accent));
+                   fs_sub, 0, UI2RAY(g_ui_theme.accent));
     }
 
     // Port chips on the secondary line (right-aligned).
-    draw_port_chips(font, row, (int)(x + w - ROW_TEXT_X), mouse_x, mouse_y);
+    draw_port_chips(font, row, (int)(x + w - row_text_x), mouse_x, mouse_y, font_size);
 }
 
 void ui_workspace_rail_draw(Font font, WorkspaceRailView *view,
-                            int mouse_x, int mouse_y, float dt)
+                            int mouse_x, int mouse_y, float dt, int font_size)
 {
     if (view->ring_pulse > 0.0f) {
         view->ring_pulse -= dt * RING_PULSE_DECAY;
@@ -382,6 +417,10 @@ void ui_workspace_rail_draw(Font font, WorkspaceRailView *view,
     }
 
     int x = view->x, y = view->y, w = view->w, h = view->h;
+    int fs_header = rail_scaled(FS_HEADER, font_size);
+    int fs_sub = rail_scaled(FS_SUB, font_size);
+    int pad_x = rail_scaled(PAD_X, font_size);
+    int active_bar_w = rail_scaled(ACTIVE_BAR_W, font_size);
 
     // Background + right separator.
     DrawRectangle(x, y, w, h, UI2RAY(g_ui_theme.panel_bg));
@@ -389,10 +428,10 @@ void ui_workspace_rail_draw(Font font, WorkspaceRailView *view,
 
     // --- Header: WORKSPACES + [toggle] [split-right] [split-down] + [+] + bell ---
     if (!view->compact) {
-        float label_max_w = (float)(view->toggle_x - 6 - (x + PAD_X));
-        draw_text_clipped(font, "WORKSPACES", (float)(x + PAD_X),
-                          (float)(view->header_y + (view->header_h - FS_HEADER) / 2 - 1),
-                          FS_HEADER, 1.5f, UI2RAY(g_ui_theme.subtitle), label_max_w);
+        float label_max_w = (float)(view->toggle_x - rail_scaled(6, font_size) - (x + pad_x));
+        draw_text_clipped(font, "WORKSPACES", (float)(x + pad_x),
+                          (float)(view->header_y + (view->header_h - fs_header) / 2 - 1),
+                          fs_header, 1.5f, UI2RAY(g_ui_theme.subtitle), label_max_w);
     }
 
     // Bell button (notification history).
@@ -408,11 +447,11 @@ void ui_workspace_rail_draw(Font font, WorkspaceRailView *view,
         char btext[8];
         snprintf(btext, sizeof(btext), "%d", view->bell_unseen);
         Color bfg = bhov ? UI2RAY(g_ui_theme.text) : UI2RAY(g_ui_theme.subtitle);
-        Vector2 bsz = MeasureTextEx(font, btext, FS_SUB, 0);
+        Vector2 bsz = MeasureTextEx(font, btext, fs_sub, 0);
         DrawTextEx(font, btext,
                    (Vector2){ (float)(view->bell_x + (view->bell_w - (int)bsz.x) / 2),
                               (float)(view->bell_y + (view->bell_h - (int)bsz.y) / 2) },
-                   FS_SUB, 0, bfg);
+                   fs_sub, 0, bfg);
     }
 
     // Rail-collapse ("sidebar") toggle button.
@@ -425,7 +464,7 @@ void ui_workspace_rail_draw(Font font, WorkspaceRailView *view,
                                  0.3f, 4, with_alpha(UI2RAY(g_ui_theme.accent), 50));
         Color fg = hov ? UI2RAY(g_ui_theme.text) : UI2RAY(g_ui_theme.subtitle);
         draw_panel_glyph(view->toggle_x, view->toggle_y, view->toggle_w, view->toggle_h,
-                         fg, true, 0.4f, true);
+                         fg, true, 0.4f, true, font_size);
     }
 
     // Split-right ("two columns") button.
@@ -438,7 +477,7 @@ void ui_workspace_rail_draw(Font font, WorkspaceRailView *view,
                                  0.3f, 4, with_alpha(UI2RAY(g_ui_theme.accent), 50));
         Color fg = hov ? UI2RAY(g_ui_theme.text) : UI2RAY(g_ui_theme.subtitle);
         draw_panel_glyph(view->split_right_x, view->split_right_y,
-                         view->split_right_w, view->split_right_h, fg, true, 0.5f, false);
+                         view->split_right_w, view->split_right_h, fg, true, 0.5f, false, font_size);
     }
 
     // Split-down ("two rows") button.
@@ -451,7 +490,7 @@ void ui_workspace_rail_draw(Font font, WorkspaceRailView *view,
                                  0.3f, 4, with_alpha(UI2RAY(g_ui_theme.accent), 50));
         Color fg = hov ? UI2RAY(g_ui_theme.text) : UI2RAY(g_ui_theme.subtitle);
         draw_panel_glyph(view->split_down_x, view->split_down_y,
-                         view->split_down_w, view->split_down_h, fg, false, 0.5f, false);
+                         view->split_down_w, view->split_down_h, fg, false, 0.5f, false, font_size);
     }
 
     // "+" new-workspace button.
@@ -465,8 +504,12 @@ void ui_workspace_rail_draw(Font font, WorkspaceRailView *view,
         Color pc = hov ? UI2RAY(g_ui_theme.text) : UI2RAY(g_ui_theme.subtitle);
         int cx = view->plus_x + view->plus_w / 2;
         int cy = view->plus_y + view->plus_h / 2;
-        DrawRectangle(cx - 5, cy, 11, 1, pc);
-        DrawRectangle(cx, cy - 5, 1, 11, pc);
+        int half_bar = rail_scaled(5, font_size);
+        int bar_len  = rail_scaled(11, font_size);
+        int bar_w    = rail_scaled(1, font_size);
+        if (bar_w < 1) bar_w = 1;
+        DrawRectangle(cx - half_bar, cy, bar_len, bar_w, pc);
+        DrawRectangle(cx, cy - half_bar, bar_w, bar_len, pc);
     }
 
     // --- Notification strip (clickable: jumps to the offending pane) ---
@@ -478,18 +521,18 @@ void ui_workspace_rail_draw(Font font, WorkspaceRailView *view,
                    && in_rect(mouse_x, mouse_y, x, view->notif_y, w, view->notif_h);
         DrawRectangle(x, view->notif_y, w, view->notif_h,
                       with_alpha(sev, hov ? 48 : 28));
-        DrawRectangle(x, view->notif_y, ACTIVE_BAR_W, view->notif_h, sev);
-        draw_text_clipped(font, view->notification, (float)(x + PAD_X),
-                          (float)(view->notif_y + (view->notif_h - FS_SUB) / 2 - 1),
-                          FS_SUB, 0.0f, UI2RAY(g_ui_theme.text),
-                          (float)(w - PAD_X - 8));
+        DrawRectangle(x, view->notif_y, active_bar_w, view->notif_h, sev);
+        draw_text_clipped(font, view->notification, (float)(x + pad_x),
+                          (float)(view->notif_y + (view->notif_h - fs_sub) / 2 - 1),
+                          fs_sub, 0.0f, UI2RAY(g_ui_theme.text),
+                          (float)(w - pad_x - rail_scaled(8, font_size)));
     }
 
     // --- Workspace rows ---
     for (int i = 0; i < view->tab_count; i++) {
         const WorkspaceRailRow *row = &view->tabs[i];
         bool hov = in_rect(mouse_x, mouse_y, x, row->y, w, row->h);
-        draw_row(font, view, row, hov, mouse_x, mouse_y);
+        draw_row(font, view, row, hov, mouse_x, mouse_y, font_size);
     }
 
     // --- Drag insertion line ---
@@ -517,20 +560,22 @@ void ui_workspace_rail_draw(Font font, WorkspaceRailView *view,
     // --- Splits section (only when the active tab is split) ---
     if (view->show_panes) {
         if (!view->compact) {
-            DrawRectangle(x, view->section_y + 3, w, 1,
+            DrawRectangle(x, view->section_y + rail_scaled(3, font_size), w, 1,
                           UI2RAY(g_ui_theme.sidebar_separator));
             DrawTextEx(font, "SPLITS",
-                       (Vector2){ (float)(x + PAD_X),
-                                  (float)(view->section_y + view->section_h - FS_HEADER - 3) },
-                       FS_HEADER, 1.5f, UI2RAY(g_ui_theme.subtitle));
+                       (Vector2){ (float)(x + pad_x),
+                                  (float)(view->section_y + view->section_h - fs_header - rail_scaled(3, font_size)) },
+                       fs_header, 1.5f, UI2RAY(g_ui_theme.subtitle));
         } else {
-            DrawRectangle(x + 8, view->section_y + view->section_h / 2,
-                          w - 16, 1, UI2RAY(g_ui_theme.sidebar_separator));
+            int half = rail_scaled(8, font_size);
+            int sep_y = view->section_y + view->section_h / 2;
+            DrawRectangle(x + half, sep_y,
+                          w - half * 2, 1, UI2RAY(g_ui_theme.sidebar_separator));
         }
         for (int i = 0; i < view->pane_count; i++) {
             const WorkspaceRailRow *row = &view->panes[i];
             bool hov = in_rect(mouse_x, mouse_y, x, row->y, w, row->h);
-            draw_row(font, view, row, hov, mouse_x, mouse_y);
+            draw_row(font, view, row, hov, mouse_x, mouse_y, font_size);
         }
     }
 
@@ -542,9 +587,9 @@ void ui_workspace_rail_draw(Font font, WorkspaceRailView *view,
 #else
         const char *hints = "ctrl+sh+T new   ctrl+sh+1-9 go   +U unread";
 #endif
-        draw_text_clipped(font, hints, (float)(x + PAD_X),
-                          (float)(view->footer_y + (view->footer_h - FS_HEADER) / 2),
-                          FS_HEADER, 0.0f, with_alpha(UI2RAY(g_ui_theme.subtitle), 200),
-                          (float)(w - PAD_X * 2));
+        draw_text_clipped(font, hints, (float)(x + pad_x),
+                          (float)(view->footer_y + (view->footer_h - fs_header) / 2),
+                          fs_header, 0.0f, with_alpha(UI2RAY(g_ui_theme.subtitle), 200),
+                          (float)(w - pad_x * 2));
     }
 }

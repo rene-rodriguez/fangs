@@ -742,18 +742,18 @@ static void collect_rail_inputs(uint64_t now_ms)
 // handlers, drag tracking, drawing) must go through this so hit targets can't
 // drift from what is painted — and so host-owned fields like bell_unseen are
 // never forgotten (workspace_rail_build memsets the view).
-static void build_rail_view(const Layout *lo, uint64_t now_ms)
+static void build_rail_view(const Layout *lo, uint64_t now_ms, int font_size)
 {
     collect_rail_inputs(now_ms);
     workspace_rail_build(&g_rail_view,
-                         g_rail_inputs.tabs, g_rail_inputs.tab_count,
-                         g_rail_inputs.panes, g_rail_inputs.pane_count,
-                         &g_workspace_status,
-                         lo->rail_compact ? 1 : 0);
+                          g_rail_inputs.tabs, g_rail_inputs.tab_count,
+                          g_rail_inputs.panes, g_rail_inputs.pane_count,
+                          &g_workspace_status,
+                          lo->rail_compact ? 1 : 0);
     g_rail_view.bell_unseen = workspace_status_unseen(&g_workspace_status,
-                                                      g_history_last_seen);
+                                                       g_history_last_seen);
     workspace_rail_layout(&g_rail_view, lo->rail.x, lo->rail.y,
-                          lo->rail.w, lo->rail.h);
+                          lo->rail.w, lo->rail.h, font_size);
     g_rail_view.drag_from = g_drag_from;
     g_rail_view.drag_slot = g_drag_slot;
 }
@@ -5783,7 +5783,7 @@ int main(int argc, char **argv)
             // candidate tracking.  We build the model once here to resolve
             // geometry; if the hit is not a tab switch we clear the candidate.
             if (in_rail && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && g_drag_from < 0) {
-                build_rail_view(&lo, now_ms);
+                build_rail_view(&lo, now_ms, font_size);
                 WorkspaceRailAction act = workspace_rail_hit(&g_rail_view,
                                                              rail_mx, rail_my);
                 if (act.type == WORKSPACE_RAIL_ACTION_SWITCH_TAB
@@ -5803,8 +5803,8 @@ int main(int argc, char **argv)
                 }
                 if (g_drag_from >= 0) {
                     // Rebuild layout each frame to keep drop index accurate.
-                    build_rail_view(&lo, now_ms);
-                    g_drag_slot = workspace_rail_drop_index(&g_rail_view, rail_my);
+                    build_rail_view(&lo, now_ms, font_size);
+                    g_drag_slot = workspace_rail_drop_index(&g_rail_view, rail_my, font_size);
                 }
             }
 
@@ -5874,7 +5874,7 @@ int main(int argc, char **argv)
             && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
             && GetMouseX() >= lo.rail.x && GetMouseX() < lo.rail.x + lo.rail.w
             && GetMouseY() >= lo.rail.y && GetMouseY() < lo.rail.y + lo.rail.h) {
-            build_rail_view(&lo, now_ms);
+            build_rail_view(&lo, now_ms, font_size);
             WorkspaceRailAction act = workspace_rail_hit(&g_rail_view,
                                                          GetMouseX(), GetMouseY());
 
@@ -6083,7 +6083,7 @@ int main(int argc, char **argv)
             && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)
             && GetMouseX() >= lo.rail.x && GetMouseX() < lo.rail.x + lo.rail.w
             && GetMouseY() >= lo.rail.y && GetMouseY() < lo.rail.y + lo.rail.h) {
-            build_rail_view(&lo, now_ms);
+            build_rail_view(&lo, now_ms, font_size);
 
             // Find which row was clicked.
             int hit_tab = -1;
@@ -6200,7 +6200,7 @@ int main(int argc, char **argv)
             && IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE)
             && GetMouseX() >= lo.rail.x && GetMouseX() < lo.rail.x + lo.rail.w
             && GetMouseY() >= lo.rail.y && GetMouseY() < lo.rail.y + lo.rail.h) {
-            build_rail_view(&lo, now_ms);
+            build_rail_view(&lo, now_ms, font_size);
 
             // Find the clicked tab row.
             int mmx = GetMouseX(), mmy = GetMouseY();
@@ -6575,10 +6575,10 @@ int main(int argc, char **argv)
 
         // Draw workspace rail inside the drawing block.
         if (lo.rail_visible) {
-            build_rail_view(&lo, now_ms);
+            build_rail_view(&lo, now_ms, font_size);
             ui_workspace_rail_draw(mono_font, &g_rail_view,
                                    GetMouseX(), GetMouseY(),
-                                   (float)frame_dt_sec);
+                                   (float)frame_dt_sec, font_size);
 
             // Hover-preview dwell tracking: which row (if any) the mouse is
             // resting over, and for how long.

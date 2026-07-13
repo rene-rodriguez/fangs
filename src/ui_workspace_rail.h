@@ -12,9 +12,10 @@
 #include "ui_workspace_rail_model.h"
 
 // Draw the workspace rail. workspace_rail_layout() must have run on the view.
-// The mouse position drives hover feedback only.
+// The mouse position drives hover feedback only. `font_size` is the configured
+// terminal font size (logical px); text and decorative offsets scale with it.
 void ui_workspace_rail_draw(Font font, WorkspaceRailView *view,
-                            int mouse_x, int mouse_y, float dt);
+                            int mouse_x, int mouse_y, float dt, int font_size);
 
 static inline void ui_workspace_rail_set_ring_pulse(WorkspaceRailView *view, float v)
 {
