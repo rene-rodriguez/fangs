@@ -2348,6 +2348,21 @@ static void draw_search_box(Font font, int term_origin_x, int term_area_w, int m
     }
 }
 
+static void draw_pane_chrome_and_content(PaneNode *leaf,
+                                         int px, int py, int pw, int ph,
+                                         int header_h, bool focused, float scale,
+                                         Font font, Font bold_font,
+                                         int cell_width, int cell_height, int font_size, int pad,
+                                         GhosttyTerminal terminal,
+                                         GhosttyRenderState rs,
+                                         GhosttyRenderStateRowIterator ri,
+                                         GhosttyRenderStateRowCells rc,
+                                         GhosttyKittyGraphicsPlacementIterator pi,
+                                         KittyImageRenderer *kitty_renderer,
+                                         GhosttyTerminalScrollbar *lsb_ptr,
+                                         AppConfig *cfg, uint64_t now_ms,
+                                         int *out_inner_rows);
+
 static void render_terminal(GhosttyRenderState render_state,
                             GhosttyRenderStateRowIterator row_iter,
                             GhosttyRenderStateRowCells cells,
@@ -2730,6 +2745,118 @@ static void render_terminal(GhosttyRenderState render_state,
     GhosttyRenderStateDirty clean_state = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
     ghostty_render_state_set(render_state,
         GHOSTTY_RENDER_STATE_OPTION_DIRTY, &clean_state);
+}
+
+static void draw_pane_chrome_and_content(PaneNode *leaf,
+                                         int px, int py, int pw, int ph,
+                                         int header_h, bool focused, float scale,
+                                         Font font, Font bold_font,
+                                         int cell_width, int cell_height, int font_size, int pad,
+                                         GhosttyTerminal terminal,
+                                         GhosttyRenderState rs,
+                                         GhosttyRenderStateRowIterator ri,
+                                         GhosttyRenderStateRowCells rc,
+                                         GhosttyKittyGraphicsPlacementIterator pi,
+                                         KittyImageRenderer *kitty_renderer,
+                                         GhosttyTerminalScrollbar *lsb_ptr,
+                                         AppConfig *cfg, uint64_t now_ms,
+                                         int *out_inner_rows)
+{
+    if (pw < 4 || ph < 4) return;
+
+    if (header_h < 0) header_h = 0;
+    const float corner = 6.0f * scale;
+
+    Rectangle outer = { (float)px, (float)py, (float)pw, (float)ph };
+
+    int ix = px + 1;
+    int iy = py + header_h + 1;
+    int iw = pw - 2;
+    int ih = ph - header_h - 2;
+    if (iw < 1) iw = 1;
+    if (ih < 1) ih = 1;
+
+    int inner_rows = (ih - 2 * pad) / cell_height;
+    if (inner_rows < 1) inner_rows = 1;
+    if (out_inner_rows) *out_inner_rows = inner_rows;
+
+    // Drop shadow.
+    int soff = (int)(2.0f * scale);
+    if (soff < 1) soff = 1;
+    Color shadow = UI2RAY(g_ui_theme.shadow);
+    DrawRectangleRounded((Rectangle){ (float)(px + soff), (float)(py + soff),
+                                      (float)pw, (float)ph },
+                         corner / fminf(pw, ph), 8, shadow);
+
+    // Frame background and border.
+    DrawRectangleRounded(outer, corner / fminf(pw, ph), 8,
+                         UI2RAY(g_ui_theme.panel_bg));
+    UiColor border_ac = { g_ui_theme.accent.r, g_ui_theme.accent.g,
+                          g_ui_theme.accent.b, 220 };
+    Color border = focused ? UI2RAY(border_ac) : UI2RAY(g_ui_theme.panel_border);
+    DrawRectangleRoundedLinesEx(outer, corner / fminf(pw, ph), 8, 1.0f, border);
+
+    // Header bar.
+    if (header_h > 0) {
+        Rectangle header = { (float)px + 1.0f, (float)py + 1.0f,
+                             (float)pw - 2.0f, (float)header_h };
+        DrawRectangleRounded(header, corner / fminf(pw, ph), 8,
+                             UI2RAY(g_ui_theme.pane_header_bg));
+
+        Session *ss = leaf->leaf.session;
+        const char *pcwd = session_cwd(ss);
+        const char *label = pcwd ? pcwd : "";
+        const char *slash = strrchr(label, '/');
+        if (slash && slash[1]) label = slash + 1;
+
+        char primary[128];
+        snprintf(primary, sizeof(primary), "%s", label);
+
+        float text_y = py + 1.0f + (header_h - font_size) / 2.0f;
+        float text_x = px + 8.0f * scale;
+
+        // Status dot.
+        int status_r = (int)(3.5f * scale);
+        if (status_r < 2) status_r = 2;
+        Color dot = UI2RAY(g_ui_theme.pane_status_idle);
+        int exit_st = session_exit_status(ss);
+        if (exit_st >= 0) dot = UI2RAY(g_ui_theme.pane_status_error);
+        if (session_child_alive(ss)) dot = UI2RAY(g_ui_theme.pane_status_running);
+        DrawCircle((int)(text_x + status_r), (int)(text_y + font_size / 2.0f),
+                   (float)status_r, dot);
+        text_x += status_r * 2.0f + 6.0f * scale;
+
+        // Primary label.
+        Vector2 prim_sz = MeasureTextEx(font, primary, (float)font_size, 0);
+        if (prim_sz.x > 0 && text_x + prim_sz.x < px + pw - 8.0f * scale) {
+            DrawTextEx(font, primary, (Vector2){ text_x, text_y },
+                       (float)font_size, 0,
+                       UI2RAY(g_ui_theme.pane_header_text));
+            text_x += prim_sz.x + 8.0f * scale;
+        }
+
+        // Branch detail.
+        char branch[64] = {0};
+        cached_git_branch(pcwd ? pcwd : "", branch, sizeof(branch), now_ms);
+        if (branch[0]) {
+            char detail[128];
+            snprintf(detail, sizeof(detail), "(%s)", branch);
+            Vector2 det_sz = MeasureTextEx(font, detail, (float)font_size, 0);
+            if (text_x + det_sz.x < px + pw - 8.0f * scale) {
+                DrawTextEx(font, detail, (Vector2){ text_x, text_y },
+                           (float)font_size, 0,
+                           UI2RAY(g_ui_theme.pane_header_detail));
+            }
+        }
+    }
+
+    // Scissor to inner content rect and render the terminal inside it.
+    BeginScissorMode(ix, iy, iw, ih);
+    render_terminal(rs, ri, rc, font, bold_font,
+                    cell_width, cell_height, font_size, pad,
+                    iw, lsb_ptr, terminal, pi,
+                    kitty_renderer, ix, iy, cfg, now_ms);
+    EndScissorMode();
 }
 
 // ---------------------------------------------------------------------------
@@ -6420,30 +6547,30 @@ int main(int argc, char **argv)
                                      &lsb) == GHOSTTY_SUCCESS)
                 lsb_ptr = &lsb;
 
-            // Compute the pane's grid in cells (for scrollbar bounds).
-            int lterm_cols = (pw - 2 * pad) / cell_width;
-            if (lterm_cols < 1) lterm_cols = 1;
-            int lterm_rows = (ph - 2 * pad) / cell_height;
-            if (lterm_rows < 1) lterm_rows = 1;
-            int lpane_term_area_w = pw;
+            bool focused = (leaf == tab->focused);
+            int header_h = (ph >= (int)(48.0f * applied_scale))
+                             ? (int)(24.0f * applied_scale)
+                             : 0;
+            int inner_rows = 0;
+            draw_pane_chrome_and_content(
+                leaf, px, py, pw, ph, header_h, focused, applied_scale,
+                mono_font, bold_font, cell_width, cell_height, font_size, pad,
+                lterm, lrs, lri, lrc, lpi, kitty_renderer, lsb_ptr, &cfg, now_ms,
+                &inner_rows);
 
-            BeginScissorMode(px, py, pw, ph);
-            render_terminal(lrs, lri, lrc, mono_font, bold_font,
-                            cell_width, cell_height, font_size, pad,
-                            lpane_term_area_w, lsb_ptr, lterm, lpi,
-                            kitty_renderer, px, py, &cfg, now_ms);
+            // Command-block overlay for the focused pane only. The chrome
+            // wrapper scissored to the inner content rect during draw; restore
+            // that clip here so the overlay cannot spill into the header or
+            // frame border.
+            if (focused && g_cmdblocks) {
+                int ix = px + 1;
+                int iy = py + header_h + 1;
+                int iw = pw - 2;
+                int ih = ph - header_h - 2;
+                if (iw < 1) iw = 1;
+                if (ih < 1) ih = 1;
+                int lpane_term_area_w = iw;
 
-            // Focused-pane highlight (a 1-pixel bright border).
-            if (leaf == tab->focused) {
-                Color focus_border = UI2RAY(g_ui_theme.focus_border);
-                DrawRectangle(px, py, pw, 1, focus_border);                    // top
-                DrawRectangle(px, py, 1, ph, focus_border);                    // left
-                DrawRectangle(px, py + ph - 1, pw, 1, focus_border);          // bottom
-                DrawRectangle(px + pw - 1, py, 1, ph, focus_border);          // right
-            }
-
-            // Command-block overlay for the focused pane only.
-            if (leaf == tab->focused && g_cmdblocks) {
                 CmdBlockAction cb_action = {0};
                 bool block_click = IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
                     && GetMouseX() >= px && GetMouseX() < px + pw
@@ -6451,9 +6578,10 @@ int main(int argc, char **argv)
                     && !ui_settings_open() && !ui_inline_active()
                     && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)
                     && !ui_sidebar_focused();
+                BeginScissorMode(ix, iy, iw, ih);
                 if (cmdblocks_draw(g_cmdblocks, te, mono_font, &theme,
                                    cell_width, cell_height, font_size,
-                                   pad, lpane_term_area_w, lterm_rows,
+                                   pad, lpane_term_area_w, inner_rows,
                                    GetMouseX(), GetMouseY(), block_click,
                                    &cb_action)) {
                     g_sel.active = false;
@@ -6464,20 +6592,8 @@ int main(int argc, char **argv)
                         cmdblock_action_free(&cb_action);
                     }
                 }
+                EndScissorMode();
             }
-            EndScissorMode();
-        }
-
-        // Draw gutter lines between panes (the gap from layout_compute_panes
-        // creates a 2-pixel gap; fill it with the background color or a
-        // subtle separator).
-        for (int i = 0; i < collector.count; i++) {
-            PaneNode *leaf = collector.entries[i].leaf;
-            // Only draw a gutter for internal (non-leaf) children — visual
-            // gaps are already handled by compute_panes_rec.  Draw a thin
-            // line along the right edge of each left-child region to make
-            // the split visually distinct.
-            (void)leaf;
         }
 
         if (g_search_active) {
