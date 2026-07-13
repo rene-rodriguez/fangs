@@ -141,6 +141,18 @@ static int g_pane_seen_count = 0;
 // Last-focused pane ID for clearing attention on focus switch.
 static uint64_t g_last_focused_pane_id = 0;
 
+// Per-pane last-scrollbar-activity timestamp for fade-in/out.
+// Array size matches the 64-entry PaneRectEntry buffers used elsewhere
+// (e.g. resize_pane_leaves_to_fit's rects[64]).
+static uint64_t g_scrollbar_last_scroll_ms[64];
+
+// Stable slot lookup for scrollbar state so pane-id reuse does not alias
+// faded activity timestamps. Falls back to modulo hashing only when full.
+static uint64_t g_scrollbar_pane_ids[64];
+static int      g_scrollbar_slot_count = 0;
+static uint64_t g_scrollbar_last_offset[64];
+static bool     g_scrollbar_initialized[64];
+
 // Pending "jump to unread" target (set by Cmd+Shift+U or a click on the
 // rail's notification strip; consumed before drawing).
 static uint64_t g_jump_request = 0;
@@ -301,6 +313,29 @@ static int collect_open_session_cwds(const char **out, int max)
     return count;
 }
 
+// Forward declaration for scrollbar_state_prune.
+static Session *session_for_pane_id(uint64_t target);
+
+// Return the stable scrollbar-state slot for a pane. Panes keep the same slot
+// for their lifetime; when the lookup table fills, we fall back to modulo
+// hashing on pane_id so the arrays are still indexed within bounds.
+static int scrollbar_slot_for_pane(uint64_t pane_id)
+{
+    for (int i = 0; i < g_scrollbar_slot_count; i++) {
+        if (g_scrollbar_pane_ids[i] == pane_id)
+            return i;
+    }
+    if (g_scrollbar_slot_count < 64) {
+        int i = g_scrollbar_slot_count++;
+        g_scrollbar_pane_ids[i] = pane_id;
+        g_scrollbar_last_scroll_ms[i] = 0;
+        g_scrollbar_last_offset[i] = 0;
+        g_scrollbar_initialized[i] = false;
+        return i;
+    }
+    return (int)(pane_id % 64);
+}
+
 // Produce a stable numeric pane ID from a session pointer.
 static uint64_t pane_id_for_session(const Session *s)
 {
@@ -330,6 +365,27 @@ static Session *session_for_pane_id(uint64_t target)
         }
     }
     return NULL;
+}
+
+// Remove scrollbar state slots whose pane has been closed. Compact the
+// parallel arrays and update the slot count so pane reuse does not alias
+// stale fade timestamps.
+static void scrollbar_state_prune(void)
+{
+    int write = 0;
+    for (int read = 0; read < g_scrollbar_slot_count; read++) {
+        uint64_t pane_id = g_scrollbar_pane_ids[read];
+        if (session_for_pane_id(pane_id) == NULL)
+            continue;
+        if (write != read) {
+            g_scrollbar_pane_ids[write]       = g_scrollbar_pane_ids[read];
+            g_scrollbar_last_scroll_ms[write] = g_scrollbar_last_scroll_ms[read];
+            g_scrollbar_last_offset[write]    = g_scrollbar_last_offset[read];
+            g_scrollbar_initialized[write]    = g_scrollbar_initialized[read];
+        }
+        write++;
+    }
+    g_scrollbar_slot_count = write;
 }
 
 // Find or create the seen-sequence slot for a pane. Returns -1 when full.
@@ -1784,7 +1840,8 @@ static bool handle_scrollbar(GhosttyTerminal terminal,
                              GhosttyRenderState render_state,
                              bool *dragging,
                              int term_origin_x, int term_origin_y,
-                             int term_area_w, int term_area_h)
+                             int term_area_w, int term_area_h,
+                             float scale)
 {
     // Query scrollbar geometry from the terminal.
     GhosttyTerminalScrollbar scrollbar = {0};
@@ -1798,17 +1855,22 @@ static bool handle_scrollbar(GhosttyTerminal terminal,
         return false;
     }
 
-    const int bar_width = 6;
-    const int bar_margin = 2;
+    int bar_width = (int)(5.0f * scale);
+    int bar_margin = (int)(4.0f * scale);
     int bar_left = term_origin_x + term_area_w - bar_width - bar_margin;
-    // Use a wider hit region for easier grabbing.
-    int hit_left = bar_left - 8;
+    int bar_right = term_origin_x + term_area_w - bar_margin;
     Vector2 mpos = GetMousePosition();
 
-    // Start a drag when the user clicks inside the hit region.
+    // Padded drag hit region: a bit wider than the visual thumb so users can
+    // grab the track without pixel-perfect accuracy. Visual thumb stays inside
+    // bar_left..bar_right; only input handling uses the expanded bounds.
+    int hit_left  = bar_left - (int)(8.0f * scale);
+    int hit_right = bar_right + (int)(4.0f * scale);
+
+    // Start a drag when the user clicks in the padded scrollbar region.
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
-        && mpos.x >= hit_left && mpos.x <= term_origin_x + term_area_w
-        && mpos.y >= term_origin_y && mpos.y <= term_origin_y + term_area_h) {
+        && mpos.x >= hit_left && mpos.x <= hit_right
+        && mpos.y >= term_origin_y && mpos.y < term_origin_y + term_area_h) {
         *dragging = true;
     }
 
@@ -2361,7 +2423,8 @@ static void draw_pane_chrome_and_content(PaneNode *leaf,
                                          KittyImageRenderer *kitty_renderer,
                                          GhosttyTerminalScrollbar *lsb_ptr,
                                          AppConfig *cfg, uint64_t now_ms,
-                                         int *out_inner_rows);
+                                         int *out_inner_rows,
+                                         uint64_t pane_id);
 
 static void render_terminal(GhosttyRenderState render_state,
                             GhosttyRenderStateRowIterator row_iter,
@@ -2371,13 +2434,16 @@ static void render_terminal(GhosttyRenderState render_state,
                             int font_size,
                             int pad,
                             int term_area_w,
+                            int term_area_h,
                             const GhosttyTerminalScrollbar *scrollbar,
                             GhosttyTerminal terminal,
                             GhosttyKittyGraphicsPlacementIterator placement_iter,
                             KittyImageRenderer *kitty_renderer,
                             int origin_x, int origin_y,
                             AppConfig *cfg,
-                            uint64_t now_ms)
+                            uint64_t now_ms,
+                            uint64_t pane_id,
+                            float scale)
 {
     // Grab colors (palette, default fg/bg) from the render state so we
     // can resolve palette-indexed cell colors.
@@ -2726,13 +2792,29 @@ static void render_terminal(GhosttyRenderState render_state,
     // The scrollbar thumb spans the pane height (or the full screen height
     // for a single-pane layout).
     if (scrollbar && scrollbar->total > scrollbar->len) {
-        // Use the pane rect's height; fall back to GetScreenHeight() for
-        // backwards compatibility (the caller may pass origin_y=0 for the
-        // focused leaf in a classic single-pane layout).
-        int scr_h = GetScreenHeight() - origin_y;
+        // The caller now passes the inner content height so the thumb
+        // geometry matches the actual scrolled area in all pane layouts.
+        int scr_h = term_area_h;
 
-        const int bar_width = 6;
-        const int bar_margin = 2;
+        int slot = scrollbar_slot_for_pane(pane_id);
+
+        if (!g_scrollbar_initialized[slot]) {
+            g_scrollbar_initialized[slot] = true;
+            g_scrollbar_last_scroll_ms[slot] = now_ms - 1500;
+        }
+        if (scrollbar->offset != g_scrollbar_last_offset[slot]) {
+            g_scrollbar_last_offset[slot] = scrollbar->offset;
+            g_scrollbar_last_scroll_ms[slot] = now_ms;
+        }
+
+        uint64_t last_scroll_ms = g_scrollbar_last_scroll_ms[slot];
+        float elapsed = (float)(now_ms - last_scroll_ms) / 1500.0f;
+        if (elapsed < 0.0f) elapsed = 0.0f;
+        if (elapsed > 1.0f) elapsed = 1.0f;
+        float fade = 1.0f - elapsed;
+
+        int bar_width = (int)(5.0f * scale);
+        int bar_margin = (int)(4.0f * scale);
         int bar_x = origin_x + term_area_w - bar_width - bar_margin;
 
         double visible_frac = (double)scrollbar->len / (double)scrollbar->total;
@@ -2744,8 +2826,20 @@ static void render_terminal(GhosttyRenderState render_state,
             : 1.0;
         int thumb_y = origin_y + (int)(scroll_frac * (scr_h - thumb_height));
 
-        DrawRectangle(bar_x, thumb_y, bar_width, thumb_height,
-                      UI2RAY(g_ui_theme.scrollbar));
+        float radius = bar_width / 2.0f;
+        Color thumb_color = UI2RAY(g_ui_theme.scrollbar);
+        int alpha = (int)(thumb_color.a * fade);
+        if (alpha < 0) alpha = 0;
+        if (alpha > 255) alpha = 255;
+        thumb_color.a = (unsigned char)alpha;
+
+        if (thumb_color.a > 0) {
+            float roundness = radius / fminf((float)bar_width, (float)thumb_height);
+            if (roundness > 0.5f) roundness = 0.5f;
+            DrawRectangleRounded((Rectangle){(float)bar_x, (float)thumb_y,
+                                             (float)bar_width, (float)thumb_height},
+                                 roundness, 8, thumb_color);
+        }
     }
 
     // Reset global dirty state so the next update reports changes accurately.
@@ -2767,7 +2861,8 @@ static void draw_pane_chrome_and_content(PaneNode *leaf,
                                          KittyImageRenderer *kitty_renderer,
                                          GhosttyTerminalScrollbar *lsb_ptr,
                                          AppConfig *cfg, uint64_t now_ms,
-                                         int *out_inner_rows)
+                                         int *out_inner_rows,
+                                         uint64_t pane_id)
 {
     if (pw < 4 || ph < 4) return;
 
@@ -2861,8 +2956,8 @@ static void draw_pane_chrome_and_content(PaneNode *leaf,
     BeginScissorMode(ix, iy, iw, ih);
     render_terminal(rs, ri, rc, font, bold_font,
                     cell_width, cell_height, font_size, pad,
-                    iw, lsb_ptr, terminal, pi,
-                    kitty_renderer, ix, iy, cfg, now_ms);
+                    iw, ih, lsb_ptr, terminal, pi,
+                    kitty_renderer, ix, iy, cfg, now_ms, pane_id, scale);
     EndScissorMode();
 }
 
@@ -5299,6 +5394,7 @@ int main(int argc, char **argv)
 
                 workspace_status_prune(&g_workspace_status, live_ids, live_count);
                 pane_prune_completion_seen(live_ids, live_count);
+                scrollbar_state_prune();
                 workspace_git_status_set_targets(g_git_status_sampler,
                                                  git_targets, git_target_count);
             }
@@ -5394,7 +5490,8 @@ int main(int argc, char **argv)
             scrollbar_consumed = handle_scrollbar(terminal, render_state,
                                                    &scrollbar_dragging,
                                                    focused_pane_rect.x, focused_pane_rect.y,
-                                                   focused_pane_rect.w, focused_pane_rect.h);
+                                                   focused_pane_rect.w, focused_pane_rect.h,
+                                                   applied_scale);
         }
 
         // Host text selection (click-drag) when the app isn't grabbing the mouse
@@ -6559,11 +6656,12 @@ int main(int argc, char **argv)
                              ? (int)(24.0f * applied_scale)
                              : 0;
             int inner_rows = 0;
+            uint64_t pane_id = pane_id_for_session(ss);
             draw_pane_chrome_and_content(
                 leaf, px, py, pw, ph, header_h, focused, applied_scale,
                 mono_font, bold_font, cell_width, cell_height, font_size, pad,
                 lterm, lrs, lri, lrc, lpi, kitty_renderer, lsb_ptr, &cfg, now_ms,
-                &inner_rows);
+                &inner_rows, pane_id);
 
             // Command-block overlay for the focused pane only. The chrome
             // wrapper scissored to the inner content rect during draw; restore
