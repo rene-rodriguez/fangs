@@ -4268,6 +4268,49 @@ static void dispatch_remote_line(const char *line,
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
+static void draw_gutter_hints(PaneRectEntry *entries, int count, int pane_gap,
+                              float scale, int mouse_x, int mouse_y)
+{
+    const int hit_dist = (int)(4.0f * scale);
+    const int handle_len = (int)(24.0f * scale);
+    Color hint = UI2RAY(g_ui_theme.gutter_hover);
+
+    for (int i = 0; i < count; i++) {
+        for (int j = i + 1; j < count; j++) {
+            PaneRectEntry *a = &entries[i];
+            PaneRectEntry *b = &entries[j];
+
+            // Vertical split: a on the left, b on the right.
+            if (a->y == b->y && a->h == b->h &&
+                (b->x == a->x + a->w + pane_gap || a->x == b->x + b->w + pane_gap)) {
+                int edge_x = (a->x < b->x)
+                    ? a->x + a->w + pane_gap / 2
+                    : b->x + b->w + pane_gap / 2;
+                int mid_y = a->y + a->h / 2;
+                if (abs(mouse_x - edge_x) <= hit_dist &&
+                    mouse_y >= a->y && mouse_y <= a->y + a->h) {
+                    DrawLine(edge_x, mid_y - handle_len / 2,
+                             edge_x, mid_y + handle_len / 2, hint);
+                }
+            }
+
+            // Horizontal split: a on top, b on bottom.
+            if (a->x == b->x && a->w == b->w &&
+                (b->y == a->y + a->h + pane_gap || a->y == b->y + b->h + pane_gap)) {
+                int edge_y = (a->y < b->y)
+                    ? a->y + a->h + pane_gap / 2
+                    : b->y + b->h + pane_gap / 2;
+                int mid_x = a->x + a->w / 2;
+                if (abs(mouse_y - edge_y) <= hit_dist &&
+                    mouse_x >= a->x && mouse_x <= a->x + a->w) {
+                    DrawLine(mid_x - handle_len / 2, edge_y,
+                             mid_x + handle_len / 2, edge_y, hint);
+                }
+            }
+        }
+    }
+}
+
 
 // (declared in ui_effects.h; no forward declaration needed.)
 
@@ -6700,6 +6743,9 @@ int main(int argc, char **argv)
                 EndScissorMode();
             }
         }
+
+        draw_gutter_hints(pane_rects, collector.count, pane_gap, applied_scale,
+                          GetMouseX(), GetMouseY());
 
         if (g_search_active) {
             int matches = draw_search_highlights(lo.terminal.x, lo.terminal.y,
