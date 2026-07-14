@@ -145,6 +145,19 @@ void layout_compute_panes(const PaneNode *root,
     compute_panes_rec(root, term_x, term_y, term_w, term_h, pane_gap, cb, user);
 }
 
+int layout_pane_header_height(int pane_count, int pane_h, float scale)
+{
+    if (pane_count <= 1)
+        return 0;
+    if (scale <= 0.0f)
+        scale = 1.0f;
+
+    int min_h = (int)(48.0f * scale);
+    if (pane_h < min_h)
+        return 0;
+    return (int)(24.0f * scale);
+}
+
 Rect layout_terminal_content_rect(Rect pane_rect, int header_h)
 {
     if (header_h < 0)

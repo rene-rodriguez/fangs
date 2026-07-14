@@ -5514,9 +5514,9 @@ int main(int argc, char **argv)
             }
         }
 
-        int focused_header_h = (focused_pane_rect.h >= (int)(48.0f * applied_scale))
-                                 ? (int)(24.0f * applied_scale)
-                                 : 0;
+        int focused_header_h = layout_pane_header_height(active_pane_collector.count,
+                                                         focused_pane_rect.h,
+                                                         applied_scale);
         Rect focused_terminal_rect =
             layout_terminal_content_rect(focused_pane_rect, focused_header_h);
 
@@ -6704,9 +6704,7 @@ int main(int argc, char **argv)
                 lsb_ptr = &lsb;
 
             bool focused = (leaf == tab->focused);
-            int header_h = (ph >= (int)(48.0f * applied_scale))
-                             ? (int)(24.0f * applied_scale)
-                             : 0;
+            int header_h = layout_pane_header_height(collector.count, ph, applied_scale);
             int inner_rows = 0;
             uint64_t pane_id = pane_id_for_session(ss);
             draw_pane_chrome_and_content(

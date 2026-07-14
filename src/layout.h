@@ -41,6 +41,9 @@ void layout_compute_panes(const PaneNode *root,
                           int pane_gap,
                           PaneRectFn cb, void *user);
 
+// Header is useful only when multiple panes need labels.
+int layout_pane_header_height(int pane_count, int pane_h, float scale);
+
 // Compute the drawable terminal content rect inside a pane chrome rect.
 Rect layout_terminal_content_rect(Rect pane_rect, int header_h);
 

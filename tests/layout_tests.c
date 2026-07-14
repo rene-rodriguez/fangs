@@ -163,6 +163,22 @@ static void test_terminal_cell_at_uses_content_origin_not_outer_pane(void)
     EXPECT_INT(row, 3);
 }
 
+static void test_pane_header_hidden_for_single_pane(void)
+{
+    EXPECT_INT(layout_pane_header_height(1, 220, 1.0f), 0);
+}
+
+static void test_pane_header_shown_for_multiple_panes(void)
+{
+    EXPECT_INT(layout_pane_header_height(2, 220, 1.0f), 24);
+    EXPECT_INT(layout_pane_header_height(3, 220, 1.5f), 36);
+}
+
+static void test_pane_header_hidden_when_pane_is_too_short(void)
+{
+    EXPECT_INT(layout_pane_header_height(2, 47, 1.0f), 0);
+}
+
 
 static void test_hidden_sidebar_uses_full_window(void)
 {
@@ -304,6 +320,9 @@ int main(void)
     test_pane_gap_negative_uses_negative_raw_in_layout();
     test_terminal_content_rect_accounts_for_pane_chrome();
     test_terminal_cell_at_uses_content_origin_not_outer_pane();
+    test_pane_header_hidden_for_single_pane();
+    test_pane_header_shown_for_multiple_panes();
+    test_pane_header_hidden_when_pane_is_too_short();
 
     if (failures != 0) {
         fprintf(stderr, "%d layout test failure(s)\n", failures);
