@@ -163,6 +163,18 @@ static void test_terminal_cell_at_uses_content_origin_not_outer_pane(void)
     EXPECT_INT(row, 3);
 }
 
+static void test_terminal_grid_size_uses_content_rect(void)
+{
+    Rect content = { .x = 41, .y = 125, .w = 318, .h = 194 };
+    int cols = 0;
+    int rows = 0;
+
+    layout_terminal_grid_size(content, 3, 8, 16, &cols, &rows);
+
+    EXPECT_INT(cols, 39);
+    EXPECT_INT(rows, 11);
+}
+
 static void test_pane_header_hidden_for_single_pane(void)
 {
     EXPECT_INT(layout_pane_header_height(1, 220, 1.0f), 0);
@@ -320,6 +332,7 @@ int main(void)
     test_pane_gap_negative_uses_negative_raw_in_layout();
     test_terminal_content_rect_accounts_for_pane_chrome();
     test_terminal_cell_at_uses_content_origin_not_outer_pane();
+    test_terminal_grid_size_uses_content_rect();
     test_pane_header_hidden_for_single_pane();
     test_pane_header_shown_for_multiple_panes();
     test_pane_header_hidden_when_pane_is_too_short();

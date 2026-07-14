@@ -1209,19 +1209,20 @@ static void compute_terminal_grid(int term_area_w, int pad,
     *rows_out = (uint16_t)rows;
 }
 
-// Per-pane variant of compute_terminal_grid: computes a grid sized to a
-// specific pane's own pixel rect rather than the whole (possibly multi-pane)
-// terminal area. Splits must each get their own grid — sizing every pane's
-// PTY/VT engine to the full area's width/height while rendering it into a
-// fraction of that space is what made split content look garbled (§16.4).
-static void compute_pane_grid(int pane_w, int pane_h, int pad,
+// Per-pane variant of compute_terminal_grid: computes a grid sized to the
+// pane's drawable terminal content rect, not the outer chrome rect. Splits
+// must each get their own grid — sizing every pane's PTY/VT engine to the full
+// area's width/height while rendering it into a fraction of that space is what
+// made split content look garbled (§16.4).
+static void compute_pane_grid(Rect pane_rect, int pane_count, float scale, int pad,
                               int cell_width, int cell_height,
                               uint16_t *cols_out, uint16_t *rows_out)
 {
-    int cols = (pane_w - 2 * pad) / cell_width;
-    int rows = (pane_h - 2 * pad) / cell_height;
-    if (cols < 1) cols = 1;
-    if (rows < 1) rows = 1;
+    int header_h = layout_pane_header_height(pane_count, pane_rect.h, scale);
+    Rect content = layout_terminal_content_rect(pane_rect, header_h);
+    int cols = 1;
+    int rows = 1;
+    layout_terminal_grid_size(content, pad, cell_width, cell_height, &cols, &rows);
 
     *cols_out = (uint16_t)cols;
     *rows_out = (uint16_t)rows;
@@ -1236,7 +1237,7 @@ static void compute_pane_grid(int pane_w, int pane_h, int pad,
 static void resize_pane_leaves_to_fit(Tab *tab,
                                       int term_x, int term_y,
                                       int term_w, int term_h,
-                                      int pane_gap,
+                                      int pane_gap, float scale,
                                       int pad, int cell_width, int cell_height,
                                       uint16_t *focused_cols_out,
                                       uint16_t *focused_rows_out)
@@ -1252,13 +1253,18 @@ static void resize_pane_leaves_to_fit(Tab *tab,
 
     for (int i = 0; i < collector.count; i++) {
         PaneNode *leaf = collector.entries[i].leaf;
-        int pw = collector.entries[i].w;
-        int ph = collector.entries[i].h;
+        Rect pane_rect = {
+            .x = collector.entries[i].x,
+            .y = collector.entries[i].y,
+            .w = collector.entries[i].w,
+            .h = collector.entries[i].h,
+        };
         Session *ss = leaf->leaf.session;
         if (!ss) continue;
 
         uint16_t cols, rows;
-        compute_pane_grid(pw, ph, pad, cell_width, cell_height, &cols, &rows);
+        compute_pane_grid(pane_rect, collector.count, scale, pad,
+                          cell_width, cell_height, &cols, &rows);
 
         TermEngine *ste = (TermEngine *)session_engine(ss);
         int spfd = session_pty_fd(ss);
@@ -5274,7 +5280,7 @@ int main(int argc, char **argv)
             Tab *tab = &app.tabs[app.active];
             resize_pane_leaves_to_fit(tab, lo.terminal.x, lo.terminal.y,
                                       lo.terminal.w, lo.terminal.h,
-                                      pane_gap,
+                                      pane_gap, applied_scale,
                                       pad, cell_width, cell_height,
                                       &term_cols, &term_rows);
             prev_width = w;

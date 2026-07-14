@@ -54,4 +54,9 @@ bool layout_terminal_cell_at(Rect terminal_content, int pad,
                              int mouse_x, int mouse_y,
                              int *col, int *row);
 
+// Compute terminal grid dimensions for a drawable terminal content rect.
+void layout_terminal_grid_size(Rect terminal_content, int pad,
+                               int cell_width, int cell_height,
+                               int *cols, int *rows);
+
 #endif // FANGS_LAYOUT_H

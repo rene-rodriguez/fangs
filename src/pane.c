@@ -10,6 +10,7 @@
 // ---------------------------------------------------------------------------
 
 static PaneNode *pane_next_leaf_rec(PaneNode *n, PaneNode *cur, bool *found);
+static bool pane_contains_node(const PaneNode *root, const PaneNode *target);
 
 static PaneNode *node_alloc(PaneKind kind)
 {
@@ -48,6 +49,10 @@ PaneNode *pane_split(PaneNode *root, PaneNode *focused, PaneKind dir,
 {
     if (!root || !focused || focused->kind != PANE_LEAF || !new_leaf)
         return root;
+    if (dir != PANE_HSPLIT && dir != PANE_VSPLIT)
+        return root;
+    if (!pane_contains_node(root, focused))
+        return root;
 
     if (ratio < 0.15f) ratio = 0.15f;
     if (ratio > 0.85f) ratio = 0.85f;
@@ -61,6 +66,10 @@ PaneNode *pane_split(PaneNode *root, PaneNode *focused, PaneKind dir,
     // The focused leaf becomes split->left; the new session is split->right.
     split->split.left  = focused;
     split->split.right = pane_leaf(new_leaf);
+    if (!split->split.right) {
+        free(split);
+        return root;
+    }
     split->split.right->parent = split;
 
     // Save focused's parent BEFORE we reparent it (otherwise the check below
@@ -82,6 +91,8 @@ PaneNode *pane_split(PaneNode *root, PaneNode *focused, PaneKind dir,
 PaneNode *pane_close(PaneNode *root, PaneNode *leaf, PaneNode **new_focus)
 {
     if (!root || !leaf || leaf->kind != PANE_LEAF)
+        return root;
+    if (!pane_contains_node(root, leaf))
         return root;
 
     PaneNode *parent = leaf->parent;
@@ -136,28 +147,54 @@ PaneNode *pane_close(PaneNode *root, PaneNode *leaf, PaneNode **new_focus)
 // Focus movement
 // ---------------------------------------------------------------------------
 
-// Simple helper: returns the bounding rect of a leaf in pixel coords.
-// We use the callback that layout_compute_panes provides.
-typedef struct { const PaneNode *target; int cx, cy; } FindCenterCtx;
-
-static void pane_find_center(const PaneNode *n, int *cx, int *cy,
-                             int *w, int *h)
+static bool pane_contains_node(const PaneNode *root, const PaneNode *target)
 {
-    (void)n;
-    if (cx) *cx += *w / 2;
-    if (cy) *cy += *h / 2;
+    if (!root || !target)
+        return false;
+    if (root == target)
+        return true;
+    if (root->kind == PANE_LEAF)
+        return false;
+    return pane_contains_node(root->split.left, target)
+        || pane_contains_node(root->split.right, target);
+}
+
+static PaneNode *pane_edge_leaf(PaneNode *root, bool leading_edge)
+{
+    PaneNode *n = root;
+    while (n && n->kind != PANE_LEAF)
+        n = leading_edge ? n->split.left : n->split.right;
+    return n;
 }
 
 PaneNode *pane_focus_move(const PaneNode *root, const PaneNode *cur,
                           int dx, int dy)
 {
-    (void)root;
-    (void)cur;
-    (void)dx;
-    (void)dy;
-    // Directional focus move is a layout-aware operation that requires pixel
-    // rects. The implementation depends on the callback from layout_compute_panes.
-    // For now, return the current node (no-op); see §16.3.
+    if (!root || !cur || cur->kind != PANE_LEAF || !pane_contains_node(root, cur))
+        return (PaneNode *)cur;
+
+    bool horizontal = dx != 0;
+    bool vertical = !horizontal && dy != 0;
+    if (!horizontal && !vertical)
+        return (PaneNode *)cur;
+
+    PaneNode *node = (PaneNode *)cur;
+    while (node && node->parent) {
+        PaneNode *parent = node->parent;
+        if (horizontal && parent->kind == PANE_HSPLIT) {
+            if (dx > 0 && parent->split.left == node)
+                return pane_edge_leaf(parent->split.right, true);
+            if (dx < 0 && parent->split.right == node)
+                return pane_edge_leaf(parent->split.left, false);
+        } else if (vertical && parent->kind == PANE_VSPLIT) {
+            if (dy > 0 && parent->split.left == node)
+                return pane_edge_leaf(parent->split.right, true);
+            if (dy < 0 && parent->split.right == node)
+                return pane_edge_leaf(parent->split.left, false);
+        }
+        node = parent;
+    }
+
     return (PaneNode *)cur;
 }
 
@@ -168,21 +205,20 @@ PaneNode *pane_at_pos(PaneNode *root, int x, int y,
     if (!root || !leaf_rect)
         return NULL;
 
-    if (root->kind == PANE_LEAF)
-        return root;
+    if (root->kind == PANE_LEAF) {
+        int lx = 0, ly = 0, lw = 0, lh = 0;
+        leaf_rect(root, &lx, &ly, &lw, &lh);
+        if (x >= lx && x < lx + lw && y >= ly && y < ly + lh)
+            return root;
+        return NULL;
+    }
 
-    // Check children.
-    int lx = 0, ly = 0, lw = 0, lh = 0;
-    if (root->split.left) {
-        leaf_rect(root->split.left, &lx, &ly, &lw, &lh);
-        if (x >= lx && x < lx + lw && y >= ly && y < ly + lh)
-            return pane_at_pos(root->split.left, x, y, leaf_rect);
-    }
-    if (root->split.right) {
-        leaf_rect(root->split.right, &lx, &ly, &lw, &lh);
-        if (x >= lx && x < lx + lw && y >= ly && y < ly + lh)
-            return pane_at_pos(root->split.right, x, y, leaf_rect);
-    }
+    PaneNode *left = pane_at_pos(root->split.left, x, y, leaf_rect);
+    if (left)
+        return left;
+    PaneNode *right = pane_at_pos(root->split.right, x, y, leaf_rect);
+    if (right)
+        return right;
     return NULL;
 }
 

@@ -198,3 +198,23 @@ bool layout_terminal_cell_at(Rect terminal_content, int pad,
     if (row) *row = cr;
     return true;
 }
+
+void layout_terminal_grid_size(Rect terminal_content, int pad,
+                               int cell_width, int cell_height,
+                               int *cols, int *rows)
+{
+    int c = 1;
+    int r = 1;
+
+    if (cell_width > 0) {
+        c = (terminal_content.w - 2 * pad) / cell_width;
+        if (c < 1) c = 1;
+    }
+    if (cell_height > 0) {
+        r = (terminal_content.h - 2 * pad) / cell_height;
+        if (r < 1) r = 1;
+    }
+
+    if (cols) *cols = c;
+    if (rows) *rows = r;
+}

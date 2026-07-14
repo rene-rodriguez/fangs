@@ -191,6 +191,146 @@ static void test_first_leaf(void)
     pane_destroy(l);
 }
 
+static void test_split_rejects_invalid_kind(void)
+{
+    PaneNode *l = pane_leaf(mock_session(1));
+    PaneNode *r = pane_split(l, l, (PaneKind)99, mock_session(2), 0.5f);
+
+    CHECK(r == l, "invalid split kind leaves root unchanged");
+    CHECK(r->kind == PANE_LEAF, "invalid split kind keeps leaf intact");
+    CHECK(r->leaf.session == mock_session(1), "invalid split kind keeps original session");
+    CHECK(pane_count_leaves(r) == 1, "invalid split kind does not add a leaf");
+
+    pane_destroy(r);
+}
+
+static void test_split_rejects_leaf_outside_root(void)
+{
+    PaneNode *root = pane_leaf(mock_session(1));
+    PaneNode *foreign = pane_leaf(mock_session(2));
+    PaneNode *r = pane_split(root, foreign, PANE_HSPLIT, mock_session(3), 0.5f);
+
+    CHECK(r == root, "split with foreign leaf leaves root unchanged");
+    CHECK(root->kind == PANE_LEAF, "split with foreign leaf keeps root a leaf");
+    CHECK(root->parent == NULL, "split with foreign leaf does not reparent root");
+    CHECK(foreign->kind == PANE_LEAF, "split with foreign leaf keeps foreign leaf intact");
+    CHECK(foreign->parent == NULL, "split with foreign leaf does not reparent foreign leaf");
+    CHECK(pane_count_leaves(root) == 1, "split with foreign leaf does not add root leaves");
+
+    pane_destroy(root);
+    pane_destroy(foreign);
+}
+
+static void test_close_rejects_leaf_outside_root(void)
+{
+    PaneNode *root = pane_leaf(mock_session(1));
+    PaneNode *foreign = pane_leaf(mock_session(2));
+    PaneNode *sentinel = (PaneNode *)(intptr_t)0x1;
+    PaneNode *new_focus = sentinel;
+    PaneNode *r = pane_close(root, foreign, &new_focus);
+
+    CHECK(r == root, "close with foreign leaf leaves root unchanged");
+    CHECK(new_focus == sentinel, "close with foreign leaf leaves focus output unchanged");
+    CHECK(root->kind == PANE_LEAF, "close with foreign leaf keeps root a leaf");
+
+    pane_destroy(root);
+    if (r == root)
+        pane_destroy(foreign);
+}
+
+static void test_focus_move_horizontal_split(void)
+{
+    PaneNode *l = pane_leaf(mock_session(1));
+    PaneNode *r = pane_split(l, l, PANE_HSPLIT, mock_session(2), 0.5f);
+    PaneNode *left = r->split.left;
+    PaneNode *right = r->split.right;
+
+    CHECK(pane_focus_move(r, left, 1, 0) == right, "focus right crosses HSPLIT");
+    CHECK(pane_focus_move(r, right, -1, 0) == left, "focus left crosses HSPLIT");
+    CHECK(pane_focus_move(r, left, -1, 0) == left, "focus left with no neighbor stays put");
+
+    pane_destroy(r);
+}
+
+static void test_focus_move_vertical_split(void)
+{
+    PaneNode *l = pane_leaf(mock_session(1));
+    PaneNode *r = pane_split(l, l, PANE_VSPLIT, mock_session(2), 0.5f);
+    PaneNode *top = r->split.left;
+    PaneNode *bottom = r->split.right;
+
+    CHECK(pane_focus_move(r, top, 0, 1) == bottom, "focus down crosses VSPLIT");
+    CHECK(pane_focus_move(r, bottom, 0, -1) == top, "focus up crosses VSPLIT");
+    CHECK(pane_focus_move(r, top, 0, -1) == top, "focus up with no neighbor stays put");
+
+    pane_destroy(r);
+}
+
+static void test_focus_move_uses_nearest_matching_ancestor(void)
+{
+    PaneNode *l = pane_leaf(mock_session(1));
+    PaneNode *r = pane_split(l, l, PANE_HSPLIT, mock_session(2), 0.5f);
+    PaneNode *left = r->split.left;
+    PaneNode *r2 = pane_split(r, left, PANE_VSPLIT, mock_session(3), 0.5f);
+
+    PaneNode *top_left = r2->split.left->split.left;
+    PaneNode *bottom_left = r2->split.left->split.right;
+    PaneNode *right = r2->split.right;
+
+    CHECK(pane_focus_move(r2, top_left, 1, 0) == right,
+          "focus right from nested left pane crosses ancestor HSPLIT");
+    CHECK(pane_focus_move(r2, bottom_left, 1, 0) == right,
+          "focus right from nested lower left pane crosses ancestor HSPLIT");
+
+    pane_destroy(r2);
+}
+
+static void rect_for_session(const PaneNode *n, int *x, int *y, int *w, int *h)
+{
+    if (!n || n->kind != PANE_LEAF)
+        return;
+
+    switch ((intptr_t)n->leaf.session) {
+    case 1: *x = 0;  *y = 0;  *w = 50; *h = 50; break;
+    case 2: *x = 50; *y = 0;  *w = 50; *h = 100; break;
+    case 3: *x = 0;  *y = 50; *w = 50; *h = 50; break;
+    default: *x = 0; *y = 0; *w = 0; *h = 0; break;
+    }
+}
+
+static void test_pane_at_pos_checks_single_leaf_bounds(void)
+{
+    PaneNode *l = pane_leaf(mock_session(1));
+
+    CHECK(pane_at_pos(l, 10, 10, rect_for_session) == l,
+          "pane_at_pos finds single leaf when point is inside");
+    CHECK(pane_at_pos(l, 80, 80, rect_for_session) == NULL,
+          "pane_at_pos ignores single leaf when point is outside");
+
+    pane_destroy(l);
+}
+
+static void test_pane_at_pos_searches_nested_leaf_rects(void)
+{
+    PaneNode *l = pane_leaf(mock_session(1));
+    PaneNode *r = pane_split(l, l, PANE_HSPLIT, mock_session(2), 0.5f);
+    PaneNode *r2 = pane_split(r, r->split.left, PANE_VSPLIT, mock_session(3), 0.5f);
+    PaneNode *hit_top_left = pane_at_pos(r2, 10, 10, rect_for_session);
+    PaneNode *hit_bottom_left = pane_at_pos(r2, 10, 70, rect_for_session);
+    PaneNode *hit_right = pane_at_pos(r2, 70, 10, rect_for_session);
+
+    CHECK(hit_top_left && hit_top_left->leaf.session == mock_session(1),
+          "pane_at_pos finds nested top-left leaf");
+    CHECK(hit_bottom_left && hit_bottom_left->leaf.session == mock_session(3),
+          "pane_at_pos finds nested bottom-left leaf");
+    CHECK(hit_right && hit_right->leaf.session == mock_session(2),
+          "pane_at_pos finds right leaf");
+    CHECK(pane_at_pos(r2, 150, 150, rect_for_session) == NULL,
+          "pane_at_pos returns NULL outside all leaves");
+
+    pane_destroy(r2);
+}
+
 int main(void)
 {
     fprintf(stderr, "pane_tests:\n");
@@ -204,6 +344,14 @@ int main(void)
     test_set_ratio();
     test_count_functions();
     test_first_leaf();
+    test_split_rejects_invalid_kind();
+    test_split_rejects_leaf_outside_root();
+    test_close_rejects_leaf_outside_root();
+    test_focus_move_horizontal_split();
+    test_focus_move_vertical_split();
+    test_focus_move_uses_nearest_matching_ancestor();
+    test_pane_at_pos_checks_single_leaf_bounds();
+    test_pane_at_pos_searches_nested_leaf_rects();
 
     fprintf(stderr, "\n%d / %d passed, %d failed\n",
             total - failures, total, failures);
