@@ -2954,6 +2954,7 @@ static void draw_pane_chrome_and_content(PaneNode *leaf,
 
     // Scissor to inner content rect and render the terminal inside it.
     BeginScissorMode(ix, iy, iw, ih);
+    DrawRectangle(ix, iy, iw, ih, UI2RAY(g_ui_theme.terminal_bg));
     render_terminal(rs, ri, rc, font, bold_font,
                     cell_width, cell_height, font_size, pad,
                     iw, ih, lsb_ptr, terminal, pi,

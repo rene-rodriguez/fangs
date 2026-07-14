@@ -45,6 +45,7 @@ UiTheme ui_theme_derive(const Theme *t)
     UiTheme u;
     UiColor bg = tc2uic(t->bg, 255);
     UiColor fg = tc2uic(t->fg, 255);
+    u.terminal_bg = bg;
 
     if (!t->is_light) {
         // ---- Dark theme ----

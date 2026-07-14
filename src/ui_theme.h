@@ -8,6 +8,7 @@
 typedef struct { unsigned char r, g, b, a; } UiColor;
 
 typedef struct {
+    UiColor terminal_bg;                 // terminal content surface
     UiColor panel_bg, panel_border;      // sidebar / settings / inline overlay
     UiColor selection;                    // terminal text selection wash
     UiColor search_bg, search_border, search_hit;

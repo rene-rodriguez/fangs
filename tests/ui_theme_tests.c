@@ -40,6 +40,8 @@ static void test_dark_theme_contrast(void)
     Theme dark = theme_resolve("onedark");
     UiTheme ui = ui_theme_derive(&dark);
 
+    EXPECT_RGB(ui.terminal_bg, dark.bg.r, dark.bg.g, dark.bg.b);
+
     // selection must be visibly different from bg
     EXPECT(rgb_dist(&ui.selection, &ui.panel_bg) > 0.08f);
 
@@ -71,6 +73,8 @@ static void test_light_theme_contrast(void)
 {
     Theme light = theme_resolve("onelight");
     UiTheme ui = ui_theme_derive(&light);
+
+    EXPECT_RGB(ui.terminal_bg, light.bg.r, light.bg.g, light.bg.b);
 
     EXPECT(rgb_dist(&ui.selection, &ui.panel_bg) > 0.08f);
     EXPECT(rgb_dist(&ui.panel_border, &ui.panel_bg) > 0.02f);
