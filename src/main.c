@@ -3329,6 +3329,29 @@ static void apply_gui_style(const Theme *t)
     GuiSetStyle(DEFAULT, TEXT_COLOR_DISABLED,   ColorToInt(dim));
 }
 
+static void apply_theme_to_all_sessions(const char *theme_slug,
+                                        char *applied_theme,
+                                        size_t applied_theme_size)
+{
+    if (strcmp(theme_slug, applied_theme) == 0)
+        return;
+
+    Theme th = theme_resolve(theme_slug);
+    for (int ti = 0; ti < app.n_tabs; ti++) {
+        PaneNode *leaves[64];
+        int count = 0;
+        pane_collect_leaves(app.tabs[ti].root, leaves, 64, &count);
+        for (int li = 0; li < count; li++) {
+            TermEngine *engine = (TermEngine *)session_engine(leaves[li]->leaf.session);
+            if (engine)
+                term_engine_apply_theme(engine, &th);
+        }
+    }
+    apply_gui_style(&th);
+    ui_theme_derive(&th);
+    snprintf(applied_theme, applied_theme_size, "%s", theme_slug);
+}
+
 // Apply config to all sessions in the active tab. Used by end-of-frame font
 // zoom and settings-save so every pane picks up theme/font changes.
 // Returns true if all sessions applied successfully.
@@ -4703,6 +4726,7 @@ int main(int argc, char **argv)
     int prev_height = GetScreenHeight();
     int prev_term_area_w = term_area_w;
     char applied_theme[32] = "";   // engine-applied theme name; re-apply on change
+    char live_preview_theme[32] = "";
 
     // Track focus state so we only send focus events on transitions.
     // Initialize from the actual window state to avoid a spurious
@@ -4887,7 +4911,11 @@ int main(int argc, char **argv)
             && (IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER)
                 || IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))
             && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)) {
-            ui_settings_toggle();
+            const char *rollback_theme = ui_settings_toggle();
+            live_preview_theme[0] = '\0';
+            if (rollback_theme)
+                apply_theme_to_all_sessions(rollback_theme, applied_theme,
+                                            sizeof(applied_theme));
             settings_shortcut_consumed = true;
             drain_char_queue();
         }
@@ -5633,21 +5661,9 @@ int main(int argc, char **argv)
         // palette/default colors is a mutating call, so do it once per change.
         // Apply to EVERY session in EVERY tab — not just the active pane — so
         // background panes/tabs don't keep a stale palette (§16 × E3).
-        if (strcmp(cfg.theme, applied_theme) != 0) {
-            Theme th = theme_resolve(cfg.theme);
-            for (int ti = 0; ti < app.n_tabs; ti++) {
-                PaneNode *tl[64];
-                int tln = 0;
-                pane_collect_leaves(app.tabs[ti].root, tl, 64, &tln);
-                for (int li = 0; li < tln; li++) {
-                    TermEngine *lte = (TermEngine *)session_engine(tl[li]->leaf.session);
-                    if (lte) term_engine_apply_theme(lte, &th);
-                }
-            }
-            apply_gui_style(&th);
-            ui_theme_derive(&th);      // -> also updates g_ui_theme
-            snprintf(applied_theme, sizeof(applied_theme), "%s", cfg.theme);
-        }
+        const char *active_theme = live_preview_theme[0]
+            ? live_preview_theme : cfg.theme;
+        apply_theme_to_all_sessions(active_theme, applied_theme, sizeof(applied_theme));
 
         // Snapshot the terminal state into the render state for every session in
         // the active tab.  Each leaf needs its own snapshots before we draw,
@@ -6882,7 +6898,19 @@ int main(int argc, char **argv)
 
         if (ui_settings_open()) {
             bool saved = false;
-            ui_settings_draw(&cfg, &saved, 1.0f);
+            const char *preview_theme = NULL;
+            ui_settings_draw(&cfg, &saved, &preview_theme, 1.0f);
+            if (preview_theme && ui_settings_open())
+                snprintf(live_preview_theme, sizeof(live_preview_theme), "%s",
+                         preview_theme);
+            if (!ui_settings_open())
+                live_preview_theme[0] = '\0';
+            if (preview_theme) {
+                active_theme = live_preview_theme[0]
+                    ? live_preview_theme : cfg.theme;
+                apply_theme_to_all_sessions(active_theme, applied_theme,
+                                            sizeof(applied_theme));
+            }
             if (saved) {
                 if (!config_save(&cfg, config_path)) {
                     fprintf(stderr, "warning: failed to save config at %s\n", config_path);

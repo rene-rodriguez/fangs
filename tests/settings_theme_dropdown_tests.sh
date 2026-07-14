@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SETTINGS="$ROOT/src/ui_settings.c"
+HEADER="$ROOT/src/ui_settings.h"
 CMAKE="$ROOT/CMakeLists.txt"
 
 fail() {
@@ -15,6 +16,18 @@ grep -Fq 'static bool theme_mode_dropdown_open = false;' "$SETTINGS" \
 
 grep -Fq 'static bool theme_name_dropdown_open = false;' "$SETTINGS" \
   || fail "settings modal must keep explicit theme name dropdown state"
+
+grep -Fq 'static char opening_theme[32];' "$SETTINGS" \
+  || fail "settings must retain the theme active when the modal opened"
+
+grep -Fq 'const char **out_preview_theme' "$HEADER" \
+  || fail "settings must report preview and rollback theme changes"
+
+grep -Fq 'const char *ui_settings_toggle(void);' "$HEADER" \
+  || fail "settings shortcut closes must report a theme rollback"
+
+grep -Fq 'char live_preview_theme[32] = "";' "$ROOT/src/main.c" \
+  || fail "main must retain a live theme preview until settings closes"
 
 grep -Fq 'GuiDropdownBox(theme_mode_bounds, "Dark;Light", &active_theme_mode, theme_mode_dropdown_open)' "$SETTINGS" \
   || fail "settings modal must expose dark/light mode as a dropdown"

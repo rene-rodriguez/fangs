@@ -38,6 +38,8 @@ static bool draft_valid = false;
 static bool theme_mode_dropdown_open = false;
 static bool theme_name_dropdown_open = false;
 static AppConfig draft;
+static char opening_theme[32];
+static char preview_theme[32];
 static bool editing[EDIT_COUNT] = {0};
 static SettingsTab settings_tab = SETTINGS_TAB_GENERAL;
 
@@ -62,8 +64,16 @@ static void reset_settings_state(void)
     draft_valid = false;
     theme_mode_dropdown_open = false;
     theme_name_dropdown_open = false;
+    opening_theme[0] = '\0';
     settings_tab = SETTINGS_TAB_GENERAL;
     clear_editing();
+}
+
+static void set_preview_theme(const char **out_preview_theme, const char *theme)
+{
+    snprintf(preview_theme, sizeof(preview_theme), "%s", theme);
+    if (out_preview_theme)
+        *out_preview_theme = preview_theme;
 }
 
 static int provider_index(const char *provider)
@@ -238,16 +248,25 @@ bool ui_settings_open(void)
     return settings_open;
 }
 
-void ui_settings_toggle(void)
+const char *ui_settings_toggle(void)
 {
+    const char *rollback_theme = NULL;
+    if (settings_open && draft_valid && strcmp(draft.theme, opening_theme) != 0) {
+        snprintf(preview_theme, sizeof(preview_theme), "%s", opening_theme);
+        rollback_theme = preview_theme;
+    }
     settings_open = !settings_open;
     reset_settings_state();
+    return rollback_theme;
 }
 
-void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
+void ui_settings_draw(AppConfig *cfg, bool *out_saved,
+                      const char **out_preview_theme, float scale)
 {
     if (out_saved)
         *out_saved = false;
+    if (out_preview_theme)
+        *out_preview_theme = NULL;
     if (!settings_open)
         return;
 
@@ -256,9 +275,12 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
     if (!draft_valid) {
         draft = *cfg;
         draft_valid = true;
+        snprintf(opening_theme, sizeof(opening_theme), "%s", cfg->theme);
     }
 
     if (IsKeyPressed(KEY_ESCAPE)) {
+        if (strcmp(draft.theme, opening_theme) != 0)
+            set_preview_theme(out_preview_theme, opening_theme);
         settings_open = false;
         reset_settings_state();
         return;
@@ -357,8 +379,12 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
             theme_mode_light = (active_theme_mode == 1);
             active_theme = 0;
         }
+        char previous_theme[sizeof(draft.theme)];
+        snprintf(previous_theme, sizeof(previous_theme), "%s", draft.theme);
         snprintf(draft.theme, sizeof(draft.theme), "%s",
                  theme_slug_for_mode_index(theme_mode_light, active_theme));
+        if (strcmp(draft.theme, previous_theme) != 0)
+            set_preview_theme(out_preview_theme, draft.theme);
     } else if (settings_tab == SETTINGS_TAB_AI) {
         GuiLabel((Rectangle){x, y, full_w, 20*s}, "AI");
         y += 32.0f*s;
@@ -444,12 +470,15 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved, float scale)
         SetMouseCursor(MOUSE_CURSOR_POINTING_HAND);
 
     if (GuiButton(cancel, "Cancel")) {
+        if (strcmp(draft.theme, opening_theme) != 0)
+            set_preview_theme(out_preview_theme, opening_theme);
         settings_open = false;
         reset_settings_state();
     }
 
     if (GuiButton(save, "Save")) {
         *cfg = draft;
+        set_preview_theme(out_preview_theme, draft.theme);
         settings_open = false;
         reset_settings_state();
         if (out_saved)
