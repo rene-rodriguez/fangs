@@ -2449,17 +2449,14 @@ static void render_terminal(GhosttyRenderState render_state,
                             AppConfig *cfg,
                             uint64_t now_ms,
                             uint64_t pane_id,
-                            float scale)
+                            float scale,
+                            bool capture_interactions)
 {
     // Grab colors (palette, default fg/bg) from the render state so we
     // can resolve palette-indexed cell colors.
     GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
     if (ghostty_render_state_colors_get(render_state, &colors) != GHOSTTY_SUCCESS)
         return;
-
-    // Reset per-frame capture: selection text + the URL hit-test grid.
-    g_rows_captured = 0;
-    if (g_sel.active) { g_sel_len = 0; g_sel_row = -1; g_sel_text[0] = '\0'; }
 
     // Obtain the Kitty graphics storage from the terminal.  This is a
     // borrowed pointer valid until the next mutating terminal call.
@@ -2494,7 +2491,7 @@ static void render_terminal(GhosttyRenderState render_state,
         while (ghostty_render_state_row_cells_next(cells)) {
             int sel_row = (y - (origin_y + pad)) / cell_height;
             int sel_col = (x - (origin_x + pad)) / cell_width;
-            bool cell_selected = sel_contains(sel_row, sel_col);
+            bool cell_selected = capture_interactions && sel_contains(sel_row, sel_col);
 
             uint32_t grapheme_len = 0;
             ghostty_render_state_row_cells_get(cells,
@@ -2512,7 +2509,8 @@ static void render_terminal(GhosttyRenderState render_state,
                     DrawRectangle(x, y, cell_width, cell_height, UI2RAY(g_ui_theme.selection));
                     sel_capture(sel_row, " ", 1);
                 }
-                row_capture(sel_row, sel_col, " ", 1);
+                if (capture_interactions)
+                    row_capture(sel_row, sel_col, " ", 1);
 
                 x += cell_width;
                 continue;
@@ -2560,7 +2558,8 @@ static void render_terminal(GhosttyRenderState render_state,
                 DrawRectangle(x, y, cell_width, cell_height, UI2RAY(g_ui_theme.selection));
                 sel_capture(sel_row, text, pos);
             }
-            row_capture(sel_row, sel_col, text, pos);
+            if (capture_interactions)
+                row_capture(sel_row, sel_col, text, pos);
 
             x += cell_width;
         }
@@ -2964,7 +2963,8 @@ static void draw_pane_chrome_and_content(PaneNode *leaf,
     render_terminal(rs, ri, rc, font, bold_font,
                     cell_width, cell_height, font_size, pad,
                     iw, ih, lsb_ptr, terminal, pi,
-                    kitty_renderer, ix, iy, cfg, now_ms, pane_id, scale);
+                    kitty_renderer, ix, iy, cfg, now_ms, pane_id, scale,
+                    focused);
     EndScissorMode();
 }
 
@@ -4908,41 +4908,6 @@ int main(int argc, char **argv)
         // Inline AI: Ctrl+Space opens a floating prompt anchored at the cursor.
         bool inline_chord = IsKeyPressed(KEY_SPACE)
             && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL));
-        if (inline_chord && !ui_settings_open() && !ui_inline_active()
-            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)) {
-            open_inline_at_cursor(render_state, cell_width, cell_height,
-                                  lo.terminal.x, lo.terminal.y, pad);
-            drain_char_queue();
-        }
-
-        bool over_rail_resize_handle = g_rail_resizing
-            || (lo.rail_visible && !ui_menu_active(&g_rail_menu) && g_drag_from < 0
-                && GetMouseX() >= lo.rail.x + lo.rail.w - RAIL_RESIZE_HANDLE_PAD
-                && GetMouseX() <= lo.rail.x + lo.rail.w + RAIL_RESIZE_HANDLE_PAD
-                && GetMouseY() >= lo.rail.y && GetMouseY() < lo.rail.y + lo.rail.h);
-
-        int mouse_cursor = MOUSE_CURSOR_DEFAULT;
-        if (over_rail_resize_handle) {
-            mouse_cursor = MOUSE_CURSOR_RESIZE_EW;
-        } else if (!ui_settings_open() && !ui_inline_active() && !ui_palette_is_open()
-            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)
-            && GetMouseX() >= lo.terminal.x && GetMouseX() < lo.terminal.x + term_area_w
-            && GetMouseY() >= lo.terminal.y && GetMouseY() < lo.terminal.y + lo.terminal.h) {
-            int ucc = (GetMouseX() - lo.terminal.x - pad) / cell_width;
-            int ucr = (GetMouseY() - lo.terminal.y - pad) / cell_height;
-            Session *ref_session = NULL;
-            if (app.n_tabs > 0) {
-                PaneNode *fl = app.tabs[app.active].focused;
-                if (fl && fl->kind == PANE_LEAF) ref_session = fl->leaf.session;
-            }
-            const char *ref_cwd = ref_session ? session_cwd(ref_session) : NULL;
-            char hover_url[2048];
-            mouse_cursor = (url_at(ucr, ucc, hover_url, (int)sizeof(hover_url))
-                            || file_ref_at(ucr, ucc, ref_cwd, hover_url, (int)sizeof(hover_url)))
-                ? MOUSE_CURSOR_POINTING_HAND
-                : MOUSE_CURSOR_IBEAM;
-        }
-        SetMouseCursor(mouse_cursor);
 
         // Tab/split/focus chords: Cmd on macOS, Ctrl+Shift on Linux. Plain
         // Ctrl+<key> must reach the shell (Ctrl+D EOF, Ctrl+W word-erase,
@@ -5531,6 +5496,48 @@ int main(int argc, char **argv)
             && GetMouseX() < focused_terminal_rect.x + focused_terminal_rect.w
             && GetMouseY() >= focused_terminal_rect.y
             && GetMouseY() < focused_terminal_rect.y + focused_terminal_rect.h;
+
+        bool over_rail_resize_handle = g_rail_resizing
+            || (lo.rail_visible && !ui_menu_active(&g_rail_menu) && g_drag_from < 0
+                && GetMouseX() >= lo.rail.x + lo.rail.w - RAIL_RESIZE_HANDLE_PAD
+                && GetMouseX() <= lo.rail.x + lo.rail.w + RAIL_RESIZE_HANDLE_PAD
+                && GetMouseY() >= lo.rail.y && GetMouseY() < lo.rail.y + lo.rail.h);
+
+        int mouse_cursor = MOUSE_CURSOR_DEFAULT;
+        if (over_rail_resize_handle) {
+            mouse_cursor = MOUSE_CURSOR_RESIZE_EW;
+        } else if (!ui_settings_open() && !ui_inline_active() && !ui_palette_is_open()
+            && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)
+            && mouse_in_terminal) {
+            int ucc = 0;
+            int ucr = 0;
+            Session *ref_session = NULL;
+            if (app.n_tabs > 0) {
+                PaneNode *fl = app.tabs[app.active].focused;
+                if (fl && fl->kind == PANE_LEAF) ref_session = fl->leaf.session;
+            }
+            const char *ref_cwd = ref_session ? session_cwd(ref_session) : NULL;
+            char hover_url[2048];
+            if (layout_pane_terminal_cell_at(focused_pane_rect,
+                                             active_pane_collector.count,
+                                             applied_scale, pad,
+                                             cell_width, cell_height,
+                                             GetMouseX(), GetMouseY(),
+                                             &ucc, &ucr)) {
+                mouse_cursor = (url_at(ucr, ucc, hover_url, (int)sizeof(hover_url))
+                                || file_ref_at(ucr, ucc, ref_cwd, hover_url, (int)sizeof(hover_url)))
+                    ? MOUSE_CURSOR_POINTING_HAND
+                    : MOUSE_CURSOR_IBEAM;
+            }
+        }
+        SetMouseCursor(mouse_cursor);
+
+        if (inline_chord && !ui_settings_open() && !ui_inline_active()
+            && !ui_palette_is_open() && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)) {
+            open_inline_at_cursor(render_state, cell_width, cell_height,
+                                  focused_terminal_rect.x, focused_terminal_rect.y, pad);
+            drain_char_queue();
+        }
 
         if (ui_sidebar_visible() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
             && mouse_in_terminal) {
@@ -6667,6 +6674,12 @@ int main(int argc, char **argv)
         PaneNode *leaves[64];
         int n_leaves = 0;
         pane_collect_leaves(tab->root, leaves, 64, &n_leaves);
+        g_rows_captured = 0;
+        if (g_sel.active) {
+            g_sel_len = 0;
+            g_sel_row = -1;
+            g_sel_text[0] = '\0';
+        }
 
         // Allocate enough space for all leaf rects.
         PaneRectEntry pane_rects[64];
@@ -6680,6 +6693,9 @@ int main(int argc, char **argv)
                              lo.terminal.w, lo.terminal.h,
                              pane_gap,
                              pane_rect_collect_cb, &collector);
+
+        Rect rendered_focused_terminal_rect = {0};
+        bool has_rendered_focused_terminal_rect = false;
 
         for (int i = 0; i < collector.count; i++) {
             PaneNode *leaf = collector.entries[i].leaf;
@@ -6711,6 +6727,11 @@ int main(int argc, char **argv)
 
             bool focused = (leaf == tab->focused);
             int header_h = layout_pane_header_height(collector.count, ph, applied_scale);
+            if (focused) {
+                rendered_focused_terminal_rect = layout_terminal_content_rect(
+                    (Rect){ .x = px, .y = py, .w = pw, .h = ph }, header_h);
+                has_rendered_focused_terminal_rect = true;
+            }
             int inner_rows = 0;
             uint64_t pane_id = pane_id_for_session(ss);
             draw_pane_chrome_and_content(
@@ -6760,10 +6781,12 @@ int main(int argc, char **argv)
         draw_gutter_hints(pane_rects, collector.count, pane_gap, applied_scale,
                           GetMouseX(), GetMouseY());
 
-        if (g_search_active) {
-            int matches = draw_search_highlights(lo.terminal.x, lo.terminal.y,
+        if (g_search_active && has_rendered_focused_terminal_rect) {
+            int matches = draw_search_highlights(rendered_focused_terminal_rect.x,
+                                                 rendered_focused_terminal_rect.y,
                                                  pad, cell_width, cell_height);
-            draw_search_box(mono_font, lo.terminal.x, term_area_w, matches);
+            draw_search_box(mono_font, rendered_focused_terminal_rect.x,
+                            rendered_focused_terminal_rect.w, matches);
         }
 
         if (ui_sidebar_visible() && lo.sidebar_visible) {

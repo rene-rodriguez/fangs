@@ -54,6 +54,14 @@ bool layout_terminal_cell_at(Rect terminal_content, int pad,
                              int mouse_x, int mouse_y,
                              int *col, int *row);
 
+// Convert a screen-space mouse point to a terminal grid cell inside a pane's
+// drawable content rect, accounting for pane chrome/header.
+bool layout_pane_terminal_cell_at(Rect pane_rect, int pane_count,
+                                  float scale, int pad,
+                                  int cell_width, int cell_height,
+                                  int mouse_x, int mouse_y,
+                                  int *col, int *row);
+
 // Compute terminal grid dimensions for a drawable terminal content rect.
 void layout_terminal_grid_size(Rect terminal_content, int pad,
                                int cell_width, int cell_height,

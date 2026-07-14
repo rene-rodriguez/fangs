@@ -163,6 +163,36 @@ static void test_terminal_cell_at_uses_content_origin_not_outer_pane(void)
     EXPECT_INT(row, 3);
 }
 
+static void test_pane_terminal_cell_at_rejects_header_chrome(void)
+{
+    Rect pane = { .x = 40, .y = 100, .w = 320, .h = 220 };
+    int col = -1;
+    int row = -1;
+
+    bool inside = layout_pane_terminal_cell_at(pane, 2, 1.0f, 3, 8, 16,
+                                               50, 110, &col, &row);
+
+    EXPECT_TRUE(!inside);
+    EXPECT_INT(col, -1);
+    EXPECT_INT(row, -1);
+}
+
+static void test_pane_terminal_cell_at_maps_content_cell(void)
+{
+    Rect pane = { .x = 40, .y = 100, .w = 320, .h = 220 };
+    int col = -1;
+    int row = -1;
+
+    bool inside = layout_pane_terminal_cell_at(pane, 2, 1.0f, 3, 8, 16,
+                                               41 + 3 + 4 * 8,
+                                               125 + 3 + 3 * 16,
+                                               &col, &row);
+
+    EXPECT_TRUE(inside);
+    EXPECT_INT(col, 4);
+    EXPECT_INT(row, 3);
+}
+
 static void test_terminal_grid_size_uses_content_rect(void)
 {
     Rect content = { .x = 41, .y = 125, .w = 318, .h = 194 };
@@ -332,6 +362,8 @@ int main(void)
     test_pane_gap_negative_uses_negative_raw_in_layout();
     test_terminal_content_rect_accounts_for_pane_chrome();
     test_terminal_cell_at_uses_content_origin_not_outer_pane();
+    test_pane_terminal_cell_at_rejects_header_chrome();
+    test_pane_terminal_cell_at_maps_content_cell();
     test_terminal_grid_size_uses_content_rect();
     test_pane_header_hidden_for_single_pane();
     test_pane_header_shown_for_multiple_panes();

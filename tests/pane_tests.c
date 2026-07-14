@@ -285,6 +285,30 @@ static void test_focus_move_uses_nearest_matching_ancestor(void)
     pane_destroy(r2);
 }
 
+static void test_focus_move_preserves_parallel_position_across_matching_splits(void)
+{
+    PaneNode *l = pane_leaf(mock_session(1));
+    PaneNode *root = pane_split(l, l, PANE_HSPLIT, mock_session(2), 0.5f);
+    root = pane_split(root, root->split.left, PANE_VSPLIT, mock_session(3), 0.5f);
+    root = pane_split(root, root->split.right, PANE_VSPLIT, mock_session(4), 0.5f);
+
+    PaneNode *top_left = root->split.left->split.left;
+    PaneNode *bottom_left = root->split.left->split.right;
+    PaneNode *top_right = root->split.right->split.left;
+    PaneNode *bottom_right = root->split.right->split.right;
+
+    CHECK(pane_focus_move(root, top_left, 1, 0) == top_right,
+          "focus right from top-left lands on top-right");
+    CHECK(pane_focus_move(root, bottom_left, 1, 0) == bottom_right,
+          "focus right from bottom-left lands on bottom-right");
+    CHECK(pane_focus_move(root, top_right, -1, 0) == top_left,
+          "focus left from top-right lands on top-left");
+    CHECK(pane_focus_move(root, bottom_right, -1, 0) == bottom_left,
+          "focus left from bottom-right lands on bottom-left");
+
+    pane_destroy(root);
+}
+
 static void rect_for_session(const PaneNode *n, int *x, int *y, int *w, int *h)
 {
     if (!n || n->kind != PANE_LEAF)
@@ -350,6 +374,7 @@ int main(void)
     test_focus_move_horizontal_split();
     test_focus_move_vertical_split();
     test_focus_move_uses_nearest_matching_ancestor();
+    test_focus_move_preserves_parallel_position_across_matching_splits();
     test_pane_at_pos_checks_single_leaf_bounds();
     test_pane_at_pos_searches_nested_leaf_rects();
 

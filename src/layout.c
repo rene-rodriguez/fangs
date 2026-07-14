@@ -199,6 +199,18 @@ bool layout_terminal_cell_at(Rect terminal_content, int pad,
     return true;
 }
 
+bool layout_pane_terminal_cell_at(Rect pane_rect, int pane_count,
+                                  float scale, int pad,
+                                  int cell_width, int cell_height,
+                                  int mouse_x, int mouse_y,
+                                  int *col, int *row)
+{
+    int header_h = layout_pane_header_height(pane_count, pane_rect.h, scale);
+    Rect content = layout_terminal_content_rect(pane_rect, header_h);
+    return layout_terminal_cell_at(content, pad, cell_width, cell_height,
+                                   mouse_x, mouse_y, col, row);
+}
+
 void layout_terminal_grid_size(Rect terminal_content, int pad,
                                int cell_width, int cell_height,
                                int *cols, int *rows)

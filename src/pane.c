@@ -159,12 +159,174 @@ static bool pane_contains_node(const PaneNode *root, const PaneNode *target)
         || pane_contains_node(root->split.right, target);
 }
 
-static PaneNode *pane_edge_leaf(PaneNode *root, bool leading_edge)
+typedef struct {
+    float x0;
+    float y0;
+    float x1;
+    float y1;
+} PaneFocusRect;
+
+// Directional focus is based on the split tree's normalized geometry. This
+// keeps movement aligned across matching nested splits instead of blindly
+// choosing the first/last leaf in the neighboring subtree.
+typedef struct {
+    const PaneNode *cur;
+    PaneFocusRect cur_rect;
+    int dx;
+    int dy;
+    PaneNode *best;
+    bool best_overlaps;
+    float best_primary;
+    float best_overlap;
+    float best_center_distance;
+} PaneFocusSearch;
+
+static float pane_minf(float a, float b) { return a < b ? a : b; }
+static float pane_maxf(float a, float b) { return a > b ? a : b; }
+static float pane_absf(float v) { return v < 0.0f ? -v : v; }
+
+static float pane_overlap(float a0, float a1, float b0, float b1)
 {
-    PaneNode *n = root;
-    while (n && n->kind != PANE_LEAF)
-        n = leading_edge ? n->split.left : n->split.right;
-    return n;
+    float overlap = pane_minf(a1, b1) - pane_maxf(a0, b0);
+    return overlap > 0.0f ? overlap : 0.0f;
+}
+
+static float pane_center(float a, float b)
+{
+    return (a + b) * 0.5f;
+}
+
+static bool pane_find_leaf_rect(const PaneNode *root, const PaneNode *target,
+                                PaneFocusRect rect, PaneFocusRect *out)
+{
+    if (!root || !target || !out)
+        return false;
+    if (root == target && root->kind == PANE_LEAF) {
+        *out = rect;
+        return true;
+    }
+    if (root->kind == PANE_LEAF)
+        return false;
+
+    if (root->kind == PANE_HSPLIT) {
+        float mid = rect.x0 + (rect.x1 - rect.x0) * root->split.ratio;
+        PaneFocusRect left = { rect.x0, rect.y0, mid, rect.y1 };
+        PaneFocusRect right = { mid, rect.y0, rect.x1, rect.y1 };
+        return pane_find_leaf_rect(root->split.left, target, left, out)
+            || pane_find_leaf_rect(root->split.right, target, right, out);
+    }
+
+    if (root->kind == PANE_VSPLIT) {
+        float mid = rect.y0 + (rect.y1 - rect.y0) * root->split.ratio;
+        PaneFocusRect top = { rect.x0, rect.y0, rect.x1, mid };
+        PaneFocusRect bottom = { rect.x0, mid, rect.x1, rect.y1 };
+        return pane_find_leaf_rect(root->split.left, target, top, out)
+            || pane_find_leaf_rect(root->split.right, target, bottom, out);
+    }
+
+    return false;
+}
+
+static bool pane_focus_candidate_better(const PaneFocusSearch *s,
+                                        bool overlaps, float primary,
+                                        float overlap, float center_distance)
+{
+    const float eps = 0.000001f;
+    if (!s->best)
+        return true;
+    if (overlaps != s->best_overlaps)
+        return overlaps;
+    if (pane_absf(primary - s->best_primary) > eps)
+        return primary < s->best_primary;
+    if (overlaps && pane_absf(overlap - s->best_overlap) > eps)
+        return overlap > s->best_overlap;
+    return center_distance < s->best_center_distance;
+}
+
+static void pane_focus_visit(PaneNode *root, PaneFocusRect rect,
+                             PaneFocusSearch *search)
+{
+    if (!root || !search)
+        return;
+
+    if (root->kind == PANE_LEAF) {
+        if (root == search->cur)
+            return;
+
+        const float eps = 0.000001f;
+        float primary = 0.0f;
+        float overlap = 0.0f;
+        float center_distance = 0.0f;
+
+        if (search->dx > 0) {
+            if (rect.x0 < search->cur_rect.x1 - eps)
+                return;
+            primary = rect.x0 - search->cur_rect.x1;
+            overlap = pane_overlap(rect.y0, rect.y1,
+                                   search->cur_rect.y0, search->cur_rect.y1);
+            center_distance = pane_absf(pane_center(rect.y0, rect.y1)
+                                      - pane_center(search->cur_rect.y0,
+                                                    search->cur_rect.y1));
+        } else if (search->dx < 0) {
+            if (rect.x1 > search->cur_rect.x0 + eps)
+                return;
+            primary = search->cur_rect.x0 - rect.x1;
+            overlap = pane_overlap(rect.y0, rect.y1,
+                                   search->cur_rect.y0, search->cur_rect.y1);
+            center_distance = pane_absf(pane_center(rect.y0, rect.y1)
+                                      - pane_center(search->cur_rect.y0,
+                                                    search->cur_rect.y1));
+        } else if (search->dy > 0) {
+            if (rect.y0 < search->cur_rect.y1 - eps)
+                return;
+            primary = rect.y0 - search->cur_rect.y1;
+            overlap = pane_overlap(rect.x0, rect.x1,
+                                   search->cur_rect.x0, search->cur_rect.x1);
+            center_distance = pane_absf(pane_center(rect.x0, rect.x1)
+                                      - pane_center(search->cur_rect.x0,
+                                                    search->cur_rect.x1));
+        } else if (search->dy < 0) {
+            if (rect.y1 > search->cur_rect.y0 + eps)
+                return;
+            primary = search->cur_rect.y0 - rect.y1;
+            overlap = pane_overlap(rect.x0, rect.x1,
+                                   search->cur_rect.x0, search->cur_rect.x1);
+            center_distance = pane_absf(pane_center(rect.x0, rect.x1)
+                                      - pane_center(search->cur_rect.x0,
+                                                    search->cur_rect.x1));
+        } else {
+            return;
+        }
+
+        bool overlaps = overlap > eps;
+        if (pane_focus_candidate_better(search, overlaps, primary, overlap,
+                                        center_distance)) {
+            search->best = root;
+            search->best_overlaps = overlaps;
+            search->best_primary = primary;
+            search->best_overlap = overlap;
+            search->best_center_distance = center_distance;
+        }
+        return;
+    }
+
+    if (root->kind == PANE_HSPLIT) {
+        float mid = rect.x0 + (rect.x1 - rect.x0) * root->split.ratio;
+        pane_focus_visit(root->split.left,
+                         (PaneFocusRect){ rect.x0, rect.y0, mid, rect.y1 },
+                         search);
+        pane_focus_visit(root->split.right,
+                         (PaneFocusRect){ mid, rect.y0, rect.x1, rect.y1 },
+                         search);
+    } else if (root->kind == PANE_VSPLIT) {
+        float mid = rect.y0 + (rect.y1 - rect.y0) * root->split.ratio;
+        pane_focus_visit(root->split.left,
+                         (PaneFocusRect){ rect.x0, rect.y0, rect.x1, mid },
+                         search);
+        pane_focus_visit(root->split.right,
+                         (PaneFocusRect){ rect.x0, mid, rect.x1, rect.y1 },
+                         search);
+    }
 }
 
 PaneNode *pane_focus_move(const PaneNode *root, const PaneNode *cur,
@@ -178,24 +340,24 @@ PaneNode *pane_focus_move(const PaneNode *root, const PaneNode *cur,
     if (!horizontal && !vertical)
         return (PaneNode *)cur;
 
-    PaneNode *node = (PaneNode *)cur;
-    while (node && node->parent) {
-        PaneNode *parent = node->parent;
-        if (horizontal && parent->kind == PANE_HSPLIT) {
-            if (dx > 0 && parent->split.left == node)
-                return pane_edge_leaf(parent->split.right, true);
-            if (dx < 0 && parent->split.right == node)
-                return pane_edge_leaf(parent->split.left, false);
-        } else if (vertical && parent->kind == PANE_VSPLIT) {
-            if (dy > 0 && parent->split.left == node)
-                return pane_edge_leaf(parent->split.right, true);
-            if (dy < 0 && parent->split.right == node)
-                return pane_edge_leaf(parent->split.left, false);
-        }
-        node = parent;
-    }
+    PaneFocusRect root_rect = { 0.0f, 0.0f, 1.0f, 1.0f };
+    PaneFocusRect cur_rect = { 0.0f, 0.0f, 0.0f, 0.0f };
+    if (!pane_find_leaf_rect(root, cur, root_rect, &cur_rect))
+        return (PaneNode *)cur;
 
-    return (PaneNode *)cur;
+    PaneFocusSearch search = {
+        .cur = cur,
+        .cur_rect = cur_rect,
+        .dx = horizontal ? dx : 0,
+        .dy = vertical ? dy : 0,
+        .best = NULL,
+        .best_overlaps = false,
+        .best_primary = 0.0f,
+        .best_overlap = 0.0f,
+        .best_center_distance = 0.0f,
+    };
+    pane_focus_visit((PaneNode *)root, root_rect, &search);
+    return search.best ? search.best : (PaneNode *)cur;
 }
 
 PaneNode *pane_at_pos(PaneNode *root, int x, int y,
