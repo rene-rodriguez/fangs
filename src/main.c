@@ -2871,12 +2871,12 @@ static void draw_pane_chrome_and_content(PaneNode *leaf,
 
     Rectangle outer = { (float)px, (float)py, (float)pw, (float)ph };
 
-    int ix = px + 1;
-    int iy = py + header_h + 1;
-    int iw = pw - 2;
-    int ih = ph - header_h - 2;
-    if (iw < 1) iw = 1;
-    if (ih < 1) ih = 1;
+    Rect terminal_content = layout_terminal_content_rect(
+        (Rect){ .x = px, .y = py, .w = pw, .h = ph }, header_h);
+    int ix = terminal_content.x;
+    int iy = terminal_content.y;
+    int iw = terminal_content.w;
+    int ih = terminal_content.h;
 
     int inner_rows = (ih - 2 * pad) / cell_height;
     if (inner_rows < 1) inner_rows = 1;
@@ -5514,11 +5514,17 @@ int main(int argc, char **argv)
             }
         }
 
+        int focused_header_h = (focused_pane_rect.h >= (int)(48.0f * applied_scale))
+                                 ? (int)(24.0f * applied_scale)
+                                 : 0;
+        Rect focused_terminal_rect =
+            layout_terminal_content_rect(focused_pane_rect, focused_header_h);
+
         bool mouse_in_terminal =
-            GetMouseX() >= focused_pane_rect.x
-            && GetMouseX() < focused_pane_rect.x + focused_pane_rect.w
-            && GetMouseY() >= focused_pane_rect.y
-            && GetMouseY() < focused_pane_rect.y + focused_pane_rect.h;
+            GetMouseX() >= focused_terminal_rect.x
+            && GetMouseX() < focused_terminal_rect.x + focused_terminal_rect.w
+            && GetMouseY() >= focused_terminal_rect.y
+            && GetMouseY() < focused_terminal_rect.y + focused_terminal_rect.h;
 
         if (ui_sidebar_visible() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
             && mouse_in_terminal) {
@@ -5533,8 +5539,8 @@ int main(int argc, char **argv)
             && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)) {
             scrollbar_consumed = handle_scrollbar(terminal, render_state,
                                                    &scrollbar_dragging,
-                                                   focused_pane_rect.x, focused_pane_rect.y,
-                                                   focused_pane_rect.w, focused_pane_rect.h,
+                                                   focused_terminal_rect.x, focused_terminal_rect.y,
+                                                   focused_terminal_rect.w, focused_terminal_rect.h,
                                                    applied_scale);
         }
 
@@ -5551,8 +5557,10 @@ int main(int argc, char **argv)
         if ((ctrl_down || cmd_down) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
             && mouse_in_terminal && !ui_palette_is_open()
             && !ui_workflow_prompt_active() && !ui_rename_prompt_active() && !ui_broadcast_prompt_active() && !ui_menu_active(&g_rail_menu)) {
-            int ucc = (GetMouseX() - focused_pane_rect.x - pad) / cell_width;
-            int ucr = (GetMouseY() - focused_pane_rect.y - pad) / cell_height;
+            int ucc = 0;
+            int ucr = 0;
+            layout_terminal_cell_at(focused_terminal_rect, pad, cell_width, cell_height,
+                                    GetMouseX(), GetMouseY(), &ucc, &ucr);
             Session *ref_session = NULL;
             if (app.n_tabs > 0) {
                 PaneNode *fl = app.tabs[app.active].focused;
@@ -5567,10 +5575,10 @@ int main(int argc, char **argv)
             }
         }
         if (!selection_consumed && can_select && !scrollbar_consumed && mouse_in_terminal) {
-            int cc = (GetMouseX() - focused_pane_rect.x - pad) / cell_width;
-            int cr = (GetMouseY() - focused_pane_rect.y - pad) / cell_height;
-            if (cc < 0) cc = 0;
-            if (cr < 0) cr = 0;
+            int cc = 0;
+            int cr = 0;
+            layout_terminal_cell_at(focused_terminal_rect, pad, cell_width, cell_height,
+                                    GetMouseX(), GetMouseY(), &cc, &cr);
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                 g_sel.sr = g_sel.er = cr; g_sel.sc = g_sel.ec = cc;
                 g_sel.dragging = true; g_sel.active = true;
@@ -5604,8 +5612,8 @@ int main(int argc, char **argv)
             if (!scrollbar_consumed && !selection_consumed && mouse_in_terminal)
                 handle_mouse(pty_fd, mouse_encoder, mouse_event, terminal,
                              cell_width, cell_height, pad,
-                             focused_pane_rect.x, focused_pane_rect.y,
-                             focused_pane_rect.w, focused_pane_rect.h);
+                             focused_terminal_rect.x, focused_terminal_rect.y,
+                             focused_terminal_rect.w, focused_terminal_rect.h);
         }
 
         // Apply the color theme when it changes (e.g. on Save). Setting the
@@ -6712,12 +6720,12 @@ int main(int argc, char **argv)
             // that clip here so the overlay cannot spill into the header or
             // frame border.
             if (focused && g_cmdblocks) {
-                int ix = px + 1;
-                int iy = py + header_h + 1;
-                int iw = pw - 2;
-                int ih = ph - header_h - 2;
-                if (iw < 1) iw = 1;
-                if (ih < 1) ih = 1;
+                Rect terminal_content = layout_terminal_content_rect(
+                    (Rect){ .x = px, .y = py, .w = pw, .h = ph }, header_h);
+                int ix = terminal_content.x;
+                int iy = terminal_content.y;
+                int iw = terminal_content.w;
+                int ih = terminal_content.h;
                 int lpane_term_area_w = iw;
 
                 CmdBlockAction cb_action = {0};

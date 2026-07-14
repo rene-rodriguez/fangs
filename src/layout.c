@@ -144,3 +144,44 @@ void layout_compute_panes(const PaneNode *root,
 {
     compute_panes_rec(root, term_x, term_y, term_w, term_h, pane_gap, cb, user);
 }
+
+Rect layout_terminal_content_rect(Rect pane_rect, int header_h)
+{
+    if (header_h < 0)
+        header_h = 0;
+
+    Rect content = {
+        .x = pane_rect.x + 1,
+        .y = pane_rect.y + header_h + 1,
+        .w = pane_rect.w - 2,
+        .h = pane_rect.h - header_h - 2,
+    };
+
+    if (content.w < 1) content.w = 1;
+    if (content.h < 1) content.h = 1;
+    return content;
+}
+
+bool layout_terminal_cell_at(Rect terminal_content, int pad,
+                             int cell_width, int cell_height,
+                             int mouse_x, int mouse_y,
+                             int *col, int *row)
+{
+    if (cell_width <= 0 || cell_height <= 0)
+        return false;
+
+    int local_x = mouse_x - terminal_content.x;
+    int local_y = mouse_y - terminal_content.y;
+    if (local_x < 0 || local_x >= terminal_content.w
+        || local_y < 0 || local_y >= terminal_content.h)
+        return false;
+
+    int cc = (local_x - pad) / cell_width;
+    int cr = (local_y - pad) / cell_height;
+    if (cc < 0) cc = 0;
+    if (cr < 0) cr = 0;
+
+    if (col) *col = cc;
+    if (row) *row = cr;
+    return true;
+}

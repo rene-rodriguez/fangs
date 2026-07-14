@@ -41,4 +41,14 @@ void layout_compute_panes(const PaneNode *root,
                           int pane_gap,
                           PaneRectFn cb, void *user);
 
+// Compute the drawable terminal content rect inside a pane chrome rect.
+Rect layout_terminal_content_rect(Rect pane_rect, int header_h);
+
+// Convert a screen-space mouse point to a terminal grid cell using the drawable
+// terminal content rect. Returns false when the point is outside that content.
+bool layout_terminal_cell_at(Rect terminal_content, int pad,
+                             int cell_width, int cell_height,
+                             int mouse_x, int mouse_y,
+                             int *col, int *row);
+
 #endif // FANGS_LAYOUT_H

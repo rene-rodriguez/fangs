@@ -134,6 +134,35 @@ static void test_pane_gap_negative_uses_negative_raw_in_layout(void)
     EXPECT_INT(gr.x[1] - gr.x[0], gr.w[0] + (-5));
 }
 
+static void test_terminal_content_rect_accounts_for_pane_chrome(void)
+{
+    Rect pane = { .x = 40, .y = 100, .w = 320, .h = 220 };
+
+    Rect content = layout_terminal_content_rect(pane, 24);
+
+    EXPECT_INT(content.x, 41);
+    EXPECT_INT(content.y, 125);
+    EXPECT_INT(content.w, 318);
+    EXPECT_INT(content.h, 194);
+}
+
+static void test_terminal_cell_at_uses_content_origin_not_outer_pane(void)
+{
+    Rect pane = { .x = 40, .y = 100, .w = 320, .h = 220 };
+    Rect content = layout_terminal_content_rect(pane, 24);
+    int col = -1;
+    int row = -1;
+
+    bool inside = layout_terminal_cell_at(content, 3, 8, 16,
+                                          content.x + 3 + 4 * 8,
+                                          content.y + 3 + 3 * 16,
+                                          &col, &row);
+
+    EXPECT_TRUE(inside);
+    EXPECT_INT(col, 4);
+    EXPECT_INT(row, 3);
+}
+
 
 static void test_hidden_sidebar_uses_full_window(void)
 {
@@ -273,6 +302,8 @@ int main(void)
     test_pane_gap_vsplit_reserves_gap();
     test_pane_gap_zero_takes_full_space();
     test_pane_gap_negative_uses_negative_raw_in_layout();
+    test_terminal_content_rect_accounts_for_pane_chrome();
+    test_terminal_cell_at_uses_content_origin_not_outer_pane();
 
     if (failures != 0) {
         fprintf(stderr, "%d layout test failure(s)\n", failures);
