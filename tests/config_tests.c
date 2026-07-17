@@ -81,7 +81,7 @@ static void test_defaults(void)
     EXPECT_INT(cfg.kitty_image_storage_mb, 64);
     EXPECT_INT(cfg.workspace_rail_width, 260);
     EXPECT_STR(cfg.provider, "openai");
-    EXPECT_STR(cfg.endpoint, "https://api.openai.com/v1/chat/completions");
+    EXPECT_STR(cfg.endpoint, "https://api.openai.com/v1");
     EXPECT_STR(cfg.model, "gpt-4o-mini");
     EXPECT_STR(cfg.api_key, "");
     EXPECT_TRUE(cfg.stream);

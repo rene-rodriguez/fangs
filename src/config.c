@@ -217,7 +217,7 @@ void config_defaults(AppConfig *c)
 
     copy_string(c->provider, sizeof(c->provider), "openai");
     copy_string(c->endpoint, sizeof(c->endpoint),
-                "https://api.openai.com/v1/chat/completions");
+                "https://api.openai.com/v1");
     copy_string(c->model, sizeof(c->model), "gpt-4o-mini");
     copy_string(c->api_key, sizeof(c->api_key), "");
     c->stream = true;

@@ -14,6 +14,8 @@
 #include <string.h>
 #include <curl/curl.h>
 
+#include "ai_endpoint.h"
+
 #include "cJSON.h"
 #include "sse.h"
 
@@ -288,7 +290,14 @@ AiStream *ai_stream_start(const AiConfig *cfg, const AiMessage *msgs, int n_msgs
         return NULL;
     pthread_mutex_init(&s->mu, NULL);
 
-    s->url = strdup(cfg->endpoint);
+    char resolved_url[512];
+    if (!ai_endpoint_resolve(cfg->provider, cfg->endpoint,
+                             resolved_url, sizeof(resolved_url))) {
+        ai_stream_free(s);
+        return NULL;
+    }
+
+    s->url = strdup(resolved_url);
     s->body = build_body(cfg, msgs, n_msgs);
     s->timeout = 90L;
     s->ndjson = is_ollama(cfg);

@@ -22,7 +22,7 @@ typedef struct {
 
 typedef struct {
     const char *provider;   // "openai" (default/compatible) | "anthropic" (native) | "ollama" (native)
-    const char *endpoint;   // full chat-completions / messages / api/chat URL
+    const char *endpoint;   // provider base URL or backward-compatible full endpoint
     const char *model;
     const char *api_key;    // already resolved by the host (env wins over config)
     int         max_tokens;

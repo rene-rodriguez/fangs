@@ -108,6 +108,7 @@ add_executable(fangs
   src/ui_settings.c
   src/term_engine.c
   src/ai_http.c
+  src/ai_endpoint.c
   src/sse.c
   src/context.c
   src/kitty_images.c
@@ -167,6 +168,13 @@ add_executable(config_tests
 target_compile_features(config_tests PRIVATE c_std_11)
 target_include_directories(config_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 add_test(NAME config_tests COMMAND config_tests)
+
+add_executable(ai_endpoint_tests
+  tests/ai_endpoint_tests.c
+  src/ai_endpoint.c)
+target_compile_features(ai_endpoint_tests PRIVATE c_std_11)
+target_include_directories(ai_endpoint_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+add_test(NAME ai_endpoint_tests COMMAND ai_endpoint_tests)
 
 add_executable(workspace_info_tests
   tests/workspace_info_tests.c

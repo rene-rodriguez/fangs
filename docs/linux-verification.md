@@ -82,12 +82,12 @@ Fangs at it — no key needed:
 
 ```sh
 ollama pull qwen2.5:7b                       # any chat model; llama3.1 is the provider default
-# In Ctrl+, settings: Provider → ollama (prefills http://localhost:11434/v1/chat/completions),
+# In Ctrl+, settings: Provider → ollama (prefills http://localhost:11434),
 # then set Model to the tag you pulled (e.g. qwen2.5:7b) and Save.
 # Or edit ~/.config/fangs/config directly:
 #   [ai]
 #   provider = ollama
-#   endpoint = http://localhost:11434/v1/chat/completions
+#   endpoint = http://localhost:11434
 #   model    = qwen2.5:7b
 #   api_key  = ollama        # any non-empty value; Ollama ignores it, Fangs just needs it non-blank
 ```

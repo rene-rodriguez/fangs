@@ -94,22 +94,22 @@ static const char *provider_from_index(int index)
     }
 }
 
-// When the user switches provider, prefill endpoint + model with that
+// When the user switches provider, prefill base URL + model with that
 // provider's defaults so the request shape and URL stay consistent. "custom"
-// keeps whatever the user already typed.
+// keeps whatever the user already typed. Full endpoints remain supported.
 static void apply_provider_defaults(AppConfig *c, const char *provider)
 {
     if (strcmp(provider, "anthropic") == 0) {
         snprintf(c->endpoint, sizeof(c->endpoint),
-                 "https://api.anthropic.com/v1/messages");
+                 "https://api.anthropic.com/v1");
         snprintf(c->model, sizeof(c->model), "claude-opus-4-8");
     } else if (strcmp(provider, "ollama") == 0) {
         snprintf(c->endpoint, sizeof(c->endpoint),
-                 "http://localhost:11434/api/chat");
+                 "http://localhost:11434");
         snprintf(c->model, sizeof(c->model), "llama3.1");
     } else if (strcmp(provider, "openai") == 0) {
         snprintf(c->endpoint, sizeof(c->endpoint),
-                 "https://api.openai.com/v1/chat/completions");
+                 "https://api.openai.com/v1");
         snprintf(c->model, sizeof(c->model), "gpt-4o-mini");
     }
 }
@@ -401,7 +401,7 @@ void ui_settings_draw(AppConfig *cfg, bool *out_saved,
             apply_provider_defaults(&draft, draft.provider);
         y += row_h + gap + 18.0f*s;
 
-        draw_labeled_text_box("Endpoint", (Rectangle){x, y, full_w, row_h},
+        draw_labeled_text_box("Base URL / endpoint", (Rectangle){x, y, full_w, row_h},
                               draft.endpoint, (int)sizeof(draft.endpoint),
                               EDIT_ENDPOINT, s);
         y += row_h + gap + 18.0f*s;

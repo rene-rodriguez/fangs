@@ -52,8 +52,8 @@ workspace_command =
 restore_session = true
 
 [ai]
-provider = openai     ;; "openai" (OpenAI-compatible) or "anthropic"
-endpoint = https://api.openai.com/v1/chat/completions
+provider = openai     ;; openai | anthropic | ollama | custom
+endpoint = https://api.openai.com/v1  ;; base URL; full endpoint also accepted
 model = gpt-4o-mini
 api_key =             ;; prefer $FANGS_API_KEY over this field
 stream = true

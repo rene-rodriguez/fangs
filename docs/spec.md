@@ -158,7 +158,7 @@ kitty_image_storage_mb = 64   ; 0 disables image storage, max 1024
 
 [ai]
 provider    = openai          ; openai | anthropic | ollama | custom (all OpenAI-compatible unless anthropic)
-endpoint    = https://api.openai.com/v1/chat/completions
+endpoint    = https://api.openai.com/v1
 model       = gpt-4o-mini
 api_key     =                 ; leave blank; prefer FANGS_API_KEY env var
 stream      = true
@@ -216,7 +216,7 @@ void ai_cancel(AiRequest *);   // user hit Esc / closed sidebar
    - Else parse the JSON after `data: ` with cJSON, read `choices[0].delta.content`, push to ring buffer.
 
 ### 6.4 Provider formats
-- **OpenAI-compatible** (OpenAI, Ollama, and most "custom" endpoints): `POST {endpoint}` with `{model, messages, stream, max_tokens, temperature}`; `Authorization: Bearer <key>`. This is the baseline path.
+- **OpenAI-compatible** (OpenAI and most "custom" providers): resolve the configured base URL to `/chat/completions`, then POST `{model, messages, stream, max_tokens, temperature}` with `Authorization: Bearer <key>`. Existing full endpoint URLs remain valid for backward compatibility.
 - **Anthropic-native** (✅ shipped 2026-06-22): different envelope (`POST /v1/messages`, `x-api-key` + `anthropic-version: 2023-06-01`, top-level `system` string, required `max_tokens`, `content_block_delta` event shape with `text_delta`/`thinking_delta`). Selected via `cfg.provider == "anthropic"`; `ai_http.c` builds the body + headers and `sse.c` auto-detects the wire format by JSON shape (top-level string `type` → Anthropic; `choices` array → OpenAI). Both live behind the same `ai_provider` seam.
 - JSON request bodies are **built with cJSON**, never string-concatenated (escaping correctness).
 - **Reasoning models (verified with a hosted OpenAI-compatible reasoning model, Phase 0b):** deltas may carry `choices[0].delta.reasoning_content` (chain-of-thought) *before* `choices[0].delta.content` (the answer). The parser must read both; the sidebar renders "thinking" (dim/collapsible) distinctly from the answer. `ai_provider.h`'s token callback should tag each delta with its kind (`reasoning` vs `content`).

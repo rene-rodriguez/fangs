@@ -199,9 +199,12 @@ modal greys out the key field and shows *(from env)*. The key is never logged.
 Pick your provider in the settings toggle:
 
 - **anthropic** — the native Claude API (`x-api-key`, `/v1/messages`).
-- **openai** / **ollama** / **custom** — any OpenAI-compatible endpoint (hosted or local).
+- **openai** / **custom** — any hosted or local OpenAI-compatible base URL.
+- **ollama** — the native Ollama API, configured with the server base URL.
 
-Switching the provider prefills a sensible default endpoint and model. Scrollback sent to the model
+Switching the provider prefills a sensible base URL and model. Fangs appends the
+provider route automatically (`/chat/completions`, `/messages`, or `/api/chat`),
+while continuing to accept existing full endpoint URLs. Scrollback sent to the model
 is run through a redaction pass first, terminal context is attached only to the current question,
 and both the sidebar's Run buttons and inline generation stage commands without a newline — so you
 always press Enter yourself.
